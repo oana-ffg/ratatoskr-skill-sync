@@ -200,7 +200,16 @@ pub(crate) fn no_symlinks(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
-    let folded = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
+    let folded = |path: &Path| {
+        let text = path.to_string_lossy();
+        #[cfg(windows)]
+        let text = if let Some(share) = text.strip_prefix("\\\\?\\UNC\\") {
+            format!("\\\\{share}")
+        } else {
+            text.strip_prefix("\\\\?\\").unwrap_or(&text).to_owned()
+        };
+        PathBuf::from(text.to_lowercase())
+    };
     let a = folded(a);
     let b = folded(b);
     a.starts_with(&b) || b.starts_with(&a)

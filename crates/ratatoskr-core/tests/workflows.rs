@@ -11,6 +11,20 @@ struct Fixture {
     settings: Settings,
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_canonical_prefix_cannot_hide_source_state_overlap() {
+    let f = Fixture::new();
+    let mut settings = f.settings.clone();
+    let ordinary = settings
+        .source
+        .to_str()
+        .unwrap()
+        .trim_start_matches("\\\\?\\");
+    settings.state_dir = PathBuf::from(ordinary).join("state");
+    assert!(settings.validate().is_err());
+}
+
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
