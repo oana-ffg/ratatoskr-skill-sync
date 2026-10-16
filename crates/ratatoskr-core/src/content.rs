@@ -206,31 +206,7 @@ fn validate_draft(
     text: &str,
     create: bool,
 ) -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().canonicalize()?;
-    let mut candidate = settings.clone();
-    candidate.source = root.join("content");
-    candidate.projects.clear();
-    candidate.state_dir = root.join("state");
-    for item in ["harnesses.toml", "machines", "skills", "global"] {
-        let from = if item == "skills" || item == "global" {
-            selected_source.join(item)
-        } else {
-            settings.source.join(item)
-        };
-        if from.is_dir() {
-            // Project editing uses the same machine/harness definitions, with its own skills.
-            for (relative, source) in file_paths(&from)? {
-                atomic_write(
-                    &candidate.source.join(item).join(relative),
-                    &fs::read(source)?,
-                )?;
-            }
-        } else if from.is_file() {
-            no_symlinks(&from)?;
-            atomic_write(&candidate.source.join(item), &fs::read(from)?)?;
-        }
-    }
+    let (_temp, candidate) = draft_workspace(settings, selected_source)?;
     let skill = candidate.source.join("skills").join(name);
     if create {
         atomic_write(&skill.join("skill.toml"), b"")?;
@@ -321,4 +297,118 @@ pub fn archive_skill(settings: &Settings, project: Option<&Path>, name: &str) ->
     // Same-volume rename preserves every file, including runtime artifacts, without recursive deletion.
     fs::rename(skill, &destination)?;
     Ok(destination)
+}
+
+/// Validate a copy-back in an isolated tree before touching the real source.
+pub(crate) fn validate_source_replacement(
+    settings: &Settings,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    let selected = if path.starts_with(&settings.source) {
+        settings.source.clone()
+    } else {
+        let mut selected = None;
+        for project in &settings.projects {
+            let root = source(settings, Some(project))?;
+            if path.starts_with(&root) {
+                selected = Some(root);
+                break;
+            }
+        }
+        selected.context("Source is outside registered content")?
+    };
+    let (temp, candidate) = draft_workspace(settings, &selected)?;
+    let relative = path.strip_prefix(&selected)?;
+    atomic_write(&candidate.source.join(relative), bytes)?;
+    validate_sources(&candidate)?;
+    drop(temp);
+    Ok(())
+}
+
+fn draft_workspace(
+    settings: &Settings,
+    selected_source: &Path,
+) -> Result<(tempfile::TempDir, Settings)> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let mut candidate = settings.clone();
+    candidate.source = root.join("content");
+    candidate.projects.clear();
+    candidate.state_dir = root.join("state");
+    fs::create_dir_all(&candidate.source)?;
+    for item in ["harnesses.toml", "machines", "skills", "global"] {
+        let from = if item == "skills" || item == "global" {
+            selected_source.join(item)
+        } else {
+            settings.source.join(item)
+        };
+        no_symlinks(&from)?;
+        if from.is_dir() {
+            for (relative, source) in file_paths(&from)? {
+                atomic_write(
+                    &candidate.source.join(item).join(relative),
+                    &fs::read(source)?,
+                )?;
+            }
+        } else if from.is_file() {
+            atomic_write(&candidate.source.join(item), &fs::read(from)?)?;
+        }
+    }
+    Ok((temp, candidate))
+}
+
+#[derive(Serialize)]
+pub struct PreviewTarget {
+    pub machine: String,
+    pub harness: String,
+}
+
+pub fn preview_targets(settings: &Settings) -> Result<Vec<PreviewTarget>> {
+    Ok(crate::engine::template_contexts(settings)?
+        .into_iter()
+        .map(|(machine, harness, _)| PreviewTarget { machine, harness })
+        .collect())
+}
+
+#[derive(Serialize)]
+pub struct PreviewFile {
+    pub path: PathBuf,
+    pub text: Option<String>,
+}
+
+/// Uses the deployment renderer on an isolated draft, with all host writes disabled.
+pub fn preview_skill(
+    settings: &Settings,
+    project: Option<&Path>,
+    name: &str,
+    markdown: &str,
+    metadata: &str,
+    machine: &str,
+    harness: &str,
+) -> Result<Vec<PreviewFile>> {
+    identifier(name)?;
+    identifier(machine)?;
+    identifier(harness)?;
+    ensure!(
+        preview_targets(settings)?
+            .iter()
+            .any(|t| t.machine == machine && t.harness == harness),
+        "Select an enabled machine × harness"
+    );
+    let selected = source(settings, project)?;
+    let (_temp, mut candidate) = draft_workspace(settings, &selected)?;
+    candidate.machine = machine.into();
+    let profile = candidate
+        .source
+        .join("machines")
+        .join(format!("{machine}.toml"));
+    let mut table: toml::Table = toml::from_str(&fs::read_to_string(&profile)?)?;
+    table.insert("harnesses".into(), toml::Value::try_from(vec![harness])?);
+    atomic_write(&profile, toml::to_string(&table)?.as_bytes())?;
+    let skill = candidate.source.join("skills").join(name);
+    ensure!(skill.is_dir(), "Skill no longer exists");
+    atomic_write(&skill.join("SKILL.md"), markdown.as_bytes())?;
+    atomic_write(&skill.join("skill.toml"), metadata.as_bytes())?;
+    crate::engine::preview_files(&candidate, name)
 }

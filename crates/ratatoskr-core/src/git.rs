@@ -182,19 +182,10 @@ pub fn sync(settings: &Settings) -> Result<Plan> {
 
 fn sync_with_update(settings: &Settings, update: impl FnOnce() -> Result<()>) -> Result<Plan> {
     settings.validate()?;
-    use fs2::FileExt;
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
-    let lock_path = state.join("sync.lock");
-    no_symlinks(&lock_path)?;
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    lock.try_lock_exclusive()
-        .context("Another Ratatoskr sync is running")?;
+    let _lock = crate::config::operation_lock(settings, "sync.lock")?;
+    let run = crate::jobs::start(settings)?;
     // Updating and syncing have separate outcomes and notification ledgers.
     let deployment = validate_deploy_branch(settings);
     let update_result = if deployment.is_ok() { update() } else { Ok(()) };
@@ -211,6 +202,8 @@ fn sync_with_update(settings: &Settings, update: impl FnOnce() -> Result<()>) ->
     if let Err(error) = notification {
         errors.push(format!("Sync alert delivery failed: {error:#}"));
     }
+    let summary = (!errors.is_empty()).then(|| errors.join("; "));
+    crate::jobs::finish(settings, run, summary.as_deref())?;
     ensure!(errors.is_empty(), "{}", errors.join("; "));
     result
 }
@@ -379,7 +372,11 @@ mod tests {
         )
         .unwrap();
         assert!(alerts().contains("Helper update: update endpoint offline"));
-        assert!(!settings.state_dir.join("test/notification.json").exists());
+        assert!(
+            crate::notifications::current_error(&settings, "notification.json")
+                .unwrap()
+                .is_none()
+        );
 
         // Skipped checks neither repeat the alert nor falsely report recovery.
         run("2026-10-16T01:00:00+02:00").unwrap();

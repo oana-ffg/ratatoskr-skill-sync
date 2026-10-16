@@ -43,3 +43,16 @@ New coverage exercises:
 - Update guards explicitly unlock even when another duplicated/inherited handle remains open, preventing concurrent process launches from delaying lock release.
 
 No public release was cut. An actual installed desktop downloading, installing, and relaunching a newer published version, Windows installer behavior, and unattended midnight operation on a real machine remain acceptance steps. Automated clock/policy tests and native builds establish the implemented decisions, not those platform acceptance results. The existing private skill deployment and live agent schedules were not switched to Ratatoskr.
+
+
+## Desktop workflows in 0.2.0
+
+Local coverage adds reviewed conflict copy-back, reinstall, adoption, manual template-source editing, stale-preview rejection, removed files, executable permissions, unmanaged directories and backup/restore round trips. Draft previews use the deployment renderer and preserve the selected machine's template context even when its live OS differs from the host. Included presets and separate instruction roots are validated. Helper discovery checks bundled siblings before standalone PATH installations and reports absence.
+
+Sync records last start/completion/result and a bounded history independently of configured notifications. Current errors come from the deduplicated alert ledgers; failed deliveries remain retryable. Desktop tests exercise debounce, stale asynchronous responses, cancellation and propagated validation failures, alongside the existing update policy suite.
+
+Open at login is off until explicitly enabled through the Tauri autostart plugin. A real reboot/login launch and the published 0.1.0-to-0.2.0 auto-update remain platform acceptance steps. Windows Task Scheduler and Windows desktop interaction still require a live Windows session. Preset documentation is verified; discovery inside each individual agent app has not been exercised. See [agent paths and explicit omissions](agent-presets.md).
+
+PR #2 also exposes parser analysis and focused command endpoints for the separate UI redesign; see [desktop-api.md](desktop-api.md). All ranges are UTF-16 offsets. A regression test proves operation locks explicitly release even while another process retains a duplicated file descriptor. CLI acceptance exercised the new actions in an isolated temporary repository. The native desktop builds; its new command flows were not verified through native UI automation.
+
+Final local PR #2 checks: 59 Rust tests and 11 desktop tests passed, Rust formatting/strict Clippy passed for default targets and native desktop, locked helper/desktop builds passed, and npm ci/format/check/build passed. Real CLI acceptance was repeated against the final core. Native UI interaction, login after reboot, individual agent discovery and production auto-update remain unverified platform acceptance steps.

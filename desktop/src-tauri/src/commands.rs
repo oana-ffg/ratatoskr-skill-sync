@@ -12,7 +12,11 @@ pub(crate) struct Snapshot {
     config_text: String,
     plan: Plan,
     skills: Vec<SkillEntry>,
-    helper: PathBuf,
+    helper: Option<PathBuf>,
+    helper_error: Option<String>,
+    jobs: core::JobStatus,
+    presets: Vec<core::AgentPreset>,
+    preview_targets: Vec<core::PreviewTarget>,
     source_files: Vec<String>,
     updates: UpdateStatus,
 }
@@ -23,6 +27,13 @@ pub(crate) struct UpdateStatus {
     override_active: bool,
     automatic: bool,
     time: String,
+}
+
+fn detected_helper() -> anyhow::Result<PathBuf> {
+    core::detect_helper(
+        &std::env::current_exe()?,
+        std::env::var_os("PATH").as_deref(),
+    )
 }
 
 fn config() -> Reply<PathBuf> {
@@ -42,6 +53,7 @@ fn snapshot() -> Reply<Snapshot> {
         targets: 0,
         changes: vec![],
         conflicts: vec![format!("Preview failed: {error:#}")],
+        conflict_details: vec![],
         projects: settings
             .projects
             .iter()
@@ -58,6 +70,12 @@ fn snapshot() -> Reply<Snapshot> {
             .push(format!("Cannot list source configuration: {error:#}"));
         vec![]
     });
+    let helper = detected_helper();
+    let preview_targets = core::preview_targets(&settings).unwrap_or_else(|error| {
+        plan.conflicts
+            .push(format!("Cannot list preview targets: {error:#}"));
+        vec![]
+    });
     Ok(Snapshot {
         updates: UpdateStatus {
             endpoint: settings.updates.endpoint().into(),
@@ -69,14 +87,11 @@ fn snapshot() -> Reply<Snapshot> {
         config_path: path,
         plan,
         skills,
-        helper: std::env::current_exe()
-            .and_then(|path| path.canonicalize())
-            .map_err(|e| e.to_string())?
-            .with_file_name(if cfg!(windows) {
-                "ratatoskr.exe"
-            } else {
-                "ratatoskr"
-            }),
+        helper: helper.as_ref().ok().cloned(),
+        helper_error: helper.err().map(|e| format!("{e:#}")),
+        jobs: core::job_status(&settings).map_err(|e| format!("{e:#}"))?,
+        presets: core::agent_presets(),
+        preview_targets,
         source_files,
     })
 }
@@ -189,13 +204,6 @@ pub(crate) fn archive_source_skill(name: String, project: Option<PathBuf>) -> Re
         .map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn adopt_workspace() -> Reply<String> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    core::adopt(&settings()?)
-        .map(|p| p.display().to_string())
-        .map_err(|e| format!("{e:#}"))
-}
-#[tauri::command]
 pub(crate) fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
     mutate(|s| core::restore_backup(s, &backup).map(|_| ()))
 }
@@ -206,13 +214,15 @@ pub(crate) async fn sync_workspace() -> Reply<Snapshot> {
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub(crate) fn preview_schedule(helper: PathBuf, seconds: u32) -> Reply<core::Schedule> {
+pub(crate) fn preview_schedule(seconds: u32) -> Reply<core::Schedule> {
+    let helper = detected_helper().map_err(|e| format!("{e:#}"))?;
     core::schedule_plan(&settings()?, &config()?, &helper, seconds).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn enable_schedule(helper: PathBuf, seconds: u32) -> Reply<String> {
+pub(crate) fn enable_schedule(seconds: u32) -> Reply<String> {
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     let settings = settings()?;
+    let helper = detected_helper().map_err(|e| format!("{e:#}"))?;
     let plan = core::schedule_plan(&settings, &config()?, &helper, seconds)
         .map_err(|e| format!("{e:#}"))?;
     core::install_schedule(&settings, &plan).map_err(|e| format!("{e:#}"))?;
@@ -385,4 +395,114 @@ pub(crate) fn save_update_schedule(automatic: bool, time: String) -> Reply<Snaps
 #[tauri::command]
 pub(crate) fn restart_desktop(app: tauri::AppHandle) {
     app.restart();
+}
+
+#[tauri::command]
+pub(crate) fn preview_conflict(
+    path: PathBuf,
+    action: core::ConflictAction,
+) -> Reply<core::ResolutionPreview> {
+    core::preview_resolution(&settings()?, &path, action).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) fn resolve_conflict(expected: String) -> Reply<String> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    core::resolve_conflict(&settings()?, &expected)
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) fn preview_agent(target: core::AgentTarget) -> Reply<core::SourceDocument> {
+    core::preview_agent_target(&settings()?, &target).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) async fn preview_skill(
+    name: String,
+    project: Option<PathBuf>,
+    markdown: String,
+    metadata: String,
+    machine: String,
+    harness: String,
+) -> Reply<Vec<core::PreviewFile>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        core::preview_skill(
+            &settings()?,
+            project.as_deref(),
+            &name,
+            &markdown,
+            &metadata,
+            &machine,
+            &harness,
+        )
+        .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) fn read_job_status() -> Reply<core::JobStatus> {
+    core::job_status(&settings()?).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) fn login_enabled(app: tauri::AppHandle) -> Reply<bool> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn set_login_enabled(app: tauri::AppHandle, enabled: bool) -> Reply<bool> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    }
+    .map_err(|e| e.to_string())?;
+    manager.is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn read_conflict_source(path: PathBuf) -> Reply<core::SourceDocument> {
+    core::read_conflict_source(&settings()?, &path).map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn preview_source_edit(path: PathBuf, text: String) -> Reply<core::ResolutionPreview> {
+    core::preview_source_edit(&settings()?, &path, &text).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) fn analyze_skill(
+    name: String,
+    markdown: String,
+    machine: String,
+    harness: String,
+) -> Reply<core::SkillAnalysis> {
+    core::analyze_skill(&settings()?, &name, &markdown, &machine, &harness)
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) fn list_agent_presets() -> Vec<core::AgentPreset> {
+    core::agent_presets()
+}
+#[tauri::command]
+pub(crate) fn list_preview_targets() -> Reply<Vec<core::PreviewTarget>> {
+    core::preview_targets(&settings()?).map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn detect_helper() -> Reply<PathBuf> {
+    detected_helper().map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn add_agent_target(
+    target: core::AgentTarget,
+    expected_hash: String,
+) -> Reply<Snapshot> {
+    mutate(|s| core::add_agent_target(s, &target, &expected_hash))
 }
