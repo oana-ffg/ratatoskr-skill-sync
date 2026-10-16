@@ -1,8 +1,8 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach } from "vitest";
-import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
+import { mockIPC, clearMocks, mockWindows } from "@tauri-apps/api/mocks";
 import App from "./App.svelte";
-import { fixtureIPC } from "../tests/fixture";
+import { fixture, fixtureIPC } from "../tests/fixture";
 beforeEach(() => {
   clearMocks();
   HTMLDialogElement.prototype.showModal = function () {
@@ -90,4 +90,73 @@ test("update actions follow the native updater result", async () => {
     screen.queryByRole("button", { name: "Install signed update" }),
   ).toBeNull();
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+});
+
+test("onboarding Settings checks and installs updates without workspace commands", async () => {
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "read_workspace") return null;
+    if (cmd === "read_update_settings")
+      return { ...fixture.workspace.updates, time: "00:00" };
+    if (cmd === "read_local_settings" || cmd === "login_enabled")
+      throw new Error("No workspace config");
+    if (cmd === "update_desktop") {
+      const install = (args as { install: boolean }).install;
+      return {
+        message: install ? "Installed" : "Available",
+        available: !install,
+        installed: install,
+      };
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  render(App);
+  await screen.findByRole("button", { name: "Connect workspace" });
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  expect(await screen.findByRole("heading", { name: "Updates" })).toBeVisible();
+  expect(screen.getByText(/Nightly time: 00:00 local time/)).toBeVisible();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Check for updates" }),
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Install signed update" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restart app" }),
+  ).toBeEnabled();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(calls.mock.calls.some(([cmd]) => cmd === "read_local_settings")).toBe(
+    false,
+  );
+});
+
+test("unconfigured native startup and nightly ticks run, then timers stop on unmount", async () => {
+  vi.stubGlobal("isTauri", true);
+  mockWindows("main");
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "startup_update") return false;
+    if (cmd === "read_workspace") return null;
+    if (cmd === "nightly_update")
+      return !(args as { install: boolean }).install;
+    if (cmd.startsWith("plugin:event|")) return 1;
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const { unmount } = render(App);
+  try {
+    await screen.findByRole("button", { name: "Connect workspace" });
+    expect(calls).toHaveBeenCalledWith("startup_update", {});
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(calls).toHaveBeenCalledWith("nightly_update", { install: false });
+    expect(calls).toHaveBeenCalledWith("nightly_update", { install: true });
+    unmount();
+    calls.mockClear();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(calls).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
 });

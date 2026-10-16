@@ -8,12 +8,13 @@
     ondirty,
     onunsaved,
   }: {
-    workspace: Snapshot;
+    workspace: Snapshot | null;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
     onunsaved?: (v: boolean) => void;
   } = $props();
+  let updates = $state<Snapshot["updates"] | null>(null);
   let settings = $state<LocalSettings | null>(null);
   let original = $state("");
   let configHash = $state("");
@@ -37,6 +38,8 @@
   });
   async function load() {
     try {
+      updates = await api.command<Snapshot["updates"]>("read_update_settings");
+      if (!workspace) return;
       const [candidate, enabled] = await Promise.all([
         api.command<{ settings: LocalSettings; hash: string }>(
           "read_local_settings",
@@ -122,14 +125,12 @@
       <p class="muted">Quiet when things work. Clear when they need you.</p>
     </div>
   </div>
-  {#if settings}<article class="panel">
+  {#if updates}<article class="panel">
       <div class="section-heading">
         <h2>Updates</h2>
         <span
-          class="status-pill {workspace.updates.override_active
-            ? 'warning'
-            : 'success'}"
-          >{workspace.updates.override_active
+          class="status-pill {updates.override_active ? 'warning' : 'success'}"
+          >{updates.override_active
             ? "Custom override active"
             : "Official signed updates"}</span
         >
@@ -137,20 +138,24 @@
       <p class="muted">
         Signed desktop and helper releases from the configured update source.
       </p>
-      <label class="checkbox-label"
-        ><input
-          type="checkbox"
-          bind:checked={settings.updates.automatic}
-        />Check for updates automatically</label
-      ><label class="time-field"
-        >Nightly time <small>Local time on this machine</small><input
-          type="time"
-          bind:value={settings.updates.time}
-        /></label
-      >
+      {#if settings}<label class="checkbox-label"
+          ><input
+            type="checkbox"
+            bind:checked={settings.updates.automatic}
+          />Check for updates automatically</label
+        ><label class="time-field"
+          >Nightly time <small>Local time on this machine</small><input
+            type="time"
+            bind:value={settings.updates.time}
+          /></label
+        >
+      {:else}<p class="muted">
+          Automatic updates are {updates.automatic ? "on" : "off"}. Nightly
+          time: {updates.time} local time. Connect a workspace to customize the schedule.
+        </p>{/if}
       <details>
         <summary>Update source</summary>
-        <p class="path">{workspace.updates.endpoint}</p>
+        <p class="path">{updates.endpoint}</p>
       </details>
       <div class="form-row">
         <button disabled={busy || dirty} onclick={() => update(false)}
@@ -165,8 +170,8 @@
           >{/if}
       </div>
       {#if message}<p role="status" class="success-message">{message}</p>{/if}
-    </article>
-    <article class="panel">
+    </article>{/if}
+  {#if settings}<article class="panel">
       <div class="section-heading">
         <div>
           <h2>Startup</h2>

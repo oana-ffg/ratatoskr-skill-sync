@@ -2853,7 +2853,7 @@ dependencies = [
 
 [[package]]
 name = "ratatoskr-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2879,7 +2879,7 @@ dependencies = [
 
 [[package]]
 name = "ratatoskr-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2891,12 +2891,13 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-dialog",
  "tauri-plugin-updater",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
 name = "ratatoskr-skill-sync"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",

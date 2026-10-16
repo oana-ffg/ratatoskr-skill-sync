@@ -12,7 +12,7 @@ The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlightin
 
 [Desktop walkthrough and design decisions](docs/desktop-ui.md) · [Light/dark screenshots](docs/screenshots/README.md)
 
-## Features in 0.2.0
+## Features in 0.2.1
 
 - Render machine, OS, harness, and capability conditions; substitute variables; select file variants; add harness-specific frontmatter.
 - Preview output diffs and identify hand edits, removals, executable permission changes and unmanaged collisions. Resolve each conflict with a reviewed, backed-up copy-back, reinstall or adoption. Ambiguous templates have a mapped-source editor instead of guessed reverse-mapping.
@@ -22,7 +22,7 @@ The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlightin
 - Install or remove a per-user launchd or Windows Task Scheduler job. Each run fast-forwards a clean content checkout, applies it, and exits. System, Pushover, ntfy or command-based failure/recovery alerts are deduplicated. View the last run, current ledger errors and bounded logs in the app; helper paths are detected automatically.
 - Check and install cryptographically signed helper and desktop updates, with nightly automatic updates enabled by default. A release workflow builds signed draft releases for Apple Silicon, Intel Mac, and Windows x64.
 
-**Pre-1.0:** version 0.2.0 is intended for the first installed auto-update acceptance test after 0.1.0. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
+**Pre-1.0:** version 0.2.1 fixes desktop updates before a workspace is connected. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
 
 ## Build and run
 

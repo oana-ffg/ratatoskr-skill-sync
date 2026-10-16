@@ -123,12 +123,8 @@ pub struct DesktopUpdateState {
 }
 
 impl DesktopUpdateState {
-    pub fn load(settings: &crate::Settings) -> Result<Self> {
-        let path = settings
-            .state_dir
-            .join(&settings.machine)
-            .join("desktop-update.json");
-        crate::config::no_symlinks(&path)?;
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        crate::config::no_symlinks(path)?;
         if path.try_exists()? {
             Ok(serde_json::from_slice(&std::fs::read(path)?)?)
         } else {
@@ -159,23 +155,18 @@ impl DesktopUpdateState {
 
     pub fn record_attempt(
         &mut self,
-        settings: &crate::Settings,
+        path: &std::path::Path,
+        settings: &UpdateSettings,
         now: chrono::DateTime<chrono::FixedOffset>,
     ) -> Result<()> {
         self.last_check = Some(now);
-        self.settings = Some(settings.updates.clone());
-        self.record_available(settings, false)
+        self.settings = Some(settings.clone());
+        self.record_available(path, false)
     }
 
-    pub fn record_available(&mut self, settings: &crate::Settings, available: bool) -> Result<()> {
+    pub fn record_available(&mut self, path: &std::path::Path, available: bool) -> Result<()> {
         self.pending = available;
-        crate::config::atomic_write(
-            &settings
-                .state_dir
-                .join(&settings.machine)
-                .join("desktop-update.json"),
-            &serde_json::to_vec(self)?,
-        )
+        crate::config::atomic_write(path, &serde_json::to_vec(self)?)
     }
 }
 
@@ -655,11 +646,12 @@ mod tests {
             ..Default::default()
         };
         let now = clock("2026-10-16T09:00:00+02:00");
-        let mut state = DesktopUpdateState::load(&settings).unwrap();
+        let path = settings.state_dir.join("test/desktop-update.json");
+        let mut state = DesktopUpdateState::load(&path).unwrap();
         assert!(state.due(&settings.updates, now, true).unwrap());
         assert!(!state.due(&settings.updates, now, false).unwrap());
-        state.record_attempt(&settings, now).unwrap();
-        let mut state = DesktopUpdateState::load(&settings).unwrap();
+        state.record_attempt(&path, &settings.updates, now).unwrap();
+        let mut state = DesktopUpdateState::load(&path).unwrap();
         assert!(!state.due(&settings.updates, now, true).unwrap());
         assert!(
             state
@@ -671,16 +663,16 @@ mod tests {
                 .due(&settings.updates, clock("2026-10-17T09:00:00+02:00"), true)
                 .unwrap()
         );
-        state.record_available(&settings, true).unwrap();
-        let mut state = DesktopUpdateState::load(&settings).unwrap();
+        state.record_available(&path, true).unwrap();
+        let mut state = DesktopUpdateState::load(&path).unwrap();
         assert!(
             state.due(&settings.updates, now, true).unwrap(),
             "deferred installation resumes on launch"
         );
         assert!(!state.due(&settings.updates, now, false).unwrap());
-        state.record_available(&settings, false).unwrap();
+        state.record_available(&path, false).unwrap();
         assert!(
-            !DesktopUpdateState::load(&settings)
+            !DesktopUpdateState::load(&path)
                 .unwrap()
                 .due(&settings.updates, now, true)
                 .unwrap()
@@ -691,7 +683,7 @@ mod tests {
             "changed settings get a new check"
         );
         state
-            .record_attempt(&settings, clock("2026-10-15T23:45:00+02:00"))
+            .record_attempt(&path, &settings.updates, clock("2026-10-15T23:45:00+02:00"))
             .unwrap();
         assert!(
             !state
@@ -713,7 +705,7 @@ mod tests {
             "corrupt",
         )
         .unwrap();
-        assert!(DesktopUpdateState::load(&settings).is_err());
+        assert!(DesktopUpdateState::load(&path).is_err());
     }
 
     #[test]

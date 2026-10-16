@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod desktop_updates;
 
 fn main() {
     tauri::Builder::default()
@@ -60,6 +61,7 @@ fn main() {
             commands::preview_schedule,
             commands::enable_schedule,
             commands::disable_schedule,
+            commands::read_update_settings,
             commands::update_desktop,
             commands::nightly_update,
             commands::startup_update,
