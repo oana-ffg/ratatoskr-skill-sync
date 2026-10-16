@@ -49,7 +49,31 @@ jobs:
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
+      - run: cargo test --locked --workspace
       - run: npm run prepare:helper -- --debug
         working-directory: desktop
       - run: cargo clippy --locked -p ratatoskr-desktop -- -D warnings
       - run: cargo build --locked -p ratatoskr-desktop
+
+  screenshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: desktop
+      - run: npx playwright install --with-deps chromium
+        working-directory: desktop
+      - run: npm run test:screenshots
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-screenshots
+          path: docs/screenshots/*.png

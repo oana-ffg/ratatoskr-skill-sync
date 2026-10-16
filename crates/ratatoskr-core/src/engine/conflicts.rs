@@ -2,6 +2,8 @@ use super::*;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Conflict {
+    pub harness: Option<String>,
+    pub skill: Option<String>,
     pub path: PathBuf,
     pub kind: String,
     pub diff: Option<String>,
@@ -40,7 +42,16 @@ pub(super) fn conflict(path: &Path, kind: &str, desired: &Desired) -> Result<Con
     } else {
         None
     };
+    let identity = file.or_else(|| {
+        desired
+            .files
+            .iter()
+            .find(|(p, _)| p.starts_with(path))
+            .map(|(_, f)| f)
+    });
     Ok(Conflict {
+        harness: identity.map(|f| f.harness.clone()),
+        skill: identity.and_then(|f| f.skill.clone()),
         path: path.to_path_buf(),
         kind: kind.into(),
         diff: installed.as_deref().map_or_else(

@@ -1279,3 +1279,142 @@ fn adding_agent_definition_preserves_existing_text_and_comments() {
     ratatoskr_core::add_agent_target(&f.settings, &target, &preview.hash).unwrap();
     assert_eq!(fs::read_to_string(path).unwrap(), preview.text);
 }
+
+#[test]
+fn structured_combined_skill_saves_validate_both_files_and_reject_stale_hashes() {
+    let f = Fixture::new();
+    let before = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    let changed = before
+        .markdown
+        .replace("Review changed code", "Review all changed code carefully");
+    let metadata = "# keep this comment\n[target]\nharnesses = ['codex']\n";
+    ratatoskr_core::save_skill_draft(
+        &f.settings,
+        None,
+        "review-code",
+        &changed,
+        metadata,
+        &before.markdown_hash,
+        &before.metadata_hash,
+    )
+    .unwrap();
+    let after = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    assert_eq!(after.markdown, changed);
+    assert_eq!(after.metadata, metadata);
+    assert!(
+        ratatoskr_core::save_skill_draft(
+            &f.settings,
+            None,
+            "review-code",
+            &before.markdown,
+            &before.metadata,
+            &before.markdown_hash,
+            &before.metadata_hash
+        )
+        .is_err()
+    );
+    assert!(
+        ratatoskr_core::save_skill_draft(
+            &f.settings,
+            None,
+            "review-code",
+            "invalid yaml",
+            "enabled=false",
+            &after.markdown_hash,
+            &after.metadata_hash
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(f.settings.source.join("skills/review-code/skill.toml")).unwrap(),
+        metadata
+    );
+    assert_eq!(
+        fs::read_to_string(f.settings.source.join("skills/review-code/SKILL.md")).unwrap(),
+        changed
+    );
+}
+
+#[test]
+fn structured_machine_and_local_settings_keep_comments_and_refuse_concurrent_changes() {
+    let f = Fixture::new();
+    let file = "machines/test.toml";
+    let path = f.settings.source.join(file);
+    let old = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("# Keep profile comment\n{old}")).unwrap();
+    let mut doc = ratatoskr_core::structured_source(&f.settings, file).unwrap();
+    doc.values.insert(
+        "capabilities".into(),
+        toml::Value::try_from(vec!["gopass"]).unwrap(),
+    );
+    ratatoskr_core::save_structured_source(&f.settings, file, &doc.hash, doc.values.clone())
+        .unwrap();
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.starts_with("# Keep profile comment\n"));
+    assert!(saved.contains("[paths]\nvault='/knowledge'"));
+    assert!(
+        ratatoskr_core::save_structured_source(&f.settings, file, &doc.hash, doc.values).is_err()
+    );
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    let original = format!("# Local settings\n{}", fs::read_to_string(&config).unwrap());
+    fs::write(&config, &original).unwrap();
+    let mut local = ratatoskr_core::local_configuration(&config).unwrap();
+    local.settings.updates.time = "03:15".into();
+    ratatoskr_core::save_local_configuration(&config, &local.settings, &local.hash).unwrap();
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        original.replace("00:00", "03:15")
+    );
+    assert!(
+        ratatoskr_core::save_local_configuration(&config, &local.settings, &local.hash).is_err()
+    );
+}
+
+#[test]
+fn preview_line_alignment_does_not_mark_identical_text_after_omitted_conditions() {
+    assert_eq!(
+        ratatoskr_core::different_preview_lines(
+            "same\nagent specific\nlast\n",
+            &["same\nlast\n".into()]
+        ),
+        vec![1]
+    );
+}
+
+#[test]
+fn rename_updates_variant_identities_and_keeps_resources_and_metadata() {
+    let f = Fixture::new();
+    f.write(
+        "skills/review-code/variants/os=windows/SKILL.md",
+        "---\nname: review-code\ndescription: Windows guidance\n---\nWindows steps\n",
+    );
+    f.write("skills/review-code/resource.txt", "untouched bytes\r\n");
+    let before = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    ratatoskr_core::rename_skill(
+        &f.settings,
+        None,
+        "review-code",
+        "review-changes",
+        &before.markdown_hash,
+    )
+    .unwrap();
+    assert!(!f.settings.source.join("skills/review-code").exists());
+    assert_eq!(
+        fs::read_to_string(f.settings.source.join("skills/review-changes/resource.txt")).unwrap(),
+        "untouched bytes\r\n"
+    );
+    assert!(
+        fs::read_to_string(
+            f.settings
+                .source
+                .join("skills/review-changes/variants/os=windows/SKILL.md")
+        )
+        .unwrap()
+        .contains("name: \"review-changes\"")
+    );
+    assert_eq!(
+        fs::read_to_string(f.settings.source.join("skills/review-changes/skill.toml")).unwrap(),
+        before.metadata
+    );
+}

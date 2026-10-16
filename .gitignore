@@ -5,3 +5,6 @@
 /desktop/src-tauri/binaries/
 .DS_Store
 *.log
+
+/desktop/test-results/
+/desktop/playwright-report/

@@ -115,7 +115,7 @@ pub fn write_source_file(
     atomic_write(&settings.source.join(path), text.as_bytes())
 }
 
-fn source(settings: &Settings, project: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn source(settings: &Settings, project: Option<&Path>) -> Result<PathBuf> {
     settings.validate()?;
     if let Some(root) = project {
         ensure!(
@@ -171,7 +171,7 @@ pub fn list_skills(settings: &Settings) -> Result<Vec<SkillEntry>> {
     Ok(result)
 }
 
-fn hash(bytes: &[u8]) -> String {
+pub(crate) fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -267,14 +267,17 @@ pub fn disable_skill(
     disabled: bool,
 ) -> Result<()> {
     let document = read_skill(settings, project, name)?;
-    let mut metadata: toml::Table = toml::from_str(&document.metadata)?;
-    metadata.insert("enabled".into(), (!disabled).into());
+    let metadata = crate::patch_toml(
+        &document.metadata,
+        &["enabled".into()],
+        Some(&(!disabled).into()),
+    )?;
     write_skill_file(
         settings,
         project,
         name,
         "skill.toml",
-        &toml::to_string_pretty(&metadata)?,
+        &metadata,
         &document.metadata_hash,
     )
 }
@@ -326,7 +329,7 @@ pub(crate) fn validate_source_replacement(
     Ok(())
 }
 
-fn draft_workspace(
+pub(crate) fn draft_workspace(
     settings: &Settings,
     selected_source: &Path,
 ) -> Result<(tempfile::TempDir, Settings)> {
@@ -375,6 +378,7 @@ pub fn preview_targets(settings: &Settings) -> Result<Vec<PreviewTarget>> {
 pub struct PreviewFile {
     pub path: PathBuf,
     pub text: Option<String>,
+    pub body: Option<String>,
 }
 
 /// Uses the deployment renderer on an isolated draft, with all host writes disabled.

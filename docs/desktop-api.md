@@ -1,6 +1,6 @@
 # Desktop command API (0.2.0)
 
-PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for the UI redesign. The vanilla TypeScript interface is a temporary command exercise surface; the Svelte/CodeMirror redesign is a separate PR. All command failures propagate as rejected invocations with contextual error text.
+PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for the UI redesign. The desktop uses Svelte 5 and CodeMirror 6; structured edits use the same Rust core as the CLI. All command failures propagate as rejected invocations with contextual error text.
 
 ## Conflict review and recovery
 
@@ -36,3 +36,27 @@ Analysis diagnoses parser errors, unknown active variables, malformed substituti
 - `login_enabled()` reads the Tauri autostart state. `set_login_enabled({enabled})` changes it explicitly and returns the verified state. Plugin registration never enables autostart by itself; default is off.
 
 Existing `read_workspace`, source editing, configuration, project, sync/apply and update commands remain available. Nightly updates must continue to guard all unsaved editor/form state in the replacement UI.
+
+
+## Structured desktop editing
+
+- `editor_view({markdown, metadata})` returns description, UTF-16 frontmatter range and parsed metadata values. It does not rewrite source.
+- `edit_skill_draft({markdown, metadata, edit})` returns draft Markdown/metadata only. `edit.kind` is `description` (`value`), `metadata` (`path`, nullable typed `value`), `only` (`from`, `to`, `selectors`, `existing`), `remove-only` (`from`), or `variable` (`from`, `to`, `name`). Conditions use the shared parser. All offsets are UTF-16 source offsets, before display newline normalization.
+- `save_skill_draft({name, project, markdown, metadata, markdownHash, metadataHash})` validates both drafts together, checks both hashes, and saves only changed files under the operation lock. A second-file failure rolls back the first file when possible; process termination is not a two-file transaction.
+- `create_desktop_skill({name, project, description})` constructs valid frontmatter in Rust. `rename_source_skill({name, project, newName, expectedHash})` explicitly renames the directory and identity.
+- `read_structured_source({file})` returns `{file, hash, values}`. `save_structured_source({file, hash, values})` changes only differing fields and validates the candidate content before saving. Existing comments, unrelated values and separators are preserved.
+- `read_local_settings()` returns `{settings, hash}`. `save_local_settings({candidate, expectedHash})` rejects stale configuration and preserves unrelated source formatting. Workspace/project locations require their dedicated actions.
+- `list_values({machine, harness})`, `list_skill_resources({name, project})` and `skill_target_statuses()` provide the pickers, file panel and library inclusion indicators.
+- `add_skill_resource({name, project, file, from})` imports a new resource/variant after isolated validation; existing files are refused.
+- `preview_skill` files add `body` for the core-stripped Markdown body of SKILL.md. `preview_install_path({name, project, machine, harness})` gives the selected profile's real installation destination. `different_preview_lines({text, versions})` returns aligned line indices for preview highlighting.
+- `choose_folder()` and `choose_resource()` use native dialogs, returning a selected path or null on cancellation.
+
+## Legacy Codex cut-over
+
+Snapshots include `legacy` duplicates when an enabled local Codex profile installs outside the legacy skill root. `preview_legacy_resolution({name})` returns every file's SHA-256/executable state and the proposed same-volume archive destination. `resolve_legacy({expected})` accepts the complete serialized preview, rechecks it under the operation lock, saves a receipt and renames the full directory. The receipt includes any selected legacy ownership; only archived paths are detached, and a failed ownership update rolls the rename back. It refuses changed content, symlinks, existing backups or redirected archives. Live core Apply also blocks duplicates, including CLI and scheduled sync. Recovery uses the archive receipt; these archives do not use the workspace restore format.
+
+## Structured alert settings
+
+Local settings support optional `[alert]` with `kind = "system"`, `"pushover"` (`token_env`, `user_env`), or `"ntfy"` (`url`, optional `token_env`). Custom commands continue to use `alert_command` argv with no shell. Delivery failures preserve retryable ledger state.
+
+`update_desktop({install})` returns `{message, available, installed}` from the native updater. Settings offers installation only after an available result and restart only after a successful installation; it does not infer state from the message text.

@@ -6,6 +6,12 @@ One Git source for your AI-agent skills and instructions, adapted to each machin
 
 Ratatoskr is a Rust command-line helper with an optional Tauri 2 desktop app. The helper runs with the window closed. Your content lives in a separate repository, which can be private. The tool is MIT licensed.
 
+## Desktop interface
+
+The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlighting, editable conditional headers, variable pills, targeting chips and a Rust-rendered live preview. Description, targeting, agent definitions, machine values and settings have forms. **You never need to edit template tags or TOML by hand.** Markdown source mode is optional. Light/dark appearance follows the OS.
+
+[Desktop walkthrough and design decisions](docs/desktop-ui.md) · [Light/dark screenshots](docs/screenshots/README.md)
+
 ## Features in 0.2.0
 
 - Render machine, OS, harness, and capability conditions; substitute variables; select file variants; add harness-specific frontmatter.
@@ -13,7 +19,7 @@ Ratatoskr is a Rust command-line helper with an optional Tauri 2 desktop app. Th
 - Create, clone, or connect a content repository. Create, edit, enable, disable and archive source skills. Validate skill drafts as you type, preview the Rust-rendered result for an enabled machine × harness, and detect stale editor versions.
 - Add documented Claude Code, Codex, Gemini CLI, GitHub Copilot CLI and OpenCode presets, or define custom targets through a form. The form writes ordinary source definitions; machine profiles control which tags are enabled. See [verified paths and omissions](docs/agent-presets.md).
 - Render global and registered project skills. Report uncommitted and unpushed project skill-source work.
-- Install or remove a per-user launchd or Windows Task Scheduler job. Each run fast-forwards a clean content checkout, applies it, and exits. Optional command-based failure/recovery alerts are deduplicated. View the last run, current ledger errors and bounded logs in the app; helper paths are detected automatically.
+- Install or remove a per-user launchd or Windows Task Scheduler job. Each run fast-forwards a clean content checkout, applies it, and exits. System, Pushover, ntfy or command-based failure/recovery alerts are deduplicated. View the last run, current ledger errors and bounded logs in the app; helper paths are detected automatically.
 - Check and install cryptographically signed helper and desktop updates, with nightly automatic updates enabled by default. A release workflow builds signed draft releases for Apple Silicon, Intel Mac, and Windows x64.
 
 **Pre-1.0:** version 0.2.0 is intended for the first installed auto-update acceptance test after 0.1.0. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
@@ -30,7 +36,7 @@ npm ci
 npm run tauri dev
 ```
 
-To package a native app, run `npm run tauri build` inside `desktop`. The build prepares and bundles the independent helper. The browser-only `npm run dev` preview has no filesystem access.
+To package a native app, run `npm run tauri build` inside `desktop`. The build prepares and bundles the independent helper. The browser-only `npm run dev` preview has no filesystem access. The screenshot tests install mocked IPC using disposable public fixtures, never your real configuration.
 
 The executable is `ratatoskr`. `init --create` creates a Git content repository with a profile for the current host, staging enabled, and Claude/Codex presets. Choose an absolute source directory and a lowercase machine identifier. `init` without `--create` connects an existing checkout; `--remote` clones a Git URL into a new directory. The selected machine must exist under `machines/`. Initialization never applies outputs.
 
@@ -43,6 +49,24 @@ ratatoskr status
 ```
 
 Use `--config` to select a local configuration or set the absolute `RATATOSKR_CONFIG` environment variable. Both the desktop app and helper respect it. `--json` emits structured plans and status. `status` returns 1 for pending changes, conflicts, project inspection problems, or uncommitted/unpushed skill work; operational errors return 2.
+
+## Development checks
+
+```sh
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --workspace
+cd desktop
+npm ci
+npm run format:check
+npm test
+npm run check
+npm run build
+npx playwright install chromium
+npm run test:screenshots
+```
+
+`cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. Running background jobs requires `npm run prepare:helper -- --debug` from `desktop/`. Native packaging still requires and bundles the real helper; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
 ## Content and projects
 
@@ -64,9 +88,17 @@ Use a dedicated clean deployment checkout with a Git upstream for scheduled sync
 
 `ratatoskr schedule plan` previews an OS job using the detected helper. `--helper` can select a different absolute executable path. `schedule install` registers it; `schedule remove` removes only the recorded, unchanged job. `--seconds` accepts 60–86400 (default 60). The desktop app exposes the same operations. No resident watcher is installed. Pending project skill commits or pushes also return a sync error and use the configured alert command.
 
+**Settings → Alerts** provides system notifications, Pushover, ntfy and a custom command. Pushover credentials and optional ntfy bearer tokens are read from named environment variables in the helper’s environment; local settings store those names, not credential values. System delivery uses macOS notifications, Windows toast notifications or Linux `notify-send`. Delivery failures remain visible and retryable.
+
 `alert_command` in local configuration is an argv array. Ratatoskr appends a plain-English message and executes it without a shell. New failures alert immediately, unchanged failures repeat after 24 hours, and recovery alerts once. Failed delivery remains an error. Without an alert command, failures still return nonzero and persist in the error ledger and run history. `ratatoskr job-status` returns the last start/completion/result, sync and updater ledger errors, the last 64 outcomes and the last 64 KiB of each scheduler log. A start without a completion record is shown explicitly.
 
 For existing unmanaged imports, the legacy bulk `ratatoskr adopt` backs up existing matching target directories and global files with corresponding source content before recording ownership. It does not write generated output. Review `plan` before applying: adopted files absent from source are scheduled for removal. `ratatoskr restore` accepts the backup directory printed by adoption, verifies every stored hash, and refuses current hand edits or unmanaged overwrite. Archiving a source skill moves it into `.ratatoskr-archive` on the same volume.
+
+## Codex legacy cut-over
+
+Codex's preset installs skills in `.agents/skills`. Codex also discovers `~/.codex/skills`; same-named copies can both appear. When Codex is enabled, **Review changes** lists legacy duplicates even in staging. Live Apply (including CLI/background sync) refuses to proceed until they are resolved.
+
+The explicit **Review legacy copy** action previews every file and fingerprint, including runtime artifacts. **Back up and archive** moves the entire old directory on the same volume into `~/.codex/ratatoskr-backups/`, outside scanned skill folders, and saves a JSON receipt, including any prior Ratatoskr ownership records for that skill. Archived paths are released from the old ownership manifest so the new target can be applied. No files are silently deleted. Changed files or a redirected backup invalidate the preview. For manual recovery, move the archived directory back to the original path recorded in its receipt after checking for an existing destination. This archive is separate from `ratatoskr restore` workspace backups.
 
 ## Resolve conflicts
 
@@ -90,7 +122,7 @@ Actions are `copy-back`, `reinstall` and `adopt`. `conflict source "$installed_f
 
 ## Updates and operating limits
 
-Official GitHub Releases and the trusted public signing key are built into both applications. No per-machine key setup is needed. Automatic updates default to **00:00 local time**; change the time or switch them off in the desktop Signed updates panel or local TOML:
+Official GitHub Releases and the trusted public signing key are built into both applications. No per-machine key setup is needed. Automatic updates default to **00:00 local time**; change the time or switch them off in **Settings → Updates**. The equivalent configuration is:
 
 ```toml
 [updates]

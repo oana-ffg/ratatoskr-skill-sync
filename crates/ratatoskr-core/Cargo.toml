@@ -7,6 +7,8 @@ repository.workspace = true
 description = "Conditional agent skill rendering and ownership-protected installation"
 
 [dependencies]
+toml_edit = "0.25"
+yaml-edit = "0.3.2"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -7,6 +7,7 @@ repository.workspace = true
 publish = false
 
 [build-dependencies]
+serde_json.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -21,3 +22,4 @@ tauri-plugin-updater = { version = "2.14", default-features = false, features = 
 chrono = "0.4"
 
 tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
