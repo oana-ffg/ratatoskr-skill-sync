@@ -117,6 +117,10 @@
   {#if statusError}<p role="alert" class="error-message">
       Target status unavailable: {statusError}
     </p>{/if}
+  <p class="small muted">
+    Applies to: coloured dots match at least one enabled machine; grey dots have
+    no matching machine. Hover for each agent’s status.
+  </p>
   <div class="skill-list">
     <div class="list-heading">
       <span>SKILL</span><span>SCOPE</span><span>APPLIES TO</span><span
@@ -127,16 +131,18 @@
         <button class="skill-title" onclick={() => onopen(skill)}
           ><span class="skill-icon">◇</span><span
             ><strong>{skill.name}</strong><small
-              >{skill.enabled ? "Ready to share" : "Disabled"}</small
+              >{skill.enabled
+                ? "Enabled for matching targets"
+                : "Disabled"}</small
             ></span
-          ><span class="row-arrow">↗</span></button
+          ></button
         ><span class="muted"
           >{skill.project ? basename(skill.project) : "Global"}</span
         >
         <div class="target-dots">
           {#each [...new Set(workspace.preview_targets.map((t) => t.harness))] as agent}<span
               class="target-indicator"
-              title={`${agentName(agent)}: ${statuses[`${skill.project ?? ""}:${skill.name}`]?.[agent] === undefined ? "checking" : statuses[`${skill.project ?? ""}:${skill.name}`]?.[agent] ? "included" : "excluded"}`}
+              title={`${agentName(agent)}: ${statuses[`${skill.project ?? ""}:${skill.name}`]?.[agent] === undefined ? "checking" : statuses[`${skill.project ?? ""}:${skill.name}`]?.[agent] ? "Matches an enabled machine" : "No enabled machine matches"}`}
               ><i
                 class="dot {agent}"
                 class:off={!statuses[`${skill.project ?? ""}:${skill.name}`]?.[
@@ -164,7 +170,10 @@
     </div>{/if}
   <div class="library-footer">
     <span>◈ Source controlled · local first</span><span
-      >{workspace.preview_targets.length} agent × machine targets</span
+      >{workspace.preview_targets.length} agent × machine {workspace
+        .preview_targets.length === 1
+        ? "target"
+        : "targets"}</span
     >
   </div>
 </section>

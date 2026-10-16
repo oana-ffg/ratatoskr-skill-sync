@@ -75,8 +75,12 @@
           >
         </div>
         <p class="muted">
-          {project.changed_files} uncommitted skill files · {project.outgoing_commits ??
-            "Unknown"} unpushed commits
+          {project.changed_files} uncommitted skill {project.changed_files === 1
+            ? "file"
+            : "files"} · {project.outgoing_commits ?? "Unknown"} unpushed {project.outgoing_commits ===
+          1
+            ? "commit"
+            : "commits"}
         </p>
         {#if project.error}<p role="alert" class="error-message">
             {project.error}

@@ -1,59 +1,32 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   line-height: 1.55;
   font-weight: 400;
-  --bg: #f6f7f4;
-  --surface: #fff;
-  --surface-2: #f1f3ee;
-  --surface-3: #e9ede5;
-  --sidebar: #eef1e9;
-  --text: #243026;
-  --muted: #707d70;
-  --border: #dce2d6;
-  --accent: #397b32;
-  --accent-soft: #e0efd8;
-  --accent-solid: #3c7735;
-  --button-text: #fff;
-  --blue: #2968b6;
-  --blue-soft: #e7f0fc;
-  --orange: #ad5d24;
-  --orange-soft: #fff0e3;
-  --purple: #8254b0;
-  --purple-soft: #f1eafa;
-  --amber: #9b6812;
-  --amber-soft: #fff5dd;
-  --danger: #b43f39;
-  --danger-soft: #fff0ee;
-  --shadow: 0 20px 80px #25342125;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101510;
-    --surface: #161d17;
-    --surface-2: #1c241d;
-    --surface-3: #242f25;
-    --sidebar: #151d16;
-    --text: #e2e9df;
-    --muted: #94a390;
-    --border: #2e3a2e;
-    --accent: #a7d88c;
-    --accent-soft: #263b22;
-    --accent-solid: #a6d58b;
-    --button-text: #152512;
-    --blue: #8ebdff;
-    --blue-soft: #1c2b3c;
-    --orange: #edaa72;
-    --orange-soft: #3a2b1e;
-    --purple: #c1a0e9;
-    --purple-soft: #2e253c;
-    --amber: #edbc62;
-    --amber-soft: #352d1b;
-    --danger: #f2a29b;
-    --danger-soft: #392723;
-    --shadow: 0 24px 100px #0008;
-  }
+  --bg: #101510;
+  --surface: #161d17;
+  --surface-2: #1c241d;
+  --surface-3: #242f25;
+  --sidebar: #151d16;
+  --text: #e2e9df;
+  --muted: #94a390;
+  --border: #2e3a2e;
+  --accent: #a7d88c;
+  --accent-soft: #263b22;
+  --accent-solid: #a6d58b;
+  --button-text: #152512;
+  --blue: #8ebdff;
+  --blue-soft: #1c2b3c;
+  --orange: #edaa72;
+  --orange-soft: #3a2b1e;
+  --purple: #c1a0e9;
+  --purple-soft: #2e253c;
+  --amber: #edbc62;
+  --amber-soft: #352d1b;
+  --danger: #f2a29b;
+  --danger-soft: #392723;
+  --shadow: 0 24px 100px #0008;
 }
 * {
   box-sizing: border-box;
@@ -237,11 +210,15 @@ details[open] > summary {
 }
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 .sidebar {
-  position: fixed;
-  inset: 0 auto 0 0;
+  position: sticky;
+  top: 0;
+  height: 100%;
+  flex-shrink: 0;
+  overflow-y: auto;
   width: 216px;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
@@ -339,12 +316,15 @@ nav button.active {
   font-weight: 600;
 }
 .workspace {
-  margin-left: 216px;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
+  min-height: 0;
 }
 .topbar {
   height: 72px;
+  flex-shrink: 0;
   position: sticky;
   top: 0;
   z-index: 5;
@@ -410,7 +390,9 @@ nav button.active {
   margin-right: 4px;
 }
 .main-content {
-  min-height: calc(100vh - 72px);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 .page {
   padding: 36px 36px 48px;
@@ -527,6 +509,19 @@ nav button.active {
   gap: 12px;
   align-items: end;
   flex-wrap: wrap;
+}
+.folder-picker {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.folder-picker input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+}
+.folder-picker button {
+  flex-shrink: 0;
 }
 .form-row > label {
   flex: 1;
@@ -674,11 +669,6 @@ nav button.active {
   font-size: 22px;
   color: var(--accent);
 }
-.row-arrow {
-  color: var(--muted);
-  margin-left: auto;
-  font-size: 15px;
-}
 .target-dots {
   display: flex;
   gap: 12px;
@@ -793,7 +783,7 @@ nav button.active {
 .editor-layout {
   display: grid;
   grid-template-columns: minmax(440px, 1fr) 340px;
-  min-height: calc(100vh - 72px);
+  min-height: calc(100dvh - 72px);
 }
 .editor-source {
   padding: 28px;
@@ -922,12 +912,26 @@ nav button.active {
   color: var(--muted);
   font-size: 9px;
 }
-.only-body {
-  background: color-mix(in srgb, var(--blue-soft) 50%, transparent);
+.cm-line.only-band {
+  --band-color: var(--blue);
+  --band-background: var(--blue-soft);
+  border-left: 3px solid var(--band-color);
+  background: var(--band-background);
 }
-.only-body.inactive {
-  opacity: 0.65;
-  background: var(--purple-soft);
+.cm-line.only-band.claude {
+  --band-color: var(--orange);
+  --band-background: var(--orange-soft);
+}
+.cm-line.only-band.os {
+  --band-color: var(--purple);
+  --band-background: var(--purple-soft);
+}
+.cm-line.only-band.machine {
+  --band-color: var(--accent);
+  --band-background: var(--accent-soft);
+}
+.cm-line.only-band.inactive {
+  background: color-mix(in srgb, var(--band-background) 65%, var(--bg));
 }
 .value-pill {
   display: inline-block;
@@ -1197,10 +1201,6 @@ nav button.active {
 .settings-page .time-field {
   max-width: 240px;
 }
-.theme-symbol {
-  font-size: 30px;
-  color: var(--muted);
-}
 dialog {
   background: var(--surface);
   color: var(--text);
@@ -1291,9 +1291,6 @@ dialog::backdrop {
     width: 184px;
     padding: 24px 12px;
   }
-  .workspace {
-    margin-left: 184px;
-  }
   .brand {
     padding-left: 8px;
     gap: 6px;
@@ -1338,9 +1335,6 @@ dialog::backdrop {
   .sidebar {
     width: 64px;
     padding: 24px 8px;
-  }
-  .workspace {
-    margin-left: 64px;
   }
   .brand {
     padding: 0 6px 32px;
@@ -1478,4 +1472,29 @@ dialog::backdrop {
 .only-header.claude {
   background: var(--orange-soft);
   color: var(--orange);
+}
+
+.diff-line {
+  min-height: 1.7em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-context,
+.diff-missing {
+  color: var(--muted);
+}
+.diff-missing {
+  font-style: italic;
+}
+.diff-edited {
+  background: var(--surface-2);
+}
+.word-change {
+  font-weight: 650;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 2px;
+}
+.neutral .word-change {
+  background: var(--blue-soft);
+  color: var(--blue);
 }

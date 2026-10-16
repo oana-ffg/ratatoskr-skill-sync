@@ -8,12 +8,21 @@
     basename,
     errorText,
     relativeTime,
+    reviewSummary,
     type Snapshot,
     type Skill,
   } from "./api";
   import { runNightlyUpdate, runStartupUpdate } from "./update-policy";
   import Library from "./views/Library.svelte";
-  import SkillEditor from "./views/SkillEditor.svelte";
+  import type SkillEditor from "./views/SkillEditor.svelte";
+  let editorModule: ReturnType<typeof importEditor> | undefined;
+  const importEditor = () => import("./views/SkillEditor.svelte");
+  function loadEditor() {
+    return (editorModule ??= importEditor().catch((e) => {
+      editorModule = undefined;
+      throw e;
+    }));
+  }
   import Review from "./views/Review.svelte";
   import Projects from "./views/Projects.svelte";
   import Agents from "./views/Agents.svelte";
@@ -33,6 +42,7 @@
   let skill = $state<Skill | null>(null);
   let scope = $state("all");
   let dirty = $state(false);
+  let unsaved = $state(false);
   let epoch = $state(0);
   let busy = $state(false);
   let error = $state("");
@@ -66,8 +76,12 @@
     workspace = w;
   }
   function navigate(action: () => void) {
-    if (dirty) pending = action;
-    else action();
+    const leave = () => {
+      unsaved = false;
+      action();
+    };
+    if (dirty) pending = leave;
+    else leave();
   }
   function open(s: Skill) {
     navigate(() => {
@@ -191,11 +205,9 @@
           ><span class="nav-icon">{item.icon}</span
           >{item.name}{#if item.name === "Skills" && workspace}<span
               class="nav-count">{workspace.skills.length}</span
-            >{:else if item.name === "Review changes" && workspace && workspace.plan.changes.length + workspace.plan.conflicts.length + workspace.legacy.length}<span
+            >{:else if item.name === "Review changes" && workspace && reviewSummary(workspace).total}<span
               class="nav-count review-count"
-              >{workspace.plan.changes.length +
-                workspace.plan.conflicts.length +
-                workspace.legacy.length}</span
+              >{reviewSummary(workspace).total}</span
             >{/if}</button
         >{/each}
     </nav>
@@ -238,16 +250,13 @@
         >{#if skill}<span>›</span><strong>{skill.name}</strong>{/if}
       </div>
       <div class="top-actions">
-        {#if dirty}<span class="unsaved-indicator">Unsaved changes</span
-          >{/if}<button disabled={!dirty || busy} onclick={discard}
-          >Discard</button
-        ><button
-          class="primary"
-          disabled={!dirty ||
-            busy ||
-            !(skill || screen === "Agents & machines" || screen === "Settings")}
-          onclick={save}>{busy ? "Saving…" : "Save"}</button
-        >
+        {#if unsaved && (skill || screen === "Agents & machines" || screen === "Settings")}<span
+            class="unsaved-indicator">Unsaved changes</span
+          ><button disabled={busy} onclick={discard}>Discard</button><button
+            class="primary"
+            disabled={busy}
+            onclick={save}>{busy ? "Saving…" : "Save"}</button
+          >{/if}
       </div>
     </header>
     {#if error}<div class="global-error" role="alert">
@@ -308,15 +317,20 @@
                   void refresh().catch(fail);
                 }}>Retry loading workspace</button
               >{/if}
-          </section>{:else if screen === "Skills"}{#if skill}{#key `${skill.project}:${skill.name}`}<SkillEditor
-                bind:this={editor}
-                {skill}
-                {workspace}
-                onupdate={update}
-                onerror={fail}
-                ondirty={(v) => (dirty = v)}
-                onrenamed={(s) => (skill = s)}
-              />{/key}{:else}<Library
+          </section>{:else if screen === "Skills"}{#if skill}{#key `${skill.project}:${skill.name}`}{#await loadEditor()}
+                <p class="empty-state">Opening editor…</p>
+              {:then { default: SkillEditor }}<SkillEditor
+                  bind:this={editor}
+                  {skill}
+                  {workspace}
+                  onupdate={update}
+                  onerror={fail}
+                  ondirty={(v) => (dirty = v)}
+                  onrenamed={(s) => (skill = s)}
+                  onunsaved={(value) => (unsaved = value)}
+                />{:catch e}<p role="alert" class="error-message">
+                  Editor failed to load: {errorText(e)}
+                </p>{/await}{/key}{:else}<Library
               {workspace}
               initialScope={scope}
               onopen={open}
@@ -339,6 +353,7 @@
             }}
           />{:else if screen === "Agents & machines"}<Agents
             bind:this={agents}
+            onunsaved={(value) => (unsaved = value)}
             {workspace}
             onupdate={update}
             onerror={fail}
@@ -350,6 +365,7 @@
             ondirty={(v) => (dirty = v)}
           />{:else if screen === "Settings"}<Settings
             bind:this={settings}
+            onunsaved={(value) => (unsaved = value)}
             {workspace}
             onupdate={update}
             onerror={fail}

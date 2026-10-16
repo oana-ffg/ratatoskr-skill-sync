@@ -251,3 +251,18 @@ export const emptyAnalysis: Analysis = {
   variables: [],
   diagnostics: [],
 };
+
+/** The plan also lists blocked writes as changes; count each conflict only once. */
+export function reviewSummary(workspace: Snapshot) {
+  const readyChanges = workspace.plan.changes.filter(
+    (change) =>
+      !workspace.plan.conflict_details.some(
+        (conflict) =>
+          change.path === conflict.path ||
+          change.path.startsWith(`${conflict.path}/`) ||
+          change.path.startsWith(`${conflict.path}\\`),
+      ),
+  );
+  const decisions = workspace.plan.conflicts.length + workspace.legacy.length;
+  return { readyChanges, decisions, total: readyChanges.length + decisions };
+}

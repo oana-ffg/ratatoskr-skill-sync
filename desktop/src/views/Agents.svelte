@@ -10,6 +10,8 @@
     type Preset,
     type AgentTarget,
   } from "../api";
+  import FolderField from "../components/FolderField.svelte";
+  import Capabilities from "../components/Capabilities.svelte";
   import Chips from "../components/Chips.svelte";
   import Dialog from "../components/Dialog.svelte";
   let {
@@ -17,11 +19,13 @@
     onupdate,
     onerror,
     ondirty,
+    onunsaved,
   }: {
     workspace: Snapshot;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
+    onunsaved?: (v: boolean) => void;
   } = $props();
   let agents = $state<StructuredSource | null>(null);
   let profiles = $state<StructuredSource[]>([]);
@@ -40,6 +44,7 @@
   let valueNames = $state<Record<string, string>>({});
   const serialized = $derived(JSON.stringify([agents, profiles]));
   const dirty = $derived(!!originals && serialized !== originals);
+  $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || adding !== null || busy));
   onMount(() => {
     void load();
@@ -172,7 +177,11 @@
           <p class="muted">
             Enabled on {profiles.filter((p) =>
               array(p, "harnesses").includes(tag),
-            ).length} machines
+            ).length}
+            {profiles.filter((p) => array(p, "harnesses").includes(tag))
+              .length === 1
+              ? "machine"
+              : "machines"}
           </p>
           <details>
             <summary>Agent folders & instructions</summary><label
@@ -248,7 +257,12 @@
               >Live</option
             ></select
           ></label
-        ><label>Home folder<input bind:value={profile.values.home} /></label>
+        ><FolderField
+          label="Home"
+          value={(profile.values.home ?? "") as string}
+          onchange={(value) => (profile.values.home = value)}
+          {onerror}
+        />
       </div>
       <Chips
         label="Agents"
@@ -257,16 +271,10 @@
         dimension="agent"
         onchange={(v) => (profile.values.harnesses = v)}
       />
-      <label
-        >Capabilities <small>Separate names with commas</small><input
-          value={array(profile, "capabilities").join(", ")}
-          onchange={(e) =>
-            (profile.values.capabilities = e.currentTarget.value
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean))}
-        /></label
-      >
+      <Capabilities
+        selected={array(profile, "capabilities")}
+        onchange={(values) => (profile.values.capabilities = values)}
+      />
       <div class="section-heading">
         <h3>
           Values <span class="muted small">Named paths for this machine</span>
@@ -275,14 +283,14 @@
       {#each Object.keys((profile.values.paths ?? {}) as Table) as key}<div
           class="key-value-row"
         >
-          <label
-            >{title(key)}<input
-              value={paths(profile)[key] as string}
-              oninput={(e) => (paths(profile)[key] = e.currentTarget.value)}
-            /></label
-          ><button
+          <FolderField
+            label={title(key)}
+            value={paths(profile)[key] as string}
+            onchange={(value) => (paths(profile)[key] = value)}
+            {onerror}
+          /><button
             class="subtle"
-            aria-label={`Remove ${title(key)} value from ${machineName(profile)}`}
+            aria-label={`Remove ${title(key)} value from ${title(machineName(profile))}`}
             onclick={() => {
               delete paths(profile)[key];
             }}>Remove</button

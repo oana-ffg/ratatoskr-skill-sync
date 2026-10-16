@@ -6,11 +6,13 @@
     onupdate,
     onerror,
     ondirty,
+    onunsaved,
   }: {
     workspace: Snapshot;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
+    onunsaved?: (v: boolean) => void;
   } = $props();
   let settings = $state<LocalSettings | null>(null);
   let original = $state("");
@@ -18,6 +20,8 @@
   let login = $state(false);
   let savedLogin = $state(false);
   let message = $state("");
+  let updateAvailable = $state(false);
+  let updateInstalled = $state(false);
   let busy = $state(false);
   let alertKind = $state("none");
   let alertFields = $state<Table>({});
@@ -26,6 +30,7 @@
     JSON.stringify({ settings, login, alertKind, alertFields, command }),
   );
   const dirty = $derived(!!original && serialized !== original);
+  $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy));
   onMount(() => {
     void load();
@@ -93,7 +98,14 @@
     }
     busy = true;
     try {
-      message = await api.command<string>("update_desktop", { install });
+      const result = await api.command<{
+        message: string;
+        available: boolean;
+        installed: boolean;
+      }>("update_desktop", { install });
+      message = result.message;
+      updateAvailable = result.available;
+      updateInstalled ||= result.installed;
     } catch (e) {
       onerror(e);
     } finally {
@@ -143,25 +155,22 @@
       <div class="form-row">
         <button disabled={busy || dirty} onclick={() => update(false)}
           >Check for updates</button
-        ><button disabled={busy || dirty} onclick={() => update(true)}
-          >Install signed update</button
-        ><button
-          disabled={dirty}
-          onclick={() => api.command("restart_desktop").catch(onerror)}
-          >Restart app</button
-        >
+        >{#if updateAvailable && !updateInstalled}<button
+            disabled={busy || dirty}
+            onclick={() => update(true)}>Install signed update</button
+          >{/if}{#if updateInstalled}<button
+            disabled={busy || dirty}
+            onclick={() => api.command("restart_desktop").catch(onerror)}
+            >Restart app</button
+          >{/if}
       </div>
       {#if message}<p role="status" class="success-message">{message}</p>{/if}
     </article>
     <article class="panel">
       <div class="section-heading">
         <div>
-          <h2>Startup & appearance</h2>
-          <p class="muted">
-            The desktop follows your system’s light or dark theme.
-          </p>
+          <h2>Startup</h2>
         </div>
-        <span class="theme-symbol">◐</span>
       </div>
       <label class="checkbox-label"
         ><input type="checkbox" bind:checked={login} />Open Ratatoskr at login</label

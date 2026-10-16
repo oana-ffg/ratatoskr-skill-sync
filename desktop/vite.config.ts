@@ -6,10 +6,14 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Language packages depend on the editor runtime; keep that boundary acyclic.
           if (
-            id.includes("/node_modules/@codemirror/") ||
-            id.includes("/node_modules/@lezer/")
+            /\/node_modules\/(?:@codemirror\/lang-|@lezer\/(?:markdown|html|css|javascript)\/)/.test(
+              id,
+            )
           )
+            return "editor-languages";
+          if (/\/node_modules\/(?:@codemirror|@lezer)\//.test(id))
             return "editor";
         },
       },

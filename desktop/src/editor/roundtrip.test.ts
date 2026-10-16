@@ -2,7 +2,7 @@ import { SourceText } from "./source";
 import { test, expect } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { present, structuredDecorations } from "./decorations";
+import { present, structuredDecorations, decorationField } from "./decorations";
 import { fixture, oracle } from "../../tests/fixture";
 import type { Analysis } from "../api";
 test("CodeMirror decorations never change saved bytes, commands preserve CRLF exactly", () => {
@@ -28,7 +28,24 @@ test("CodeMirror decorations never change saved bytes, commands preserve CRLF ex
   expect(
     view.state.sliceDoc(0, view.state.doc.length).replaceAll("\n", "\r\n"),
   ).toBe(original);
-  expect(view.dom.querySelectorAll(".only-header")).toHaveLength(2);
+  expect(view.dom.querySelectorAll(".only-header")).toHaveLength(
+    analysis.blocks.length,
+  );
+  const decorated = new Set<number>();
+  const bands = view.state.field(decorationField);
+  bands.between(0, view.state.doc.length, (from, _to, decoration) => {
+    if (decoration.spec.class?.startsWith("only-band")) decorated.add(from);
+  });
+  for (const block of analysis.blocks) {
+    const first = view.state.doc.lineAt(
+      mapping.toEditor(block.opening.from),
+    ).number;
+    const last = view.state.doc.lineAt(
+      mapping.toEditor(block.closing.to),
+    ).number;
+    for (let number = first; number <= last; number++)
+      expect(decorated.has(view.state.doc.line(number).from)).toBe(true);
+  }
   expect(view.dom.querySelector(".value-pill")).toHaveTextContent(
     "Recordings archive",
   );

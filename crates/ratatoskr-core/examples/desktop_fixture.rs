@@ -17,9 +17,14 @@ fn main() -> anyhow::Result<()> {
     )?;
     let machine = "os='macos'\nmode='staging'\nhome='/fixture-home'\nharnesses=['codex','claude']\ncapabilities=['transcription','gopass']\n[paths]\nrecordings_archive='/archive/recordings'\n";
     for name in ["brunnr", "skirnir", "loki"] {
-        fs::write(source.join(format!("machines/{name}.toml")), machine)?;
+        let profile = if name == "loki" {
+            "os='windows'\nmode='staging'\nhome='C:\\Users\\Oana'\nharnesses=['codex','claude']\ncapabilities=['transcription']\n[paths]\nrecordings_archive='C:\\Users\\Oana\\Recordings'\n"
+        } else {
+            machine
+        };
+        fs::write(source.join(format!("machines/{name}.toml")), profile)?;
     }
-    let md = "---\nname: recordings\ndescription: Process meeting recordings into a searchable archive.\n---\n# Meeting recordings\n\nKeep the original recording in {{af:paths.recordings_archive}}.\n\n## Steps\n1. Copy the recording and **verify its checksum**.\n2. Transcribe the audio.\n\n<!-- only harness=codex -->\nUse the automation tools to manage scheduled tasks.\n<!-- /only -->\n\n<!-- only os=windows -->\nUse Get-FileHash to verify the copied recording.\n<!-- /only -->\n\n3. Review the transcript before archiving.\n";
+    let md = "---\nname: recordings\ndescription: Process meeting recordings into a searchable archive.\n---\n# Meeting recordings\n\nKeep the original recording in {{af:paths.recordings_archive}}.\n\n## Steps\n1. Copy the recording and **verify its checksum**.\n2. Transcribe the audio.\n\n<!-- only harness=codex -->\nUse the automation tools to manage scheduled tasks.\n<!-- /only -->\n\n<!-- only os=windows -->\nUse Get-FileHash to verify the copied recording.\n<!-- /only -->\n\n<!-- only os=linux -->\nUse sha256sum to verify the copied recording.\n<!-- /only -->\n\n3. Review the transcript before archiving.\n";
     let meta = "# Preserve this shared targeting\n[target]\nharnesses = ['claude', 'codex']\ncapabilities = ['transcription']\n";
     fs::write(source.join("skills/recordings/SKILL.md"), md)?;
     fs::write(source.join("skills/recordings/skill.toml"), meta)?;
@@ -33,6 +38,40 @@ fn main() -> anyhow::Result<()> {
         source.join("skills/recordings/variants/os=windows/scripts/hash.ps1"),
         "Get-FileHash $args[0]\n",
     )?;
+    for (name, description, body, metadata) in [
+        (
+            "review-code",
+            "Review changes for correctness and maintainability.",
+            "Check changed behavior, failure paths and test coverage.",
+            "[target]\nharnesses=['codex']\n",
+        ),
+        (
+            "architecture-notes",
+            "Record architectural decisions and their tradeoffs.",
+            "Explain the problem, constraints and decision.",
+            "",
+        ),
+        (
+            "release-checklist",
+            "Verify a release before publishing it.",
+            "Run checks and inspect the packaged application.",
+            "[target]\nos=['windows']\n",
+        ),
+        (
+            "writing-style",
+            "Keep technical writing clear and concise.",
+            "Lead with the concrete outcome.",
+            "enabled=false\n",
+        ),
+    ] {
+        let dir = source.join("skills").join(name);
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n"),
+        )?;
+        fs::write(dir.join("skill.toml"), metadata)?;
+    }
     let settings = core::Settings {
         source,
         machine: "brunnr".into(),
@@ -98,20 +137,21 @@ fn main() -> anyhow::Result<()> {
                     "Carefully review the complete transcript",
                 ),
             )?;
+            let claude = settings
+                .state_dir
+                .join("brunnr/staging/claude/skills/recordings/SKILL.md");
+            fs::write(
+                &claude,
+                fs::read_to_string(&claude)?
+                    .replace("2. Transcribe the audio.", "2. Transcribe audio."),
+            )?;
+            // Adopt this version as the previously managed copy; the source now has a ready update.
+            let preview =
+                core::preview_resolution(&settings, &claude, core::ConflictAction::Adopt)?;
+            core::resolve_conflict(&settings, &serde_json::to_string(&preview)?)?;
             let mut plan = serde_json::to_value(core::plan(&settings)?)?;
             plan["projects"] = json!([{"root":"/projects/audio-tools","changed_files":2,"outgoing_commits":1,"upstream":"origin/main","error":null,"source":"/projects/audio-tools/.ratatoskr"},{"root":"/projects/website","changed_files":0,"outgoing_commits":0,"upstream":"origin/main","error":null,"source":"/projects/website/.ratatoskr"}]);
-            let mut skills = serde_json::to_value(core::list_skills(&settings)?)?
-                .as_array()
-                .unwrap()
-                .clone();
-            for (name, enabled) in [
-                ("review-code", true),
-                ("architecture-notes", true),
-                ("release-checklist", true),
-                ("writing-style", false),
-            ] {
-                skills.push(json!({"name":name,"enabled":enabled,"project":null}));
-            }
+            let skills = core::list_skills(&settings)?;
             json!({"workspace":{"plan":plan,"skills":skills,"helper":"/Applications/Ratatoskr.app/Contents/MacOS/ratatoskr","helper_error":null,"jobs":{"last_run":{"started_at":1792173480_u64,"finished_at":1792173490_u64,"error":null},"current_error":null,"helper_update_error":null,"desktop_update_error":null,"log":"18:35:00  Checking content repository\n18:35:01  Source unchanged\n18:35:02  Rendered 5 skills for 2 agents\n18:35:03  Sync completed successfully"},"presets":core::agent_presets(),"preview_targets":core::preview_targets(&settings)?,"source_files":core::source_files(&settings)?,"updates":{"automatic":true,"time":"02:00","override_active":false,"endpoint":"https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json"},"legacy":[]},"document":core::read_skill(&settings,None,"recordings")?,"info":core::editor_view(md,meta)?,"analysis":core::analyze_skill(&settings,"recordings",md,"brunnr","codex")?,"values":core::value_options(&settings,"brunnr","codex")?,"resources":core::skill_resources(&settings,None,"recordings")?,"statuses":core::skill_target_statuses(&settings)?,"local_settings":settings})
         }
         other => anyhow::bail!("Unsupported fixture command: {other}"),

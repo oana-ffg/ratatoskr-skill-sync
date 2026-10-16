@@ -29,6 +29,7 @@
     onupdate,
     onerror,
     ondirty,
+    onunsaved,
     onrenamed,
   }: {
     skill: Skill;
@@ -36,6 +37,7 @@
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
+    onunsaved?: (v: boolean) => void;
     onrenamed: (skill: Skill) => void;
   } = $props();
   let document = $state<SkillDocument | null>(null);
@@ -77,6 +79,7 @@
         metadata !== document.metadata ||
         description !== info?.description),
   );
+  $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
   const validation = createLivePreview(
     async (input: {

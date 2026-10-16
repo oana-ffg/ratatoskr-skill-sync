@@ -373,12 +373,22 @@ async fn automatic_update(app: tauri::AppHandle, install: bool, launch: bool) ->
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize)]
+pub(crate) struct DesktopUpdateResult {
+    message: String,
+    available: bool,
+    installed: bool,
+}
+
 #[tauri::command]
-pub(crate) async fn update_desktop(app: tauri::AppHandle, install: bool) -> Reply<String> {
+pub(crate) async fn update_desktop(
+    app: tauri::AppHandle,
+    install: bool,
+) -> Reply<DesktopUpdateResult> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
         let settings = settings()?;
-        let result = (|| -> anyhow::Result<String> {
+        let result = (|| -> anyhow::Result<DesktopUpdateResult> {
             match tauri::async_runtime::block_on(desktop_updater(&app, &settings)?.check())? {
                 Some(update) if install => {
                     let _idle = core::updates::idle_guard(&settings, false)?.ok_or_else(|| {
@@ -387,10 +397,22 @@ pub(crate) async fn update_desktop(app: tauri::AppHandle, install: bool) -> Repl
                         )
                     })?;
                     tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()))?;
-                    Ok("Signed desktop update installed. Restart to use it.".into())
+                    Ok(DesktopUpdateResult {
+                        message: "Signed desktop update installed. Restart to use it.".into(),
+                        available: false,
+                        installed: true,
+                    })
                 }
-                Some(update) => Ok(format!("Desktop update available: {}", update.version)),
-                None => Ok("No newer desktop release available.".into()),
+                Some(update) => Ok(DesktopUpdateResult {
+                    message: format!("Desktop update available: {}", update.version),
+                    available: true,
+                    installed: false,
+                }),
+                None => Ok(DesktopUpdateResult {
+                    message: "No newer desktop release available.".into(),
+                    available: false,
+                    installed: false,
+                }),
             }
         })();
         update_result(&settings, result)

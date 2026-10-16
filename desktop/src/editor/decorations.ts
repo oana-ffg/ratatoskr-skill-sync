@@ -4,6 +4,7 @@ import {
   StateField,
   type Extension,
   type Range,
+  type Text,
 } from "@codemirror/state";
 import {
   Decoration,
@@ -38,7 +39,7 @@ class BlockHeader extends WidgetType {
   }
   toDOM() {
     const row = document.createElement("span");
-    row.className = `only-header ${this.block.selectors.harness?.includes("codex") ? "codex" : this.block.selectors.harness?.includes("claude") ? "claude" : this.block.selectors.os ? "os" : "machine"}`;
+    row.className = `only-header ${blockDimension(this.block)}`;
     const label = document.createElement("span");
     label.textContent = `◆ Only for ${blockLabel(this.block)}`;
     row.append(label);
@@ -89,7 +90,17 @@ class Warning extends WidgetType {
     return span;
   }
 }
-function build(p: Presentation, viewLength: number): DecorationSet {
+function blockDimension(block: Block): string {
+  return block.selectors.harness?.includes("codex")
+    ? "codex"
+    : block.selectors.harness?.includes("claude")
+      ? "claude"
+      : block.selectors.os
+        ? "os"
+        : "machine";
+}
+function build(p: Presentation, doc: Text): DecorationSet {
+  const viewLength = doc.length;
   if (p.raw) return Decoration.none;
   const source = p.source === undefined ? null : new SourceText(p.source);
   const at = (pos: number) => source?.toEditor(pos) ?? pos;
@@ -117,11 +128,15 @@ function build(p: Presentation, viewLength: number): DecorationSet {
         at(block.closing.to),
       ),
     );
-    ranges.push(
-      Decoration.mark({
-        class: `only-body ${block.active ? "" : "inactive"}`,
-      }).range(at(block.body.from), at(block.body.to)),
-    );
+    const first = doc.lineAt(at(block.opening.from)).number;
+    const last = doc.lineAt(at(block.closing.to)).number;
+    for (let number = first; number <= last; number++) {
+      ranges.push(
+        Decoration.line({
+          class: `only-band ${blockDimension(block)} ${block.active ? "" : "inactive"}`,
+        }).range(doc.line(number).from),
+      );
+    }
   }
   for (const v of p.analysis.variables) {
     if (
@@ -151,7 +166,7 @@ export const decorationField = StateField.define<DecorationSet>({
   update(value, tr) {
     let next = value.map(tr.changes);
     for (const effect of tr.effects)
-      if (effect.is(present)) next = build(effect.value, tr.state.doc.length);
+      if (effect.is(present)) next = build(effect.value, tr.state.doc);
     return next;
   },
   provide: (field) => EditorView.decorations.from(field),

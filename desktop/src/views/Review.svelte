@@ -7,7 +7,9 @@
     type Conflict,
     type Resolution,
   } from "../api";
-  import ConflictSource from "../components/ConflictSource.svelte";
+  import { errorText, title, reviewSummary } from "../api";
+  const loadConflictEditor = () =>
+    import("../components/ConflictSource.svelte");
   import Diff from "../components/Diff.svelte";
   import Dialog from "../components/Dialog.svelte";
   let {
@@ -21,6 +23,7 @@
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
   } = $props();
+  const summary = $derived(reviewSummary(workspace));
   let sourceConflict = $state<Conflict | null>(null);
   let resolution = $state<Resolution | null>(null);
   let busy = $state(false);
@@ -120,12 +123,13 @@
     <div>
       <p class="eyebrow">YOU’RE IN CONTROL</p>
       <h1>
-        Review changes <span class="count"
-          >{workspace.plan.changes.length +
-            workspace.plan.conflicts.length}</span
-        >
+        Review changes <span class="count">{summary.total}</span>
       </h1>
-      <p class="muted">See what will change before anything is installed.</p>
+      <p class="muted">
+        {summary.readyChanges.length} ready · {summary.decisions}
+        {summary.decisions === 1 ? "needs" : "need"} your decision. The badge counts
+        both; Apply installs ready changes after all decisions are resolved.
+      </p>
     </div>
     <button
       class="primary"
@@ -133,7 +137,9 @@
         workspace.plan.conflicts.length > 0 ||
         !workspace.plan.changes.length ||
         workspace.legacy.length > 0}
-      onclick={apply}>Apply {workspace.plan.changes.length} changes</button
+      onclick={apply}
+      >Apply {summary.readyChanges.length}
+      {summary.readyChanges.length === 1 ? "change" : "changes"}</button
     >
   </div>
   {#if backup}<p role="status" class="success-message">
@@ -176,7 +182,7 @@
           ? "was removed"
           : conflict.kind.startsWith("unmanaged")
             ? "already exists outside Ratatoskr"
-            : "was edited"} on {workspace.plan.machine}
+            : "was edited"} on {title(workspace.plan.machine)}
       </h2>
       <p class="muted">
         Your source hasn’t changed. Choose which version to keep.
@@ -185,7 +191,8 @@
         diff={conflict.diff}
         reverse
         left="Your source"
-        right="Installed copy (edited)"
+        right="Edited copy"
+        neutral
       />
       <div class="conflict-actions">
         <button
@@ -217,15 +224,16 @@
     >
       {message}
     </p>{/each}
-  {#each workspace.plan.changes as change}<article class="change-card">
+  {#each summary.readyChanges as change}<article class="change-card">
       <div class="section-heading">
         <h2>{basename(change.path)}</h2>
         <span class="status-pill">{change.action}</span>
       </div>
       <Diff
         diff={change.diff}
-        left="Installed copy"
-        right="Your source (rendered)"
+        reverse
+        left="Your source (rendered)"
+        right="Installed copy"
       />
       <details>
         <summary>File details</summary><code>{change.path}</code>
@@ -284,13 +292,17 @@
     </footer></Dialog
   >{/if}
 
-{#if sourceConflict}<ConflictSource
-    conflict={sourceConflict}
-    {workspace}
-    onclose={() => (sourceConflict = null)}
-    {onerror}
-    onpreview={(preview) => {
-      sourceConflict = null;
-      resolution = preview;
-    }}
-  />{/if}
+{#if sourceConflict}{#await loadConflictEditor()}<p role="status">
+      Opening source editor…
+    </p>{:then { default: ConflictSource }}<ConflictSource
+      conflict={sourceConflict}
+      {workspace}
+      onclose={() => (sourceConflict = null)}
+      {onerror}
+      onpreview={(preview) => {
+        sourceConflict = null;
+        resolution = preview;
+      }}
+    />{:catch e}<p role="alert" class="error-message">
+      Source editor failed to load: {errorText(e)}
+    </p>{/await}{/if}

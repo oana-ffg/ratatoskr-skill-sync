@@ -18,7 +18,9 @@ test("routes screens, guards unsaved settings, and discards only on explicit act
   await screen.findByRole("heading", { name: /Skills/ });
   await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
   await screen.findByLabelText("Open Ratatoskr at login");
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   await fireEvent.click(screen.getByLabelText("Open Ratatoskr at login"));
+  expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
   await fireEvent.click(screen.getByRole("button", { name: /Projects/ }));
   expect(
     await screen.findByRole("dialog", { name: "You have unsaved changes" }),
@@ -50,4 +52,42 @@ test("IPC errors are visible and not converted into success", async () => {
       "Source changed; reload before saving",
     ),
   );
+});
+
+test("update actions follow the native updater result", async () => {
+  let checked = false;
+  mockIPC((cmd, args) => {
+    if (cmd === "update_desktop") {
+      const install = (args as { install: boolean }).install;
+      expect(install ? checked : true).toBe(true);
+      checked = true;
+      return {
+        message: install ? "Installed" : "Available",
+        available: !install,
+        installed: install,
+      };
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  render(App);
+  await screen.findByRole("heading", { name: /Skills/ });
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  const check = await screen.findByRole("button", {
+    name: "Check for updates",
+  });
+  expect(
+    screen.queryByRole("button", { name: "Install signed update" }),
+  ).toBeNull();
+  expect(screen.queryByRole("button", { name: "Restart app" })).toBeNull();
+  await fireEvent.click(check);
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Install signed update" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restart app" }),
+  ).toBeEnabled();
+  expect(
+    screen.queryByRole("button", { name: "Install signed update" }),
+  ).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 });
