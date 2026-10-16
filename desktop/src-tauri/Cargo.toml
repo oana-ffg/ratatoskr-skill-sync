@@ -19,3 +19,5 @@ ratatoskr-core = { path = "../../crates/ratatoskr-core" }
 # Modern NSIS updates use the signed installer directly; legacy ZIP updates are unnecessary.
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 chrono = "0.4"
+
+tauri-plugin-autostart = "2"

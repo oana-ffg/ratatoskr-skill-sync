@@ -1,3 +1,4 @@
+mod conflicts;
 use crate::{
     Settings,
     config::{atomic_write, identifier, no_symlinks, overlaps, relative},
@@ -5,12 +6,16 @@ use crate::{
     template::{render, selectors_match},
 };
 use anyhow::{Context, Result, ensure};
-use fs2::FileExt;
+pub use conflicts::{
+    Conflict, ConflictAction, ResolutionPreview, preview_resolution, preview_source_edit,
+    read_conflict_source, resolve_conflict,
+};
+use conflicts::{conflict, write_rendered};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
+    fs,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
@@ -34,6 +39,7 @@ pub struct Plan {
     pub targets: usize,
     pub changes: Vec<Change>,
     pub conflicts: Vec<String>,
+    pub conflict_details: Vec<Conflict>,
     pub projects: Vec<ProjectStatus>,
 }
 
@@ -59,6 +65,8 @@ pub(crate) struct Manifest {
 #[serde(deny_unknown_fields)]
 struct Harness {
     skills_dir: String,
+    #[serde(default)]
+    global_root: Option<String>,
     global_file: String,
     roots: BTreeMap<String, String>,
     #[serde(default)]
@@ -66,6 +74,8 @@ struct Harness {
 }
 
 struct Rendered {
+    source: PathBuf,
+    reversible: bool,
     bytes: Vec<u8>,
     executable: bool,
 }
@@ -166,24 +176,7 @@ fn skill_markdown(
 ) -> Result<String> {
     let rendered = render(source, context, true)?;
     let rendered = rendered.replace("\r\n", "\n");
-    let rest = rendered
-        .strip_prefix("---\n")
-        .context("SKILL.md requires YAML frontmatter")?;
-    let (frontmatter, body) = rest
-        .split_once("\n---\n")
-        .context("Unclosed YAML frontmatter")?;
-    let mut yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(frontmatter)?;
-    ensure!(
-        yaml["name"].as_str() == Some(name),
-        "Skill name must match directory {name}"
-    );
-    let description = yaml["description"]
-        .as_str()
-        .context("Skill description must be a string")?;
-    ensure!(
-        !description.trim().is_empty() && description.chars().count() <= 1024,
-        "Invalid skill description"
-    );
+    let (mut yaml, body) = crate::template::skill_frontmatter(&rendered, name)?;
     ensure!(!body.trim().is_empty(), "Skill body is empty");
     if let Some(additions) = metadata.get("frontmatter") {
         let frontmatters = additions
@@ -217,7 +210,12 @@ fn skill_markdown(
     ))
 }
 
-fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> Result<Desired> {
+fn render_scope(
+    settings: &Settings,
+    content: &Path,
+    project: Option<&Path>,
+    preview: bool,
+) -> Result<Desired> {
     settings.validate()?;
     no_symlinks(&settings.source)?;
     no_symlinks(&settings.state_dir)?;
@@ -272,7 +270,7 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
         let mut context = machine.clone();
         context.insert("machine".into(), settings.machine.clone().into());
         context.insert("harness".into(), name.into());
-        let base = if mode == "staging" {
+        let base = if mode == "staging" || preview {
             let staging = settings.state_dir.join(&settings.machine).join("staging");
             if let Some(project) = project {
                 staging
@@ -317,7 +315,7 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
         ensure!(base.is_absolute(), "Output root must be absolute");
         no_symlinks(&base)?;
         ensure!(!overlaps(&base, content), "Output overlaps source checkout");
-        if mode == "live" {
+        if mode == "live" && !preview {
             ensure!(
                 !overlaps(&base, &settings.state_dir),
                 "Output overlaps state"
@@ -331,7 +329,40 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
         );
         base_roots.push(base.clone());
         let skills_base = base.join(relative(&harness.skills_dir)?);
-        let global_file = base.join(relative(&harness.global_file)?);
+        let global_base = if mode == "live" && !preview && project.is_none() {
+            if let Some(root) = &harness.global_root {
+                PathBuf::from(render(root, &context, false)?)
+            } else {
+                base.clone()
+            }
+        } else {
+            base.clone()
+        };
+        ensure!(
+            global_base.is_absolute(),
+            "Global instruction root must be absolute"
+        );
+        no_symlinks(&global_base)?;
+        ensure!(
+            !overlaps(&global_base, content),
+            "Instruction root overlaps source"
+        );
+        if mode == "live" && !preview {
+            ensure!(
+                !overlaps(&global_base, &settings.state_dir),
+                "Instruction root overlaps state"
+            );
+        }
+        let global_file = global_base.join(relative(&harness.global_file)?);
+        for (other_skills, other_global) in &result.allowed {
+            ensure!(
+                !overlaps(&skills_base, other_skills)
+                    && !overlaps(&skills_base, other_global)
+                    && !overlaps(&global_file, other_skills)
+                    && global_file != *other_global,
+                "Harness destinations overlap"
+            );
+        }
         ensure!(
             !global_file.starts_with(&skills_base),
             "Global file overlaps skills directory"
@@ -437,7 +468,14 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
                         cases.insert(path.to_string_lossy().to_lowercase()),
                         "Variant filename collision"
                     );
-                    let bytes = fs::read(&source)?;
+                    let original = fs::read(&source)?;
+                    let reversible = std::str::from_utf8(&original).is_ok_and(|text| {
+                        !text.contains("{{af:")
+                            && !text.contains("<!--")
+                            && !(path == Path::new("SKILL.md")
+                                && metadata.contains_key("frontmatter"))
+                    });
+                    let bytes = original.clone();
                     let required_text = matches!(
                         path.extension().and_then(|e| e.to_str()),
                         Some("md" | "toml" | "py" | "txt")
@@ -461,6 +499,8 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
                             .insert(
                                 root.join(path),
                                 Rendered {
+                                    source: source.clone(),
+                                    reversible,
                                     bytes,
                                     executable: executable(&source)?
                                 }
@@ -477,6 +517,11 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
             result.files.insert(
                 global_file,
                 Rendered {
+                    source: global.clone(),
+                    reversible: {
+                        let text = fs::read_to_string(&global)?;
+                        !text.contains("{{af:") && !text.contains("<!--")
+                    },
                     bytes: render(&fs::read_to_string(global)?, &context, true)?.into_bytes(),
                     executable: false,
                 },
@@ -487,7 +532,7 @@ fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> 
 }
 
 fn desired(settings: &Settings) -> Result<Desired> {
-    let mut result = render_scope(settings, &settings.source, None)?;
+    let mut result = render_scope(settings, &settings.source, None, false)?;
     for root in &settings.projects {
         let status = project_status(root);
         ensure!(
@@ -497,7 +542,7 @@ fn desired(settings: &Settings) -> Result<Desired> {
             status.error
         );
         let content = status.source.context("Project has no skill source")?;
-        let project = render_scope(settings, &content, Some(root))?;
+        let project = render_scope(settings, &content, Some(root), false)?;
         result
             .project_roots
             .insert(root.clone(), project.roots.clone());
@@ -574,10 +619,12 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
 
 fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Result<Plan> {
     let mut conflicts = Vec::new();
+    let mut conflict_details = Vec::new();
     let mut changes = Vec::new();
     for root in &desired.roots {
         no_symlinks(root)?;
         if root.try_exists()? && !manifest.roots.contains(root) {
+            conflict_details.push(conflict(root, "unmanaged-directory", desired)?);
             conflicts.push(format!(
                 "Pre-existing unmanaged skill directory: {}",
                 root.display()
@@ -598,6 +645,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
                     && !runtime(entry.path())
                     && !manifest.files.contains_key(entry.path())
                 {
+                    conflict_details.push(conflict(entry.path(), "unmanaged-collision", desired)?);
                     conflicts.push(format!(
                         "Unmanaged file in owned skill: {}",
                         entry.path().display()
@@ -620,12 +668,21 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
             .transpose()?;
         if let Some(owned) = manifest.files.get(path) {
             if current.as_ref() != Some(owned) {
+                let kind = match &current {
+                    None => "removed",
+                    Some(now) if now.sha256 == owned.sha256 => "permission-change",
+                    Some(_) => "hand-edited",
+                };
+                conflict_details.push(conflict(path, kind, desired)?);
                 conflicts.push(format!(
                     "Owned file was edited, removed, or changed permissions: {}",
                     path.display()
                 ));
             }
         } else if current.is_some() {
+            if !conflict_details.iter().any(|c| c.path == *path) {
+                conflict_details.push(conflict(path, "unmanaged-collision", desired)?);
+            }
             conflicts.push(format!("Pre-existing unmanaged file: {}", path.display()));
         }
         let next = desired.files.get(path);
@@ -671,6 +728,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
         targets: desired.targets,
         changes,
         conflicts,
+        conflict_details,
         projects: settings
             .projects
             .iter()
@@ -698,16 +756,7 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     no_symlinks(&settings.state_dir)?;
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
-    let lock_path = state.join("apply.lock");
-    no_symlinks(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    lock.try_lock_exclusive()
-        .context("Another Ratatoskr apply is running")?;
+    let lock = crate::config::operation_lock(settings, "apply.lock")?;
     let desired = desired(settings)?;
     let old = manifest(settings, &desired)?;
     let preflight = preflight(settings, &desired, &old)?;
@@ -785,19 +834,7 @@ pub(crate) fn detach_project(settings: &Settings, project: &Path) -> Result<()> 
     if !path.try_exists()? {
         return Ok(());
     }
-    let lock_path = settings
-        .state_dir
-        .join(&settings.machine)
-        .join("apply.lock");
-    no_symlinks(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    lock.try_lock_exclusive()
-        .context("Another apply is running")?;
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let mut owned: Manifest = serde_json::from_slice(&fs::read(&path)?)?;
     ensure!(
         owned.source == settings.source && owned.machine == settings.machine,
@@ -817,6 +854,19 @@ pub(crate) fn detach_project(settings: &Settings, project: &Path) -> Result<()> 
 struct Backup {
     manifest: Manifest,
     files: BTreeMap<PathBuf, String>,
+    #[serde(default)]
+    ownership: Option<Manifest>,
+    #[serde(default)]
+    absent: BTreeSet<PathBuf>,
+    #[serde(default)]
+    sources: BTreeMap<PathBuf, SourceBackup>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SourceBackup {
+    stored: String,
+    fingerprint: Fingerprint,
+    after_fingerprint: Fingerprint,
 }
 
 fn backup(settings: &Settings, manifest: &Manifest) -> Result<PathBuf> {
@@ -847,6 +897,9 @@ fn backup(settings: &Settings, manifest: &Manifest) -> Result<PathBuf> {
         &serde_json::to_vec_pretty(&Backup {
             manifest: manifest.clone(),
             files,
+            ownership: None,
+            absent: BTreeSet::new(),
+            sources: BTreeMap::new(),
         })?,
     )?;
     Ok(directory)
@@ -857,16 +910,7 @@ pub fn adopt(settings: &Settings) -> Result<PathBuf> {
     let desired = desired(settings)?;
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
-    let lock_path = state.join("apply.lock");
-    no_symlinks(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    lock.try_lock_exclusive()
-        .context("Another apply or adoption is running")?;
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let mut owned = manifest(settings, &desired)?;
     for (path, expected) in &owned.files {
         no_symlinks(path)?;
@@ -922,7 +966,13 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
         "Backup belongs to another source or machine"
     );
     let desired = desired(settings)?;
-    for path in snapshot.manifest.files.keys() {
+    for path in snapshot
+        .manifest
+        .files
+        .keys()
+        .chain(snapshot.absent.iter())
+        .chain(snapshot.ownership.iter().flat_map(|m| m.files.keys()))
+    {
         ensure!(
             desired
                 .allowed
@@ -931,25 +981,36 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup destination is outside current targets"
         );
     }
-    let lock_path = settings
-        .state_dir
-        .join(&settings.machine)
-        .join("apply.lock");
-    no_symlinks(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    lock.try_lock_exclusive()
-        .context("Another apply is running")?;
+    let lock = crate::config::operation_lock(settings, "apply.lock")?;
     let current = manifest(settings, &desired)?;
     let check = preflight(settings, &desired, &current)?;
     ensure!(
         check.conflicts.is_empty(),
         "Resolve current ownership conflicts before restoring a backup"
     );
+    let mut source_restore = BTreeMap::new();
+    for (destination, source) in &snapshot.sources {
+        ensure!(
+            desired.files.values().any(|f| f.source == *destination),
+            "Backup source is outside current source mappings"
+        );
+        let stored = directory.join(relative(&source.stored)?);
+        no_symlinks(&stored)?;
+        no_symlinks(destination)?;
+        ensure!(
+            fingerprint(&fs::read(destination)?, executable(destination)?)
+                == source.after_fingerprint,
+            "Source changed since the backed-up action; refusing to overwrite {}",
+            destination.display()
+        );
+        let bytes = fs::read(stored)?;
+        ensure!(
+            fingerprint(&bytes, source.fingerprint.executable) == source.fingerprint,
+            "Backup source hash does not match"
+        );
+        crate::content::validate_source_replacement(settings, destination, &bytes)?;
+        source_restore.insert(destination, (bytes, source.fingerprint.executable));
+    }
     let mut restore = BTreeMap::new();
     for (destination, expected) in &snapshot.manifest.files {
         let stored = snapshot
@@ -969,6 +1030,9 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup would overwrite an unmanaged file"
         );
         restore.insert(destination.clone(), (bytes, expected.executable));
+    }
+    for (path, (bytes, executable)) in source_restore {
+        write_rendered(path, &bytes, executable)?;
     }
     for (path, (bytes, executable)) in restore {
         atomic_write(&path, &bytes)?;
@@ -995,8 +1059,64 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
     }
     atomic_write(
         &manifest_path(settings),
-        &serde_json::to_vec_pretty(&snapshot.manifest)?,
+        &serde_json::to_vec_pretty(snapshot.ownership.as_ref().unwrap_or(&snapshot.manifest))?,
     )?;
     drop(lock);
     plan(settings)
+}
+
+pub(crate) fn preview_files(
+    settings: &Settings,
+    name: &str,
+) -> Result<Vec<crate::content::PreviewFile>> {
+    let desired = render_scope(settings, &settings.source, None, true)?;
+    let mut files = Vec::new();
+    for (path, file) in desired.files {
+        if let Some(root) = desired
+            .roots
+            .iter()
+            .find(|root| root.file_name().is_some_and(|n| n == name) && path.starts_with(root))
+        {
+            files.push(crate::content::PreviewFile {
+                path: path.strip_prefix(root)?.to_path_buf(),
+                text: String::from_utf8(file.bytes).ok(),
+            });
+        }
+    }
+    Ok(files)
+}
+
+pub(crate) fn template_contexts(settings: &Settings) -> Result<Vec<(String, String, toml::Table)>> {
+    settings.validate()?;
+    let harnesses = read_toml(&settings.source.join("harnesses.toml"))?;
+    let mut contexts = Vec::new();
+    for file in crate::source_files(settings)? {
+        if !file.starts_with("machines/") {
+            continue;
+        }
+        let machine = Path::new(&file)
+            .file_stem()
+            .context("Missing machine name")?
+            .to_str()
+            .context("Non-UTF8 machine name")?;
+        identifier(machine)?;
+        let profile = read_toml(&settings.source.join(&file))?;
+        for value in profile
+            .get("harnesses")
+            .and_then(|v| v.as_array())
+            .context("Machine must enable harnesses")?
+        {
+            let harness = value.as_str().context("Harness name must be a string")?;
+            identifier(harness)?;
+            ensure!(
+                harnesses.contains_key(harness),
+                "Unknown harness: {harness}"
+            );
+            let mut context = profile.clone();
+            context.insert("machine".into(), machine.into());
+            context.insert("harness".into(), harness.into());
+            contexts.push((machine.into(), harness.into(), context));
+        }
+    }
+    Ok(contexts)
 }

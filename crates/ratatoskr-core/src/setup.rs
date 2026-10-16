@@ -30,17 +30,14 @@ pub fn create_content(config: &Path, source: &Path, machine: &str) -> Result<Set
         toml::Value::try_from(vec!["claude", "codex"])?,
     );
     let mut targets = BTreeMap::new();
-    for (name, global) in [("claude", "CLAUDE.md"), ("codex", "AGENTS.md")] {
-        let mut target = toml::Table::new();
-        target.insert("skills_dir".into(), "skills".into());
-        target.insert("global_file".into(), global.into());
-        target.insert("project_root".into(), format!(".{name}").into());
-        let mut roots = toml::Table::new();
-        for os in ["macos", "windows", "linux"] {
-            roots.insert(os.into(), format!("{{{{af:home}}}}/.{name}").into());
-        }
-        target.insert("roots".into(), roots.into());
-        targets.insert(name, target);
+    for preset in crate::agent_presets()
+        .into_iter()
+        .filter(|p| matches!(p.target.tag.as_str(), "claude" | "codex"))
+    {
+        targets.insert(
+            preset.target.tag.clone(),
+            crate::presets::target_definition(&preset.target)?,
+        );
     }
     atomic_write(
         &source.join("harnesses.toml"),

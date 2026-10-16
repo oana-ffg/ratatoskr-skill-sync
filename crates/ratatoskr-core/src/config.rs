@@ -248,3 +248,46 @@ pub(crate) fn state_lock(settings: &Settings, name: &str) -> Result<fs::File> {
         .write(true)
         .open(path)?)
 }
+
+pub(crate) struct OperationLock {
+    file: fs::File,
+    name: String,
+}
+
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        // Forked processes can briefly retain the descriptor even with close-on-exec.
+        if let Err(error) = fs2::FileExt::unlock(&self.file) {
+            eprintln!("Ratatoskr: release {}: {error}", self.name);
+        }
+    }
+}
+
+pub(crate) fn operation_lock(settings: &Settings, name: &str) -> Result<OperationLock> {
+    let file = state_lock(settings, name)?;
+    fs2::FileExt::try_lock_exclusive(&file)
+        .with_context(|| format!("Another Ratatoskr operation holds {name}"))?;
+    Ok(OperationLock {
+        file,
+        name: name.into(),
+    })
+}
+
+#[cfg(test)]
+mod lock_tests {
+    #[test]
+    fn operation_guard_unlocks_even_if_a_descriptor_was_inherited() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = super::Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let guard = super::operation_lock(&settings, "apply.lock").unwrap();
+        let inherited = guard.file.try_clone().unwrap();
+        assert!(super::operation_lock(&settings, "apply.lock").is_err());
+        drop(guard);
+        assert!(super::operation_lock(&settings, "apply.lock").is_ok());
+        drop(inherited);
+    }
+}

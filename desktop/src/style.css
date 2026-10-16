@@ -370,3 +370,22 @@ select {
 #skill-editor > button {
   margin-top: 14px;
 }
+
+.conflict button {
+  margin: 6px 8px 6px 0;
+  white-space: normal;
+}
+#preset-sources a {
+  color: #b5cf9f;
+  overflow-wrap: anywhere;
+}
+#resolution-preview {
+  border: 1px solid #7a674a;
+  padding: 18px;
+  margin: 18px 0;
+  border-radius: 8px;
+}
+#resolution-preview button {
+  margin: 6px 8px 0 0;
+  white-space: normal;
+}

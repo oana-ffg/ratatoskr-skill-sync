@@ -34,6 +34,18 @@ enum Action {
     Status,
     /// Apply only if every destination passes the ownership checks.
     Apply,
+    /// Preview or explicitly apply a single conflict resolution.
+    Conflict {
+        #[command(subcommand)]
+        action: ConflictCommand,
+    },
+    /// Last background run, notification-ledger errors and bounded logs.
+    JobStatus,
+    /// List verified presets or preview an agent definition from a JSON input file.
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
     /// Fast-forward a clean content checkout, then apply without the desktop UI.
     Sync,
     /// Back up and explicitly adopt existing matching destination directories.
@@ -63,7 +75,68 @@ enum Action {
 }
 
 #[derive(Subcommand)]
+enum ConflictCommand {
+    /// Read the mapped source, including a selected variant.
+    Source { path: PathBuf },
+    /// Validate and preview a manual source edit when copy-back is ambiguous.
+    EditSource {
+        path: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
+    Preview {
+        path: PathBuf,
+        #[arg(long, value_parser = ["copy-back", "reinstall", "adopt"])]
+        action: String,
+    },
+    /// Apply the exact JSON preview saved from conflict preview.
+    Resolve {
+        #[arg(long)]
+        preview: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    Presets,
+    Preview {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    Add {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        expected_hash: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum SkillAction {
+    Analyze {
+        name: String,
+        #[arg(long)]
+        machine: String,
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    Preview {
+        name: String,
+        #[arg(long)]
+        machine: String,
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+        #[arg(long)]
+        metadata: Option<PathBuf>,
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     List,
     Read {
         name: String,
@@ -106,13 +179,13 @@ enum SkillAction {
 enum ScheduleAction {
     Plan {
         #[arg(long)]
-        helper: PathBuf,
+        helper: Option<PathBuf>,
         #[arg(long, default_value_t = 60)]
         seconds: u32,
     },
     Install {
         #[arg(long)]
-        helper: PathBuf,
+        helper: Option<PathBuf>,
         #[arg(long, default_value_t = 60)]
         seconds: u32,
     },
@@ -199,6 +272,66 @@ fn run() -> Result<i32> {
                 println!("Removed project from local registry; project files preserved.");
             }
         },
+        Action::Conflict { action } => {
+            let settings = load(&path)?;
+            match action {
+                ConflictCommand::Source { path } => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&core::read_conflict_source(&settings, &path)?)?
+                ),
+                ConflictCommand::EditSource { path, input } => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&core::preview_source_edit(
+                        &settings,
+                        &path,
+                        &std::fs::read_to_string(input)?
+                    )?)?
+                ),
+                ConflictCommand::Preview { path, action } => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&core::preview_resolution(
+                        &settings,
+                        &path,
+                        serde_json::from_value(serde_json::Value::String(action))?
+                    )?)?
+                ),
+                ConflictCommand::Resolve { preview } => println!(
+                    "Verified backup: {}",
+                    core::resolve_conflict(&settings, &std::fs::read_to_string(preview)?)?
+                        .display()
+                ),
+            }
+        }
+        Action::JobStatus => println!(
+            "{}",
+            serde_json::to_string_pretty(&core::job_status(&load(&path)?)?)?
+        ),
+        Action::Agent { action } => match action {
+            AgentCommand::Presets => {
+                println!("{}", serde_json::to_string_pretty(&core::agent_presets())?)
+            }
+            AgentCommand::Preview { input } => {
+                let target = serde_json::from_str(&std::fs::read_to_string(input)?)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&core::preview_agent_target(
+                        &load(&path)?,
+                        &target
+                    )?)?
+                );
+            }
+            AgentCommand::Add {
+                input,
+                expected_hash,
+            } => {
+                let target = serde_json::from_str(&std::fs::read_to_string(input)?)?;
+                let settings = load(&path)?;
+                core::add_agent_target(&settings, &target, &expected_hash)?;
+                println!(
+                    "Agent definition saved. Enable its tag in the intended machine profiles."
+                );
+            }
+        },
         Action::Adopt => {
             println!("Verified backup: {}", core::adopt(&load(&path)?)?.display());
         }
@@ -208,6 +341,55 @@ fn run() -> Result<i32> {
         Action::Skill { action } => {
             let settings = load(&path)?;
             match action {
+                SkillAction::Analyze {
+                    name,
+                    machine,
+                    harness,
+                    input,
+                    project,
+                } => {
+                    let markdown = if let Some(path) = input {
+                        std::fs::read_to_string(path)?
+                    } else {
+                        core::read_skill(&settings, project.as_deref(), &name)?.markdown
+                    };
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&core::analyze_skill(
+                            &settings, &name, &markdown, &machine, &harness
+                        )?)?
+                    );
+                }
+                SkillAction::Preview {
+                    name,
+                    machine,
+                    harness,
+                    markdown,
+                    metadata,
+                    project,
+                } => {
+                    let document = core::read_skill(&settings, project.as_deref(), &name)?;
+                    let markdown = markdown
+                        .map(std::fs::read_to_string)
+                        .transpose()?
+                        .unwrap_or(document.markdown);
+                    let metadata = metadata
+                        .map(std::fs::read_to_string)
+                        .transpose()?
+                        .unwrap_or(document.metadata);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&core::preview_skill(
+                            &settings,
+                            project.as_deref(),
+                            &name,
+                            &markdown,
+                            &metadata,
+                            &machine,
+                            &harness
+                        )?)?
+                    );
+                }
                 SkillAction::List => println!(
                     "{}",
                     serde_json::to_string_pretty(&core::list_skills(&settings)?)?
@@ -260,11 +442,30 @@ fn run() -> Result<i32> {
             match action {
                 ScheduleAction::Plan { helper, seconds } => println!(
                     "{}",
-                    core::schedule_plan(&settings, &path, &helper, seconds)?.definition
+                    core::schedule_plan(
+                        &settings,
+                        &path,
+                        &helper.map(Ok).unwrap_or_else(|| core::detect_helper(
+                            &std::env::current_exe()?,
+                            std::env::var_os("PATH").as_deref()
+                        ))?,
+                        seconds
+                    )?
+                    .definition
                 ),
                 ScheduleAction::Install { helper, seconds } => core::install_schedule(
                     &settings,
-                    &core::schedule_plan(&settings, &path, &helper, seconds)?,
+                    &core::schedule_plan(
+                        &settings,
+                        &path,
+                        &helper.map(Ok).unwrap_or_else(|| {
+                            core::detect_helper(
+                                &std::env::current_exe()?,
+                                std::env::var_os("PATH").as_deref(),
+                            )
+                        })?,
+                        seconds,
+                    )?,
                 )?,
                 ScheduleAction::Remove => core::remove_schedule(&settings)?,
             }
