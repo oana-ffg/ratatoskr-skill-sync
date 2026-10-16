@@ -646,10 +646,8 @@ fn sync_refuses_wrong_branch_upstream_and_detached_head_before_fetch_or_apply() 
     git(source, &["config", "commit.gpgsign", "false"]);
     git(source, &["add", "."]);
     git(source, &["commit", "-m", "Content"]);
-    git(
-        source,
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    );
+    // A relative local remote also works with Windows verbatim canonical paths.
+    git(source, &["remote", "add", "origin", "../remote.git"]);
     git(source, &["push", "-u", "origin", "main"]);
     git(source, &["switch", "-c", "experiment"]);
     git(source, &["push", "-u", "origin", "experiment"]);
