@@ -74,6 +74,8 @@ struct Harness {
 }
 
 struct Rendered {
+    harness: String,
+    skill: Option<String>,
     source: PathBuf,
     reversible: bool,
     bytes: Vec<u8>,
@@ -499,6 +501,8 @@ fn render_scope(
                             .insert(
                                 root.join(path),
                                 Rendered {
+                                    harness: name.into(),
+                                    skill: Some(skill_name.clone()),
                                     source: source.clone(),
                                     reversible,
                                     bytes,
@@ -517,6 +521,8 @@ fn render_scope(
             result.files.insert(
                 global_file,
                 Rendered {
+                    harness: name.into(),
+                    skill: None,
                     source: global.clone(),
                     reversible: {
                         let text = fs::read_to_string(&global)?;
@@ -718,6 +724,11 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
                 after_sha256: next_hash.as_ref().map(|f| f.sha256.clone()),
                 executable: next_hash.as_ref().map(|f| f.executable),
             });
+        }
+    }
+    if desired.mode == "live" {
+        for duplicate in crate::legacy_duplicates(settings)? {
+            conflicts.push(format!("Codex still scans a legacy copy of {} at {}. Review and archive it explicitly before Apply.", duplicate.name, duplicate.path.display()));
         }
     }
     Ok(Plan {
@@ -1079,6 +1090,17 @@ pub(crate) fn preview_files(
         {
             files.push(crate::content::PreviewFile {
                 path: path.strip_prefix(root)?.to_path_buf(),
+                body: if path.file_name().is_some_and(|n| n == "SKILL.md") {
+                    std::str::from_utf8(&file.bytes)
+                        .ok()
+                        .map(|text| {
+                            crate::template::skill_frontmatter(text, name)
+                                .map(|(_, body)| body.to_owned())
+                        })
+                        .transpose()?
+                } else {
+                    None
+                },
                 text: String::from_utf8(file.bytes).ok(),
             });
         }
@@ -1119,4 +1141,41 @@ pub(crate) fn template_contexts(settings: &Settings) -> Result<Vec<(String, Stri
         }
     }
     Ok(contexts)
+}
+
+pub(crate) fn legacy_ownership(settings: &Settings, root: &Path) -> Result<Option<String>> {
+    let path = manifest_path(settings);
+    no_symlinks(&path)?;
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)?;
+    let manifest: Manifest = serde_json::from_str(&text)?;
+    ensure!(
+        manifest.source == settings.source && manifest.machine == settings.machine,
+        "Ownership belongs to another workspace"
+    );
+    Ok(
+        (manifest.roots.contains(root) || manifest.files.keys().any(|p| p.starts_with(root)))
+            .then_some(text),
+    )
+}
+pub(crate) fn detach_legacy_ownership(
+    settings: &Settings,
+    root: &Path,
+    expected: &str,
+) -> Result<()> {
+    let current =
+        legacy_ownership(settings, root)?.context("Legacy ownership changed; review again")?;
+    ensure!(
+        current == expected,
+        "Legacy ownership changed; review again"
+    );
+    let mut manifest: Manifest = serde_json::from_str(expected)?;
+    manifest.files.retain(|path, _| !path.starts_with(root));
+    manifest.roots.remove(root);
+    atomic_write(
+        &manifest_path(settings),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )
 }

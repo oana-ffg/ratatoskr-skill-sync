@@ -17,6 +17,8 @@ pub struct Settings {
     pub projects: Vec<PathBuf>,
     #[serde(default)]
     pub alert_command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert: Option<crate::AlertSettings>,
     #[serde(default)]
     pub updates: crate::updates::UpdateSettings,
     #[serde(default = "default_deploy_branch")]
@@ -35,6 +37,7 @@ impl Default for Settings {
             state_dir: PathBuf::new(),
             projects: vec![],
             alert_command: vec![],
+            alert: None,
             updates: Default::default(),
             deploy_branch: default_deploy_branch(),
         }
@@ -63,6 +66,9 @@ impl Settings {
             "Deploy branch must not be empty"
         );
         self.updates.validate()?;
+        if let Some(alert) = &self.alert {
+            alert.validate()?;
+        }
         Ok(())
     }
 }

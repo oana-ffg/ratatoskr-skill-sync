@@ -1,0 +1,253 @@
+import { invoke } from "@tauri-apps/api/core";
+export interface Range {
+  from: number;
+  to: number;
+}
+export interface Block {
+  range: Range;
+  opening: Range;
+  body: Range;
+  closing: Range;
+  selectors: Record<string, string[]>;
+  active: boolean;
+  reachable: boolean;
+}
+export interface Analysis {
+  blocks: Block[];
+  variables: {
+    range: Range;
+    name: string;
+    value: string | null;
+    active: boolean;
+  }[];
+  diagnostics: { range: Range; severity: string; message: string }[];
+}
+export interface Skill {
+  name: string;
+  enabled: boolean;
+  project: string | null;
+}
+export interface SkillDocument {
+  name: string;
+  markdown: string;
+  metadata: string;
+  markdown_hash: string;
+  metadata_hash: string;
+}
+export type Value =
+  string | number | boolean | Value[] | { [key: string]: Value };
+export type Table = Record<string, Value>;
+export interface EditorView {
+  description: string;
+  frontmatter: Range;
+  metadata: Table;
+}
+export interface StructuredSource {
+  file: string;
+  hash: string;
+  values: Table;
+}
+export interface AgentTarget {
+  tag: string;
+  global_folder: string;
+  project_folder: string;
+  instructions_file: string;
+  instructions_folder: string | null;
+}
+export interface Preset {
+  title: string;
+  target: AgentTarget;
+  sources: string[];
+}
+export interface Project {
+  root: string;
+  changed_files: number;
+  outgoing_commits: number | null;
+  upstream: string | null;
+  error: string | null;
+  source: string | null;
+}
+export interface Change {
+  path: string;
+  action: string;
+  diff: string | null;
+  before_sha256: string | null;
+  after_sha256: string | null;
+  executable: boolean | null;
+}
+export interface Conflict {
+  harness: string | null;
+  skill: string | null;
+  path: string;
+  kind: string;
+  diff: string | null;
+  source: string | null;
+  copy_back_blocked: string | null;
+}
+export interface Plan {
+  source: string;
+  machine: string;
+  mode: string;
+  skills: number;
+  targets: number;
+  changes: Change[];
+  conflicts: string[];
+  conflict_details: Conflict[];
+  projects: Project[];
+}
+export interface Jobs {
+  last_run: {
+    started_at: number;
+    finished_at: number | null;
+    error: string | null;
+  } | null;
+  current_error: string | null;
+  helper_update_error: string | null;
+  desktop_update_error: string | null;
+  log: string;
+}
+export interface Legacy {
+  name: string;
+  path: string;
+  files: { path: string; sha256: string; executable: boolean }[];
+}
+export interface Snapshot {
+  plan: Plan;
+  skills: Skill[];
+  helper: string | null;
+  helper_error: string | null;
+  jobs: Jobs;
+  presets: Preset[];
+  preview_targets: { machine: string; harness: string }[];
+  source_files: string[];
+  updates: {
+    automatic: boolean;
+    time: string;
+    override_active: boolean;
+    endpoint: string;
+  };
+  legacy: Legacy[];
+}
+export interface LocalSettings {
+  source: string;
+  machine: string;
+  state_dir: string;
+  projects: string[];
+  alert_command: string[];
+  deploy_branch: string;
+  updates: Table & { automatic: boolean; time: string };
+  alert?: Table | null;
+}
+export interface Resolution {
+  action: string;
+  path: string;
+  effects: { path: string; diff?: string | null }[];
+  [key: string]: unknown;
+}
+export interface PreviewFile {
+  path: string;
+  text: string | null;
+  body: string | null;
+}
+export interface ValueOption {
+  name: string;
+  label: string;
+  value: string;
+}
+export interface Resource {
+  path: string;
+  label: string;
+}
+// All production calls go through typed boundaries; test fixtures use Tauri's mockIPC.
+export const api = {
+  workspace: () => invoke<Snapshot | null>("read_workspace"),
+  readSkill: (skill: Skill) =>
+    invoke<SkillDocument>("read_source_skill", {
+      name: skill.name,
+      project: skill.project,
+    }),
+  view: (markdown: string, metadata: string) =>
+    invoke<EditorView>("editor_view", { markdown, metadata }),
+  edit: (markdown: string, metadata: string, edit: Record<string, unknown>) =>
+    invoke<{ markdown: string; metadata: string }>("edit_skill_draft", {
+      markdown,
+      metadata,
+      edit,
+    }),
+  analyze: (name: string, markdown: string, machine: string, harness: string) =>
+    invoke<Analysis>("analyze_skill", { name, markdown, machine, harness }),
+  preview: (
+    skill: Skill,
+    markdown: string,
+    metadata: string,
+    machine: string,
+    harness: string,
+  ) =>
+    invoke<PreviewFile[]>("preview_skill", {
+      name: skill.name,
+      project: skill.project,
+      markdown,
+      metadata,
+      machine,
+      harness,
+    }),
+  values: (machine: string, harness: string) =>
+    invoke<ValueOption[]>("list_values", { machine, harness }),
+  resources: (skill: Skill) =>
+    invoke<Resource[]>("list_skill_resources", {
+      name: skill.name,
+      project: skill.project,
+    }),
+  source: (file: string) =>
+    invoke<StructuredSource>("read_structured_source", { file }),
+  saveSource: (source: StructuredSource) =>
+    invoke<Snapshot>(
+      "save_structured_source",
+      source as unknown as Record<string, unknown>,
+    ),
+  folder: () => invoke<string | null>("choose_folder"),
+  command: <T>(command: string, args?: Record<string, unknown>) =>
+    invoke<T>(command, args),
+};
+export function agentName(tag: string): string {
+  return (
+    (
+      {
+        claude: "Claude Code",
+        codex: "Codex",
+        gemini: "Gemini CLI",
+        copilot: "GitHub Copilot",
+        opencode: "OpenCode",
+      } as Record<string, string>
+    )[tag] ?? tag
+  );
+}
+export function title(value: string): string {
+  return value === "macos"
+    ? "macOS"
+    : value === "windows"
+      ? "Windows"
+      : value === "linux"
+        ? "Linux"
+        : value.replace(/[-_]/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+export function basename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+export function relativeTime(seconds: number | null | undefined): string {
+  if (!seconds) return "No completed sync yet";
+  const minutes = Math.max(0, Math.floor((Date.now() / 1000 - seconds) / 60));
+  return minutes < 1
+    ? "Just now"
+    : minutes < 60
+      ? `${minutes} min ago`
+      : `${Math.floor(minutes / 60)} hr ago`;
+}
+export const emptyAnalysis: Analysis = {
+  blocks: [],
+  variables: [],
+  diagnostics: [],
+};

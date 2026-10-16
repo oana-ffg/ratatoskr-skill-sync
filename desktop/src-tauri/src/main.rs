@@ -6,7 +6,28 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            commands::preview_legacy_resolution,
+            commands::resolve_legacy,
+            commands::skill_target_statuses,
+            commands::preview_install_path,
+            commands::create_desktop_skill,
+            commands::different_preview_lines,
+            commands::editor_view,
+            commands::edit_skill_draft,
+            commands::save_skill_draft,
+            commands::read_structured_source,
+            commands::save_structured_source,
+            commands::list_values,
+            commands::list_skill_resources,
+            commands::add_skill_resource,
+            commands::rename_source_skill,
+            commands::choose_folder,
+            commands::choose_project_source,
+            commands::choose_resource,
+            commands::read_local_settings,
+            commands::save_local_settings,
             commands::read_conflict_source,
             commands::preview_source_edit,
             commands::preview_conflict,

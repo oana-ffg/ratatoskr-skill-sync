@@ -122,14 +122,14 @@ pub struct SkillAnalysis {
 
 type OnlySelectors = BTreeMap<String, Vec<String>>;
 
-struct ParsedBlock {
-    opening: std::ops::Range<usize>,
-    body: std::ops::Range<usize>,
-    closing: std::ops::Range<usize>,
-    selectors: BTreeMap<String, Vec<String>>,
+pub(crate) struct ParsedBlock {
+    pub(crate) opening: std::ops::Range<usize>,
+    pub(crate) body: std::ops::Range<usize>,
+    pub(crate) closing: std::ops::Range<usize>,
+    pub(crate) selectors: BTreeMap<String, Vec<String>>,
 }
 
-fn parse_only_selectors(expression: &str) -> Result<BTreeMap<String, Vec<String>>> {
+pub(crate) fn parse_only_selectors(expression: &str) -> Result<BTreeMap<String, Vec<String>>> {
     let mut conditions = BTreeMap::new();
     for term in expression.split_whitespace() {
         let (key, values) = term
@@ -182,7 +182,7 @@ fn diagnostic(
 }
 
 /// One parser serves deployment and editor analysis; ranges internally use UTF-8 bytes.
-fn parse_blocks(source: &str) -> Result<(Vec<ParsedBlock>, Vec<SkillDiagnostic>)> {
+pub(crate) fn parse_blocks(source: &str) -> Result<(Vec<ParsedBlock>, Vec<SkillDiagnostic>)> {
     let tags = Regex::new(r"<!--\s*(only\b.*?)-->|<!--\s*(/only)\s*-->")?;
     let mut blocks = Vec::new();
     let mut diagnostics = Vec::new();
