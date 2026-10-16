@@ -11,6 +11,7 @@ Initial draft prepared on macOS Apple Silicon on 2026-10-16. The owner explicitl
 - The launchd XML passed Apple's `plutil -lint` check. An isolated launchd job was installed, ran sync with exit code 0, and was removed along with its ownership record.
 - Native Mac executable built. Tauri packaged the Mac `.app`; its Info.plist, squirrel icon, and runnable independent helper were checked.
 - Browser preview inspected for content, loaded icon, absence of horizontal overflow at desktop size, and disabled filesystem controls outside Tauri.
+- A real Mac updater archive and signature were built successfully using a disposable matching key pair. Release artifact collection was exercised on that archive.
 - Update fixture generated using Tauri's signer. The public fixture and signature are committed; its temporary private key is not part of the repository.
 
 ## Remaining verification and setup
