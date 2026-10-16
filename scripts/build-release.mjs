@@ -4,8 +4,8 @@ import { resolve } from 'node:path';
 
 const [target, bundle] = process.argv.slice(2);
 if (!target || !['app', 'nsis'].includes(bundle)) throw new Error('Expected Rust target triple and app/nsis bundle');
-const publicKey = process.env.TAURI_SIGNING_PUBLIC_KEY?.trim();
-if (!publicKey || !process.env.TAURI_SIGNING_PRIVATE_KEY) throw new Error('Configure TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY before building a signed release');
+const publicKey = JSON.parse(readFileSync('desktop/src-tauri/tauri.conf.json')).plugins.updater.pubkey;
+if (!publicKey || !process.env.TAURI_SIGNING_PRIVATE_KEY) throw new Error('Configure TAURI_SIGNING_PRIVATE_KEY before building a signed release');
 const version = JSON.parse(readFileSync('desktop/package.json')).version;
 const tauriVersion = JSON.parse(readFileSync('desktop/src-tauri/tauri.conf.json')).version;
 const cargoVersion = readFileSync('Cargo.toml', 'utf8').match(/^version = "([^"]+)"$/m)?.[1];

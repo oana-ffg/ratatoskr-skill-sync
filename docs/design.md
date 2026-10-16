@@ -28,7 +28,7 @@ macOS uses launchd StartInterval and RunAtLoad. Windows uses Task Scheduler repe
 
 ## Updates
 
-The independent CLI verifies a Minisign signature, then verifies the signed executable's reported version against the manifest before self-replacement. The native app uses the official Tauri updater and replaces the complete bundle, including its sidecar. A bundled helper never replaces itself independently. Updates are disabled until a trusted public key and HTTPS manifest endpoint are configured; automatic checking is separately opt-in.
+The independent CLI verifies a Minisign signature, then verifies the signed executable's reported version against the manifest before self-replacement. The native app uses the official Tauri updater and replaces the complete bundle, including its sidecar. A bundled helper never replaces itself independently. The official HTTPS release endpoint and public key are compiled into both applications. Explicit local fork overrides are visibly labelled. Nightly automatic updates default to midnight local time; the desktop defers installation until editors and operations are idle within a one-hour window, then relaunches only after installation. The one-shot helper records its last daily attempt and updates before sync. Sync first verifies the configured deployment branch (default `main`) and its remote upstream before any update, pull, or apply.
 
 ## Limits and review focus
 

@@ -5,22 +5,6 @@ mod commands;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
-            let handle = app.handle().clone();
-            if ratatoskr_core::default_config_path()
-                .ok()
-                .and_then(|p| ratatoskr_core::load(&p).ok())
-                .and_then(|s| s.updates)
-                .is_some_and(|u| u.automatic)
-            {
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = commands::update_desktop(handle, true).await {
-                        eprintln!("Ratatoskr desktop auto-update: {error}");
-                    }
-                });
-            }
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             commands::read_workspace,
             commands::connect_workspace,
@@ -42,6 +26,8 @@ fn main() {
             commands::enable_schedule,
             commands::disable_schedule,
             commands::update_desktop,
+            commands::nightly_update,
+            commands::save_update_schedule,
             commands::restart_desktop
         ])
         .run(tauri::generate_context!())

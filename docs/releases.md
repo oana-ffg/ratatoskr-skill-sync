@@ -1,27 +1,40 @@
 # Releases and signed updates
 
-The initial draft has no published binaries or configured production signing key. Builds can be tested locally without publisher signing. The signed-release workflow requires its own update key before it can run.
+The official trust root is compiled into the helper (`crates/ratatoskr-core/src/update-public-key.txt`) and the desktop updater configuration. Both use:
 
-## Prepare a release
+`https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json`
 
-1. From `desktop`, run `npm run tauri -- signer generate -w` with a new secure private-key path. Keep the private key and password outside this repository. Retain an offline backup.
-2. Add the generated private-key file contents as the GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`. Add its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Add the generated `.pub` file contents as the repository variable `TAURI_SIGNING_PUBLIC_KEY`. Do not paste either into issues, source, or chats.
-3. Set matching versions in workspace `Cargo.toml`, `desktop/package.json`, and `desktop/src-tauri/tauri.conf.json`; refresh both lockfiles. Version bumps must go through the normal review workflow.
-4. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles, plus separate raw helper executables. The bundled helper is prepared from the same source version.
-5. Download and test the artifacts on actual Macs and Windows before publishing the draft release. Inspect `latest.json`, including all six platforms. Publish the draft when ready. The workflow does not publish it automatically.
+`scripts/release-manifest.mjs` publishes that manifest with all six desktop/helper platform entries. Users do not configure signing keys. No public release is created by this change.
 
-The workflow signs update artifacts with Tauri/Minisign. The Windows updater uses the signed NSIS installer directly; the legacy ZIP-updater feature is disabled. macOS uses signed `.app.tar.gz` updater bundles. This avoids an unused ZIP dependency whose old versions were yanked upstream during initial development.
+## Signing and release operations
 
-The workflow does not provide Apple Developer ID signing/notarization or Microsoft Artifact Signing. Those are separate optional CI integrations, and first-run platform trust prompts may remain. A Minisign signature authenticates updates; it does not establish an OS publisher identity.
+The official key pair was generated with the Tauri signer. Its private key and password are stored only in gopass and GitHub Actions secrets:
 
-## Enable updates
+- `ratatoskr/release/tauri-signing-key` → `TAURI_SIGNING_PRIVATE_KEY`
+- `ratatoskr/release/tauri-signing-key-password` → `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
-In the app's local TOML configuration, add an `[updates]` table. Set `endpoint` to this repository's HTTPS latest-release asset endpoint: `https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json`. Set `public_key` to the generated `.pub` file contents. Set `automatic = true` only if automatic installation is wanted; the default is false.
+Load each value directly from gopass into `gh secret set` over stdin. Never print secrets or write them to local files. The release build reads the committed public key from `tauri.conf.json`; no repository public-key variable is required. A release build verifies that the private and public keys agree.
 
-Use the public key from the trusted release setup, not a key downloaded from an untrusted manifest. Public keys may be Tauri's base64-encoded public-key file or a raw Minisign public-key line.
+1. Set matching versions in workspace `Cargo.toml`, `desktop/package.json`, and `desktop/src-tauri/tauri.conf.json`; refresh the lockfiles. Version changes require the normal PR, green CI, and approval from an agent on another harness. The author merges after approval unless Oana grants a specific bypass.
+2. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles and standalone helper executables. The bundled helper is prepared from the same source version.
+3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all six platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
 
-The CLI's `update` command checks; `update --install` installs. Automatic standalone-helper updates run after successful `sync`. Desktop updates check on startup when automatic is enabled. A helper bundled in a Mac app or beside the Windows desktop executable is updated through the desktop bundle, not independently. Restart the app after a desktop update.
+The workflow signs artifacts using Tauri/Minisign. Windows uses the signed NSIS installer directly; macOS uses signed `.app.tar.gz` updater bundles. Apple Developer ID signing/notarization and Microsoft publisher signing remain separate, unconfigured integrations. An update signature authenticates the update without establishing an OS publisher identity.
 
-A standalone helper update checks HTTPS, size limits, a valid Minisign signature, a newer semantic version, and agreement between the signed binary's `--version` output and the manifest. Tauri verifies desktop signatures and requires the signed app version to match the manifest. Treat signing-key rotation as an explicit trust migration; editing an unsigned manifest cannot change the locally trusted public key.
+## Local update settings
 
-The packaged updater configuration intentionally has no static trusted key (`pubkey` is empty). Every update operation first validates the local update settings and supplies that trusted key at runtime. Signed-release builds inject the real public key through a build overlay so Tauri can verify packaging signatures. Local runtime settings still choose the trusted update endpoint/key. This supports separate content deployments and prevents a development/test key from becoming a production trust root.
+An omitted `[updates]` table uses official defaults: automatic updates enabled at `00:00` local time. Set `automatic = false` to disable nightly installation, or set `time` to a 24-hour `HH:MM` value. The desktop panel edits these same settings.
+
+Forks may explicitly override `endpoint` (HTTPS without embedded credentials) and/or `public_key`. Omitted fields retain their compiled official values; empty or invalid explicit values fail validation. The desktop shows **Custom update override active** and the effective endpoint whenever either field is present. Public keys accept Tauri's base64-encoded public-key file or a raw Minisign public-key line. A manifest cannot replace the trusted key. Key rotation requires an explicit trust migration.
+
+`ratatoskr update` checks manually; `update --install` installs. Desktop manual controls remain available. Before the first published manifest, GitHub may return 404: the helper treats that as no release, while the Tauri desktop updater reports a missing release manifest through the normal error/alert path.
+
+## Nightly behavior
+
+The running desktop checks during the first hour after the configured time. The window spans midnight when needed. Polling every 30 seconds evaluates local state; only one network check is made per nightly window in that process. Closing/reopening the app can check again within that window. A cached available update waits while editors contain unsaved configuration, skill, source, or new-skill work, or while an app operation is busy. Installation rechecks the saved configuration and takes the same cross-process locks as helper sync, apply, and schedule changes. Editors are frozen through installation/relaunch only after they are idle. The connected workspace comes from its existing persisted local configuration. No update means no installation or restart. Work still busy at the end of the hour defers until the next night. A failed attempt alerts and retries the following night; it does not hammer the endpoint.
+
+The standalone helper stores its attempt timestamp in `<state_dir>/<machine>/helper-update.json` before networking, including failed attempts. It checks at most once per local calendar day, at or after the configured time. A signed update is installed before that run's content sync; the running process finishes its sync and the next scheduled process uses the replacement. A helper in a Mac app or beside the Windows desktop executable is updated only through the desktop bundle (`standalone_helper`).
+
+Helper update failures fail the sync and use its existing deduplicated alert path. Desktop update failures use a separate notification state so unrelated successful syncs cannot falsely clear an update alert. An idle timer tick does not clear a failed-update alert. Delivery failures remain errors. Without `alert_command`, failures remain visible in CLI/scheduler output or the desktop status message.
+
+Standalone installation enforces HTTPS, size limits, a valid Minisign signature, a newer semantic version, and agreement between the signed binary's `--version` output and the manifest. Tauri enforces desktop signatures and matching signed versions.

@@ -14,13 +14,13 @@ Ratatoskr is a Rust command-line helper with an optional Tauri 2 desktop app. Th
 - Configure Claude, Codex, or custom agent targets through editable source definitions and machine profiles.
 - Render global and registered project skills. Report uncommitted and unpushed project skill-source work.
 - Install or remove a per-user launchd or Windows Task Scheduler job. Each run fast-forwards a clean content checkout, applies it, and exits. Optional command-based failure/recovery alerts are deduplicated.
-- Check and install cryptographically signed helper and desktop updates, with opt-in automatic updates. A release workflow builds signed draft releases for Apple Silicon, Intel Mac, and Windows x64.
+- Check and install cryptographically signed helper and desktop updates, with nightly automatic updates enabled by default. A release workflow builds signed draft releases for Apple Silicon, Intel Mac, and Windows x64.
 
 **Development draft:** no release binaries have been published. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
 
 ## Build and run
 
-Install stable Rust (1.90 or newer), Git, Node.js 22.12 or newer, and [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/).
+Install stable Rust (1.90 or newer), Git, Node.js 22.18 or newer, and [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
 cargo build --locked
@@ -60,7 +60,7 @@ ratatoskr project add "$PWD"
 
 ## Background sync and recovery
 
-Use a dedicated clean deployment checkout with a Git upstream for scheduled syncing. Keep authoring in a separate checkout. `ratatoskr sync` pulls with `--ff-only`, applies, and exits; it refuses dirty or divergent content history.
+Use a dedicated clean deployment checkout with a Git upstream for scheduled syncing. Keep authoring in a separate checkout. Local `deploy_branch` defaults to `main`. Before updating the helper, pulling, or applying, `ratatoskr sync` requires that exact current branch and its `<remote>/<deploy_branch>` upstream. Experimental branches, wrong or missing upstreams, and detached HEADs refuse deployment and alert. It then pulls with `--ff-only`, applies, and exits; dirty or divergent content history is also refused.
 
 `ratatoskr schedule plan --helper` previews an OS job for the supplied absolute executable path. `schedule install` registers it; `schedule remove` removes only the recorded, unchanged job. `--seconds` accepts 60–86400 (default 60). The desktop app exposes the same operations. No resident watcher is installed. Pending project skill commits or pushes also return a sync error and use the configured alert command.
 
@@ -70,7 +70,17 @@ Use a dedicated clean deployment checkout with a Git upstream for scheduled sync
 
 ## Updates and operating limits
 
-See [release and update setup](docs/releases.md) for signing keys and GitHub secrets. Cryptographic update signatures are separate from Apple notarization and Windows publisher signing.
+Official GitHub Releases and the trusted public signing key are built into both applications. No per-machine key setup is needed. Automatic updates default to **00:00 local time**; change the time or switch them off in the desktop Signed updates panel or local TOML:
+
+```toml
+[updates]
+automatic = true
+time = "00:00"
+```
+
+The running desktop checks once during the one-hour nightly window. An available update waits for unsaved editors and apply/sync/schedule work to finish, then installs and relaunches the connected workspace. No available update means no restart. If work stays busy until the window closes, it tries the next night. The standalone helper records its last attempt and checks at most once per local day, at or after the chosen time, before that run's sync. Its next run uses the new binary. Bundled helpers update with the desktop.
+
+Forks may explicitly set `updates.endpoint` and/or `updates.public_key`. The UI prominently labels active overrides. See [release operations](docs/releases.md) for the signing trust root and GitHub secrets. Cryptographic update signatures are separate from Apple notarization and Windows publisher signing.
 
 The ownership manifest belongs to one source and machine. Symlinks, traversal, case collisions, overlapping roots, conflicting variants, and malformed source files fail validation. There is no force-overwrite option. An OS lock serializes Ratatoskr applies; the desktop additionally refuses a plan that changed after review.
 

@@ -271,18 +271,34 @@ fn run() -> Result<i32> {
         }
         Action::Update { install } => {
             let settings = load(&path)?;
-            let update = settings.updates.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("Configure an HTTPS update endpoint and trusted public key first")
-            })?;
-            if let Some(release) = core::updates::check(update, env!("CARGO_PKG_VERSION"))? {
-                println!("Update available: {}", release.version);
-                if install {
-                    core::updates::install(update, &release)?;
-                    println!("Signed update installed.");
+            let update = &settings.updates;
+            let result: anyhow::Result<()> = (|| {
+                if let Some(release) = core::updates::check(update, env!("CARGO_PKG_VERSION"))? {
+                    println!("Update available: {}", release.version);
+                    if install {
+                        core::updates::install(update, &release)?;
+                        println!("Signed update installed.");
+                    }
+                } else {
+                    println!("No newer release available.");
                 }
-            } else {
-                println!("No newer release available.");
+                Ok(())
+            })();
+            let error = result
+                .as_ref()
+                .err()
+                .map(|e| format!("Helper update: {e:#}"));
+            if let Err(notification) = core::updates::report_outcome(
+                &settings,
+                error.as_deref(),
+                core::updates::UpdateKind::Helper,
+            ) {
+                anyhow::bail!(
+                    "{}; alert delivery failed: {notification:#}",
+                    error.as_deref().unwrap_or("Helper update completed")
+                );
             }
+            result?;
         }
         command => {
             let settings = load(&path)?;

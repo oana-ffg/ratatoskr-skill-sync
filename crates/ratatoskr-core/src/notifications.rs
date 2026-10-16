@@ -17,13 +17,14 @@ struct State {
 }
 
 pub(crate) fn outcome(settings: &Settings, error: Option<&str>) -> Result<()> {
+    outcome_for(settings, error, "notification.json")
+}
+
+pub(crate) fn outcome_for(settings: &Settings, error: Option<&str>, filename: &str) -> Result<()> {
     if settings.alert_command.is_empty() {
         return Ok(());
     }
-    let path = settings
-        .state_dir
-        .join(&settings.machine)
-        .join("notification.json");
+    let path = settings.state_dir.join(&settings.machine).join(filename);
     no_symlinks(&path)?;
     let mut state: State = if path.try_exists()? {
         serde_json::from_slice(&fs::read(&path)?)?
@@ -41,7 +42,7 @@ pub(crate) fn outcome(settings: &Settings, error: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let message = error.map_or_else(
-        || format!("Ratatoskr {}: sync recovered", settings.machine),
+        || format!("Ratatoskr {}: operation recovered", settings.machine),
         |e| format!("Ratatoskr {}: {e}", settings.machine),
     );
     let (program, args) = settings

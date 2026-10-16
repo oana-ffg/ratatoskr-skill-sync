@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "prepare:helper": "node scripts/prepare-helper.mjs",
     "format": "prettier --write src scripts *.json",
-    "format:check": "prettier --check src scripts *.json"
+    "format:check": "prettier --check src scripts *.json",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

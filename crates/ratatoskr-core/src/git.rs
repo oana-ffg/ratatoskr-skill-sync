@@ -203,6 +203,8 @@ pub fn sync(settings: &Settings) -> Result<Plan> {
 }
 
 fn sync_inner(settings: &Settings) -> Result<Plan> {
+    validate_deploy_branch(settings)?;
+    crate::updates::helper_update(settings)?;
     let status = git(
         &settings.source,
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -234,12 +236,55 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
         "Outputs synced; project skill work needs attention: {}",
         pending.join("; ")
     );
-    if let Some(updates) = &settings.updates
-        && updates.automatic
-        && crate::updates::standalone_helper()?
-        && let Some(release) = crate::updates::check(updates, env!("CARGO_PKG_VERSION"))?
-    {
-        crate::updates::install(updates, &release)?;
-    }
     Ok(plan)
+}
+
+fn validate_deploy_branch(settings: &Settings) -> Result<()> {
+    git(
+        &settings.source,
+        &["check-ref-format", "--branch", &settings.deploy_branch],
+    )?;
+    let branch = String::from_utf8(
+        git(
+            &settings.source,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )
+        .context("Content checkout is detached; refusing to pull or apply")?,
+    )?;
+    ensure!(
+        branch.trim() == settings.deploy_branch,
+        "Current content branch is {}; deploy_branch is {}; refusing to pull or apply",
+        branch.trim(),
+        settings.deploy_branch
+    );
+    let remote = String::from_utf8(
+        git(
+            &settings.source,
+            &[
+                "config",
+                "--get",
+                &format!("branch.{}.remote", settings.deploy_branch),
+            ],
+        )
+        .context("Deploy branch has no configured remote; refusing to pull or apply")?,
+    )?;
+    ensure!(
+        !remote.trim().is_empty() && remote.trim() != ".",
+        "Deploy branch must track a remote branch"
+    );
+    let upstream = String::from_utf8(
+        git(
+            &settings.source,
+            &["rev-parse", "--symbolic-full-name", "@{upstream}"],
+        )
+        .context("Deploy branch has no valid upstream; refusing to pull or apply")?,
+    )?;
+    let expected = format!("refs/remotes/{}/{}", remote.trim(), settings.deploy_branch);
+    ensure!(
+        upstream.trim() == expected,
+        "Content upstream is {}; expected {}; refusing to pull or apply",
+        upstream.trim(),
+        expected
+    );
+    Ok(())
 }
