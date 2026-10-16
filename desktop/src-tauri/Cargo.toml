@@ -1,0 +1,20 @@
+[package]
+name = "ratatoskr-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+tauri = { version = "2", features = [] }
+serde.workspace = true
+toml.workspace = true
+serde_json.workspace = true
+ratatoskr-core = { path = "../../crates/ratatoskr-core" }
+# Modern NSIS updates use the signed installer directly; legacy ZIP updates are unnecessary.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }

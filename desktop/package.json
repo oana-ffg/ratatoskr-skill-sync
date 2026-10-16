@@ -1,0 +1,24 @@
+{
+  "name": "ratatoskr-skill-sync-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "check": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "prepare:helper": "node scripts/prepare-helper.mjs",
+    "format": "prettier --write src scripts *.json",
+    "format:check": "prettier --check src scripts *.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "prettier": "^3.9.10",
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}

@@ -1,0 +1,247 @@
+use ratatoskr_core::{self as core, Plan, Settings, SkillDocument, SkillEntry};
+use serde::Serialize;
+use std::{fs, path::PathBuf, sync::Mutex};
+use tauri_plugin_updater::UpdaterExt;
+
+static MUTATION: Mutex<()> = Mutex::new(());
+type Reply<T> = Result<T, String>;
+
+#[derive(Serialize)]
+pub(crate) struct Snapshot {
+    config_path: PathBuf,
+    config_text: String,
+    plan: Plan,
+    skills: Vec<SkillEntry>,
+    helper: PathBuf,
+    source_files: Vec<String>,
+}
+
+fn config() -> Reply<PathBuf> {
+    core::default_config_path().map_err(|e| e.to_string())
+}
+fn settings() -> Reply<Settings> {
+    core::load(&config()?).map_err(|e| format!("{e:#}"))
+}
+fn snapshot() -> Reply<Snapshot> {
+    let path = config()?;
+    let settings = settings()?;
+    let mut plan = core::plan(&settings).unwrap_or_else(|error| Plan {
+        source: settings.source.clone(),
+        machine: settings.machine.clone(),
+        mode: "blocked".into(),
+        skills: 0,
+        targets: 0,
+        changes: vec![],
+        conflicts: vec![format!("Preview failed: {error:#}")],
+        projects: settings
+            .projects
+            .iter()
+            .map(|root| core::project_status(root))
+            .collect(),
+    });
+    let skills = core::list_skills(&settings).unwrap_or_else(|error| {
+        plan.conflicts
+            .push(format!("Cannot list source skills: {error:#}"));
+        vec![]
+    });
+    let source_files = core::source_files(&settings).unwrap_or_else(|error| {
+        plan.conflicts
+            .push(format!("Cannot list source configuration: {error:#}"));
+        vec![]
+    });
+    Ok(Snapshot {
+        config_text: fs::read_to_string(&path).map_err(|e| e.to_string())?,
+        config_path: path,
+        plan,
+        skills,
+        helper: std::env::current_exe()
+            .and_then(|path| path.canonicalize())
+            .map_err(|e| e.to_string())?
+            .with_file_name(if cfg!(windows) {
+                "ratatoskr.exe"
+            } else {
+                "ratatoskr"
+            }),
+        source_files,
+    })
+}
+fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapshot> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    action(&settings()?).map_err(|e| format!("{e:#}"))?;
+    snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn read_workspace() -> Reply<Option<Snapshot>> {
+    if !config()?.try_exists().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    snapshot().map(Some)
+}
+
+#[tauri::command]
+pub(crate) fn connect_workspace(
+    source: String,
+    machine: String,
+    create: bool,
+    remote: Option<String>,
+) -> Reply<Snapshot> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    let path = config()?;
+    if create {
+        core::create_content(&path, &PathBuf::from(source), &machine)
+    } else if let Some(remote) = remote.filter(|r| !r.trim().is_empty()) {
+        core::clone_content(&path, &remote, &PathBuf::from(source), &machine)
+    } else {
+        core::initialize(&path, &PathBuf::from(source), &machine)
+    }
+    .map_err(|e| format!("{e:#}"))?;
+    snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
+    mutate(|s| core::apply_reviewed(s, &expected_plan).map(|_| ()))
+}
+
+#[tauri::command]
+pub(crate) fn save_configuration(text: String) -> Reply<Snapshot> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    let candidate: Settings = toml::from_str(&text).map_err(|e| e.to_string())?;
+    core::plan(&candidate).map_err(|e| format!("{e:#}"))?;
+    core::save(&config()?, &candidate).map_err(|e| format!("{e:#}"))?;
+    snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn read_source_configuration(file: String) -> Reply<core::SourceDocument> {
+    core::read_source_file(&settings()?, &file).map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn save_source_configuration(
+    file: String,
+    text: String,
+    expected_hash: String,
+) -> Reply<Snapshot> {
+    mutate(|s| core::write_source_file(s, &file, &text, &expected_hash))
+}
+
+#[tauri::command]
+pub(crate) fn add_monitored_project(root: String, source: String) -> Reply<Snapshot> {
+    mutate(|_| {
+        core::add_project(&core::default_config_path()?, &PathBuf::from(root), &source).map(|_| ())
+    })
+}
+#[tauri::command]
+pub(crate) fn remove_monitored_project(root: String) -> Reply<Snapshot> {
+    mutate(|_| core::remove_project(&core::default_config_path()?, &PathBuf::from(root)))
+}
+#[tauri::command]
+pub(crate) fn read_source_skill(name: String, project: Option<PathBuf>) -> Reply<SkillDocument> {
+    core::read_skill(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn save_source_skill(
+    name: String,
+    project: Option<PathBuf>,
+    file: String,
+    text: String,
+    expected_hash: String,
+) -> Reply<Snapshot> {
+    mutate(|s| core::write_skill_file(s, project.as_deref(), &name, &file, &text, &expected_hash))
+}
+#[tauri::command]
+pub(crate) fn new_source_skill(
+    name: String,
+    project: Option<PathBuf>,
+    markdown: String,
+) -> Reply<Snapshot> {
+    mutate(|s| core::create_skill(s, project.as_deref(), &name, &markdown))
+}
+#[tauri::command]
+pub(crate) fn set_skill_enabled(
+    name: String,
+    project: Option<PathBuf>,
+    enabled: bool,
+) -> Reply<Snapshot> {
+    mutate(|s| core::disable_skill(s, project.as_deref(), &name, !enabled))
+}
+#[tauri::command]
+pub(crate) fn archive_source_skill(name: String, project: Option<PathBuf>) -> Reply<String> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    core::archive_skill(&settings()?, project.as_deref(), &name)
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn adopt_workspace() -> Reply<String> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    core::adopt(&settings()?)
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
+    mutate(|s| core::restore_backup(s, &backup).map(|_| ()))
+}
+#[tauri::command]
+pub(crate) fn sync_workspace() -> Reply<Snapshot> {
+    mutate(|s| core::sync(s).map(|_| ()))
+}
+#[tauri::command]
+pub(crate) fn preview_schedule(helper: PathBuf, seconds: u32) -> Reply<core::Schedule> {
+    core::schedule_plan(&settings()?, &config()?, &helper, seconds).map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn enable_schedule(helper: PathBuf, seconds: u32) -> Reply<String> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    let settings = settings()?;
+    let plan = core::schedule_plan(&settings, &config()?, &helper, seconds)
+        .map_err(|e| format!("{e:#}"))?;
+    core::install_schedule(&settings, &plan).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("Installed {}", plan.label))
+}
+#[tauri::command]
+pub(crate) fn disable_schedule() -> Reply<String> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    core::remove_schedule(&settings()?).map_err(|e| format!("{e:#}"))?;
+    Ok("Background schedule removed.".into())
+}
+#[tauri::command]
+pub(crate) async fn update_desktop(app: tauri::AppHandle, install: bool) -> Reply<String> {
+    let settings = settings()?;
+    let update_settings = settings.updates.ok_or(
+        "Configure an HTTPS update endpoint and trusted public key in Configuration first.",
+    )?;
+    let endpoint = update_settings
+        .endpoint
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    let updater = app
+        .updater_builder()
+        .pubkey(
+            update_settings
+                .tauri_public_key()
+                .map_err(|e| e.to_string())?,
+        )
+        .endpoints(vec![endpoint])
+        .map_err(|e| e.to_string())?
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) if install => {
+            update
+                .download_and_install(|_, _| (), || ())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok("Signed desktop update installed. Restart to use it.".into())
+        }
+        Some(update) => Ok(format!("Desktop update available: {}", update.version)),
+        None => Ok("No newer desktop release available.".into()),
+    }
+}
+#[tauri::command]
+pub(crate) fn restart_desktop(app: tauri::AppHandle) {
+    app.restart();
+}

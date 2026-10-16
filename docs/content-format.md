@@ -1,0 +1,26 @@
+# Content format
+
+Ratatoskr reads the existing agentfiles layout:
+
+- `harnesses.toml`: a table for each agent tag, containing portable relative `skills_dir`, relative `global_file`, optional `project_root`, and `roots` mapping OS names to absolute root templates.
+- `machines/`: one TOML file per machine identifier. Required fields are `os` and a nonempty `harnesses` list. `mode` defaults to `staging`; `live` also requires a verified `home`. Optional `paths` and `capabilities` provide template values and skill selection.
+- `skills/`: one directory per portable skill name. Each contains `SKILL.md` with YAML `name` matching the directory and a nonempty `description`, plus required `skill.toml`.
+- `global/AGENTS.md`: optional shared global instructions, rendered to each target's configured global filename.
+
+The initial reader uses machine `repo` and `alert_command` fields only as available template context. It does not execute a legacy alert command or move its checkout according to `repo`. The local Ratatoskr configuration owns source/state paths. Scheduled syncing and alerts use the local configuration; they do not execute legacy machine-profile alert commands.
+
+## Selection and templates
+
+Set `enabled = false` at the top level of `skill.toml` to disable a skill without deleting its source. It can also contain `[target]` arrays named `harnesses`, `os`, `machines`, and `capabilities`. Members of each ordinary list are OR; different keys are AND. All capabilities must be present. An empty ordinary selector excludes the skill. Unknown selector keys are errors.
+
+Markdown supports `only` HTML comment blocks: an opening comment starts with `only`, followed by `harness=codex`, `os=windows`, or `machine=brunnr`, and a closing comment contains `/only`. Comma-separated values mean OR and separate keys mean AND. Blocks cannot nest, even in excluded content, and are interpreted inside Markdown code fences too.
+
+All UTF-8 text supports scalar variables with `{{af:...}}`, including `home`, `machine`, `harness`, and dotted values under `paths`. Undefined variables in included content fail. Substitution is literal: quote correctly for the destination language. Opaque binary files are copied unchanged. Markdown, TOML, Python and `.txt` files require UTF-8.
+
+`variants/harness=codex/`, `variants/os=windows/`, and `variants/machine=brunnr/` add or replace files relative to the skill root. Matching variants cannot both replace the same path. Variants cannot replace `skill.toml`. `[frontmatter.<harness>]` adds YAML fields but cannot replace shared fields or skill identity.
+
+Portable filenames exclude traversal, Windows device names, invalid Windows characters, trailing dots/spaces, and case collisions. Unix executable bits are preserved; Windows does not use Unix executable permission bits. Known runtime artifacts (`__pycache__`, `.pyc`, `.DS_Store`) are ignored, but symlinks are always refused.
+
+## Local project marker
+
+`.ratatoskr.toml` contains a `source` string, a portable path relative to the Git root. The local registry stores only explicitly registered project roots. Ratatoskr monitors this source and marker for Git changes and renders its `skills/` content using shared global harness/machine settings. Live outputs use `project_root` (default `.<harness>`) and `skills_dir` inside the project. Staging outputs use a project-path hash beneath Ratatoskr state. A project source does not need its own harness or machine files. Global instructions are not rendered into projects.

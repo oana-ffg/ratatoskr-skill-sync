@@ -1,0 +1,1 @@
+{ "identifier": "workspace", "description": "Local Ratatoskr workspace window", "windows": ["main"], "permissions": ["core:default"] }

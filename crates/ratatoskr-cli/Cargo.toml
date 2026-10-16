@@ -1,0 +1,17 @@
+[package]
+name = "ratatoskr-skill-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "One source for agent skills, adapted per machine, OS and harness"
+
+[[bin]]
+name = "ratatoskr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+ratatoskr-core = { path = "../ratatoskr-core" }

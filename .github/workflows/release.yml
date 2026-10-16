@@ -1,0 +1,82 @@
+name: Build signed draft release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            bundle: app
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-x86_64
+            bundle: app
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            bundle: nsis
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: desktop
+      - name: Build and sign desktop bundle
+        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        working-directory: desktop
+      - name: Stage and sign standalone helper
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          extension=''
+          if [[ '${{ matrix.platform }}' == windows-* ]]; then extension='.exe'; fi
+          cp "target/${{ matrix.target }}/release/ratatoskr${extension}" "artifacts/ratatoskr-${{ matrix.platform }}${extension}"
+          cd desktop
+          npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" "../artifacts/ratatoskr-${{ matrix.platform }}${extension}"
+      - name: Collect desktop artifacts
+        shell: bash
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          node scripts/collect-release.mjs "target/${{ matrix.target }}/release/bundle" artifacts '${{ matrix.platform }}' "$version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: artifacts/*
+          if-no-files-found: error
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create manifest and draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "JSON.parse(require('fs').readFileSync('desktop/package.json')).version")
+          node scripts/release-manifest.mjs artifacts "$version" "$GITHUB_REPOSITORY"
+          gh release create "v$version" artifacts/* --draft --target "$GITHUB_SHA" --title "Ratatoskr Skill Sync $version" --generate-notes
