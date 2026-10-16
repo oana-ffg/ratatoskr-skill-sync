@@ -18,6 +18,18 @@ export async function runNightlyUpdate(
   if ((await check()) && idle()) await install();
 }
 
+/** Keep the workspace noninteractive until startup installation/relaunch finishes. */
+export async function runStartupUpdate(
+  update: () => Promise<void>,
+  ready: () => Promise<void>,
+): Promise<void> {
+  try {
+    await update();
+  } finally {
+    await ready();
+  }
+}
+
 export interface EditorState {
   configuration: { text: string; saved: string };
   source: { text: string; saved: string } | null;

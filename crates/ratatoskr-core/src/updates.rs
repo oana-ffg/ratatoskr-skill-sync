@@ -84,20 +84,11 @@ impl UpdateSettings {
 }
 
 /// The caller injects a local clock. Calendar-day accounting avoids minute-by-minute requests.
-pub fn check_due(
+fn helper_check_due(
     settings: &UpdateSettings,
     now: chrono::DateTime<chrono::FixedOffset>,
     last: Option<chrono::DateTime<chrono::FixedOffset>>,
-    desktop: bool,
 ) -> Result<bool> {
-    if desktop {
-        let slot = desktop_slot(settings, now)?;
-        let already_checked = last
-            .map(|last| desktop_slot(settings, last))
-            .transpose()?
-            .is_some_and(|last| last >= slot);
-        return Ok(!already_checked && desktop_window(settings, now)?);
-    }
     let already_checked =
         last.is_some_and(|last| last.with_timezone(now.offset()).date_naive() >= now.date_naive());
     Ok(settings.automatic && !already_checked && now.time() >= settings.scheduled_time()?)
@@ -121,6 +112,71 @@ pub fn desktop_window(
 ) -> Result<bool> {
     let elapsed = now.naive_local() - desktop_slot(settings, now)?;
     Ok(settings.automatic && elapsed < chrono::Duration::minutes(DESKTOP_WINDOW_MINUTES))
+}
+
+/// Persist attempts across launches, including an available update deferred by busy work.
+#[derive(Default, Deserialize, Serialize)]
+pub struct DesktopUpdateState {
+    last_check: Option<chrono::DateTime<chrono::FixedOffset>>,
+    settings: Option<UpdateSettings>,
+    pending: bool,
+}
+
+impl DesktopUpdateState {
+    pub fn load(settings: &crate::Settings) -> Result<Self> {
+        let path = settings
+            .state_dir
+            .join(&settings.machine)
+            .join("desktop-update.json");
+        crate::config::no_symlinks(&path)?;
+        if path.try_exists()? {
+            Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        } else {
+            Ok(Self::default())
+        }
+    }
+
+    pub fn due(
+        &self,
+        settings: &UpdateSettings,
+        now: chrono::DateTime<chrono::FixedOffset>,
+        launch: bool,
+    ) -> Result<bool> {
+        if !settings.automatic {
+            return Ok(false);
+        }
+        let same_settings = self.settings.as_ref() == Some(settings);
+        let last_slot = self
+            .last_check
+            .filter(|_| same_settings)
+            .map(|last| desktop_slot(settings, last))
+            .transpose()?;
+        let slot = desktop_slot(settings, now)?;
+        let missed = last_slot.is_none_or(|last| last < slot);
+        Ok((missed || (launch && same_settings && self.pending))
+            && (launch || desktop_window(settings, now)?))
+    }
+
+    pub fn record_attempt(
+        &mut self,
+        settings: &crate::Settings,
+        now: chrono::DateTime<chrono::FixedOffset>,
+    ) -> Result<()> {
+        self.last_check = Some(now);
+        self.settings = Some(settings.updates.clone());
+        self.record_available(settings, false)
+    }
+
+    pub fn record_available(&mut self, settings: &crate::Settings, available: bool) -> Result<()> {
+        self.pending = available;
+        crate::config::atomic_write(
+            &settings
+                .state_dir
+                .join(&settings.machine)
+                .join("desktop-update.json"),
+            &serde_json::to_vec(self)?,
+        )
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -159,7 +215,7 @@ pub(crate) fn helper_update_with(
         } else {
             HelperState::default()
         };
-        if check_due(&settings.updates, now, state.last_check, false)? {
+        if helper_check_due(&settings.updates, now, state.last_check)? {
             // Record attempts before networking, including failures, to cap requests at one per day.
             crate::config::atomic_write(
                 &path,
@@ -352,22 +408,39 @@ pub fn report_outcome(
 
 /// Holds the same locks as CLI sync/apply/schedule operations through desktop installation.
 pub struct UpdateGuard {
-    _locks: Vec<std::fs::File>,
+    locks: Vec<std::fs::File>,
 }
 
-pub fn try_idle_guard(settings: &crate::Settings) -> Result<Option<UpdateGuard>> {
-    let mut locks = Vec::new();
+impl Drop for UpdateGuard {
+    fn drop(&mut self) {
+        for file in &self.locks {
+            // Explicit unlock also releases locks retained by a briefly inherited file handle.
+            if let Err(error) = fs2::FileExt::unlock(file) {
+                eprintln!("Ratatoskr: release desktop update lock: {error}");
+            }
+        }
+    }
+}
+
+/// Startup waits for helper work to finish; an interactive nightly tick defers instead.
+pub fn idle_guard(settings: &crate::Settings, wait: bool) -> Result<Option<UpdateGuard>> {
+    let mut guard = UpdateGuard { locks: Vec::new() };
     for name in ["sync.lock", "apply.lock", "schedule.lock"] {
         let file = crate::config::state_lock(settings, name)?;
-        match fs2::FileExt::try_lock_exclusive(&file) {
-            Ok(()) => locks.push(file),
+        let result = if wait {
+            fs2::FileExt::lock_exclusive(&file)
+        } else {
+            fs2::FileExt::try_lock_exclusive(&file)
+        };
+        match result {
+            Ok(()) => guard.locks.push(file),
             Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
                 return Ok(None);
             }
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(Some(UpdateGuard { _locks: locks }))
+    Ok(Some(guard))
 }
 
 #[cfg(test)]
@@ -384,17 +457,61 @@ mod tests {
         for name in ["sync.lock", "apply.lock", "schedule.lock"] {
             let busy = crate::config::state_lock(&settings, name).unwrap();
             fs2::FileExt::try_lock_exclusive(&busy).unwrap();
-            assert!(try_idle_guard(&settings).unwrap().is_none());
+            assert!(idle_guard(&settings, false).unwrap().is_none());
+            fs2::FileExt::unlock(&busy).unwrap();
             drop(busy);
-            let guard = try_idle_guard(&settings).unwrap().unwrap();
+            let guard = idle_guard(&settings, false).unwrap().unwrap();
             let file = crate::config::state_lock(&settings, name).unwrap();
             assert!(fs2::FileExt::try_lock_exclusive(&file).is_err());
+            let inherited = guard.locks[0].try_clone().unwrap();
             drop(guard);
             assert!(fs2::FileExt::try_lock_exclusive(&file).is_ok());
+            fs2::FileExt::unlock(&file).unwrap();
+            drop(inherited);
         }
     }
+    #[test]
+    fn startup_install_waits_for_helper_work_to_finish() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = crate::Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let busy = crate::config::state_lock(&settings, "sync.lock").unwrap();
+        fs2::FileExt::try_lock_exclusive(&busy).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _guard = idle_guard(&settings, true).unwrap().unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            acquired_rx.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        fs2::FileExt::unlock(&busy).unwrap();
+        acquired_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+    }
+
     fn clock(value: &str) -> chrono::DateTime<chrono::FixedOffset> {
         chrono::DateTime::parse_from_rfc3339(value).unwrap()
+    }
+    fn nightly_due(
+        settings: &UpdateSettings,
+        now: chrono::DateTime<chrono::FixedOffset>,
+        last_check: Option<chrono::DateTime<chrono::FixedOffset>>,
+    ) -> bool {
+        DesktopUpdateState {
+            last_check,
+            settings: Some(settings.clone()),
+            pending: false,
+        }
+        .due(settings, now, false)
+        .unwrap()
     }
     #[test]
     fn official_defaults_and_explicit_overrides() {
@@ -462,30 +579,31 @@ mod tests {
             time: "03:15".into(),
             ..Default::default()
         };
-        assert!(!check_due(&settings, clock("2026-10-16T03:14:59+02:00"), None, true).unwrap());
+        assert!(!nightly_due(
+            &settings,
+            clock("2026-10-16T03:14:59+02:00"),
+            None
+        ));
         let now = clock("2026-10-16T03:15:00+02:00");
-        assert!(check_due(&settings, now, None, true).unwrap());
-        assert!(!check_due(&settings, now, Some(now), false).unwrap());
+        assert!(nightly_due(&settings, now, None));
+        assert!(!helper_check_due(&settings, now, Some(now)).unwrap());
         assert!(
-            check_due(
-                &settings,
-                clock("2026-10-17T03:15:00+02:00"),
-                Some(now),
-                false
-            )
-            .unwrap()
+            helper_check_due(&settings, clock("2026-10-17T03:15:00+02:00"), Some(now)).unwrap()
         );
-        assert!(!check_due(&settings, clock("2026-10-16T04:15:00+02:00"), None, true).unwrap());
-        assert!(check_due(&settings, clock("2026-10-16T04:15:00+02:00"), None, false).unwrap());
+        assert!(!nightly_due(
+            &settings,
+            clock("2026-10-16T04:15:00+02:00"),
+            None
+        ));
+        assert!(helper_check_due(&settings, clock("2026-10-16T04:15:00+02:00"), None).unwrap());
         assert!(
-            !check_due(
+            !helper_check_due(
                 &UpdateSettings {
                     automatic: false,
                     ..settings
                 },
                 now,
-                None,
-                false
+                None
             )
             .unwrap()
         );
@@ -507,32 +625,97 @@ mod tests {
         let checked = clock("2026-10-16T23:30:00+02:00");
         let after_midnight = clock("2026-10-17T00:15:00+02:00");
         assert!(desktop_window(&settings, after_midnight).unwrap());
-        assert!(!check_due(&settings, after_midnight, Some(checked), true).unwrap());
+        assert!(!nightly_due(&settings, after_midnight, Some(checked)));
         assert!(!desktop_window(&settings, clock("2026-10-17T00:30:00+02:00")).unwrap());
         let repeated_hour = UpdateSettings {
             time: "02:15".into(),
             ..Default::default()
         };
-        assert!(
-            !check_due(
-                &repeated_hour,
-                clock("2026-10-25T02:30:00+01:00"),
-                Some(clock("2026-10-25T02:15:00+02:00")),
-                true
-            )
-            .unwrap()
-        );
+        assert!(!nightly_due(
+            &repeated_hour,
+            clock("2026-10-25T02:30:00+01:00"),
+            Some(clock("2026-10-25T02:15:00+02:00"))
+        ));
         let midnight = UpdateSettings::default();
         assert!(
-            check_due(
+            helper_check_due(
                 &midnight,
                 clock("2026-10-26T00:00:00+01:00"),
-                Some(clock("2026-10-25T00:00:00+02:00")),
-                false
+                Some(clock("2026-10-25T00:00:00+02:00"))
             )
             .unwrap()
         );
     }
+    #[test]
+    fn desktop_launch_catches_up_missed_windows_and_persists_decisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = crate::Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let now = clock("2026-10-16T09:00:00+02:00");
+        let mut state = DesktopUpdateState::load(&settings).unwrap();
+        assert!(state.due(&settings.updates, now, true).unwrap());
+        assert!(!state.due(&settings.updates, now, false).unwrap());
+        state.record_attempt(&settings, now).unwrap();
+        let mut state = DesktopUpdateState::load(&settings).unwrap();
+        assert!(!state.due(&settings.updates, now, true).unwrap());
+        assert!(
+            state
+                .due(&settings.updates, clock("2026-10-17T00:00:00+02:00"), false)
+                .unwrap()
+        );
+        assert!(
+            state
+                .due(&settings.updates, clock("2026-10-17T09:00:00+02:00"), true)
+                .unwrap()
+        );
+        state.record_available(&settings, true).unwrap();
+        let mut state = DesktopUpdateState::load(&settings).unwrap();
+        assert!(
+            state.due(&settings.updates, now, true).unwrap(),
+            "deferred installation resumes on launch"
+        );
+        assert!(!state.due(&settings.updates, now, false).unwrap());
+        state.record_available(&settings, false).unwrap();
+        assert!(
+            !DesktopUpdateState::load(&settings)
+                .unwrap()
+                .due(&settings.updates, now, true)
+                .unwrap()
+        );
+        settings.updates.time = "23:30".into();
+        assert!(
+            state.due(&settings.updates, now, true).unwrap(),
+            "changed settings get a new check"
+        );
+        state
+            .record_attempt(&settings, clock("2026-10-15T23:45:00+02:00"))
+            .unwrap();
+        assert!(
+            !state
+                .due(&settings.updates, clock("2026-10-16T00:15:00+02:00"), true)
+                .unwrap()
+        );
+        assert!(
+            state
+                .due(&settings.updates, clock("2026-10-17T09:00:00+02:00"), true)
+                .unwrap()
+        );
+        settings.updates.automatic = false;
+        assert!(!state.due(&settings.updates, now, true).unwrap());
+        settings.updates.automatic = true;
+        settings.updates.time = "invalid".into();
+        assert!(state.due(&settings.updates, now, true).is_err());
+        std::fs::write(
+            settings.state_dir.join("test/desktop-update.json"),
+            "corrupt",
+        )
+        .unwrap();
+        assert!(DesktopUpdateState::load(&settings).is_err());
+    }
+
     #[test]
     fn helper_persists_attempts_including_failures_and_retries_next_day() {
         let temp = tempfile::tempdir().unwrap();

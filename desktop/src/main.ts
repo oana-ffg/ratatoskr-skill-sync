@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import "./style.css";
 import {
   runNightlyUpdate,
+  runStartupUpdate,
   hasUnsavedEdits,
   updateStatusText,
   type UpdateStatus,
@@ -53,6 +54,7 @@ interface Snapshot {
 
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) throw new Error("Missing app root");
+app.inert = true;
 app.innerHTML = `
   <aside><div class="brand"><img src="/ratatoskr.png" alt="Ratatoskr the squirrel"><span>Ratatoskr<small>SKILL SYNC</small></span></div><p class="eyebrow">ONE SOURCE. YOUR WHOLE GROVE.</p><nav aria-label="Workspace"><a href="#overview">Overview</a><a href="#changes">Pending changes</a><a href="#skills">Source skills</a><a href="#projects">Projects</a><a href="#automation">Background sync</a><a href="#configuration">Configuration</a></nav><p class="aside-note">Run the helper with this window closed.</p></aside>
   <section class="workspace"><header id="overview"><div><p class="eyebrow">YOUR AGENT WORKSPACE</p><h1>Everything, in its place.</h1><p id="subtitle">Connect a skill repository to see what needs syncing.</p></div><button id="refresh" class="secondary">Refresh</button></header>
@@ -66,7 +68,7 @@ app.innerHTML = `
   <section class="panel"><h2>Agent presets and machine profiles</h2><p>Edit harness definitions, machine conditions, or shared global instructions in your content repository.</p><label>Source file<select id="source-file"></select></label><button id="open-source" class="secondary">Open source file</button><label>Contents<textarea id="source-text" rows="12" spellcheck="false" disabled></textarea></label><button id="save-source" disabled>Validate and save source file</button></section>
   <section id="automation" class="panel"><p class="eyebrow">THE MESSENGER KEEPS RUNNING</p><h2>Background sync</h2><p>The helper runs independently through launchd on Mac or Task Scheduler on Windows. Use a clean deployment checkout with a Git upstream. Configure alert_command in local TOML for failure and recovery notifications.</p><form id="schedule-form"><label>Helper executable<input id="helper-path" required></label><label>Interval in seconds<input id="schedule-seconds" type="number" min="60" max="86400" value="60" required></label><button type="button" id="preview-schedule" class="secondary">Preview schedule</button><button type="submit">Install background schedule</button><button type="button" id="remove-schedule" class="secondary">Remove schedule</button></form><pre id="schedule-preview" hidden></pre><button id="sync-now" class="secondary">Pull and sync now</button></section>
   <section class="panel"><h2>Adoption and recovery</h2><p>Adoption backs up existing target skills before recording ownership. Review the resulting plan before applying: source files will replace adopted copies, and adopted files absent from source will be removed. Restore only verified backups from this workspace.</p><button id="adopt" class="secondary">Back up and adopt existing targets</button><form id="restore-form"><label>Backup directory<input id="backup-path" required></label><button type="submit" class="secondary">Restore backup</button></form></section>
-  <section class="panel"><h2>Signed updates</h2><p>Official updates use the built-in signing key. Automatic updates wait for idle work, then install and relaunch this workspace. Unsaved edits defer updates for up to one hour; after that, retry next night. Forks can explicitly override endpoint and public_key in local TOML.</p><p id="update-status" role="status"></p><form id="update-schedule-form"><label class="check"><input id="automatic-updates" type="checkbox" checked>Enable nightly updates</label><label>Local update time<input id="update-time" type="time" value="00:00" required></label><button type="submit">Save update schedule</button></form><div class="button-row"><button id="check-updates" class="secondary">Check desktop updates</button><button id="install-update" class="secondary">Install signed desktop update</button><button id="restart" class="secondary">Restart app</button></div></section>
+  <section class="panel"><h2>Signed updates</h2><p>Official updates use the built-in signing key. Automatic updates wait for idle work, then install and relaunch this workspace. Unsaved edits defer updates for up to one hour. Launching the app catches up on a missed update before editing starts. Forks can explicitly override endpoint and public_key in local TOML.</p><p id="update-status" role="status"></p><form id="update-schedule-form"><label class="check"><input id="automatic-updates" type="checkbox" checked>Enable nightly updates</label><label>Local update time<input id="update-time" type="time" value="00:00" required></label><button type="submit">Save update schedule</button></form><div class="button-row"><button id="check-updates" class="secondary">Check desktop updates</button><button id="install-update" class="secondary">Install signed desktop update</button><button id="restart" class="secondary">Restart app</button></div></section>
   </section>`;
 
 function element<T extends HTMLElement>(id: string): T {
@@ -365,8 +367,6 @@ element("project-form").addEventListener("submit", (event) => {
     message("Project registered. Its files will be checked on refresh.");
   });
 });
-void operation(refresh);
-
 element("editor-text").addEventListener("input", () => {
   if (!editing) return;
   if (element<HTMLSelectElement>("editor-file").value === "SKILL.md")
@@ -612,3 +612,16 @@ async function nightlyTick(): Promise<void> {
 setInterval(() => {
   void nightlyTick();
 }, 30_000);
+
+message("Checking for missed nightly updates…");
+void runStartupUpdate(
+  async () => {
+    if (isTauri()) await invoke<boolean>("startup_update");
+  },
+  async () => {
+    await operation(refresh);
+    app.inert = false;
+  },
+).catch((error: unknown) => {
+  message(`Startup update failed: ${String(error)}`, true);
+});

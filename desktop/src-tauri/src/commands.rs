@@ -238,13 +238,9 @@ fn desktop_updater(
 }
 
 struct Nightly {
-    last_check: Option<chrono::DateTime<chrono::FixedOffset>>,
     pending: Option<(String, tauri_plugin_updater::Update)>,
 }
-static NIGHTLY: Mutex<Nightly> = Mutex::new(Nightly {
-    last_check: None,
-    pending: None,
-});
+static NIGHTLY: Mutex<Nightly> = Mutex::new(Nightly { pending: None });
 
 fn update_result<T>(settings: &Settings, result: anyhow::Result<T>) -> Reply<T> {
     let error = result
@@ -267,6 +263,18 @@ fn update_result<T>(settings: &Settings, result: anyhow::Result<T>) -> Reply<T> 
 
 #[tauri::command]
 pub(crate) async fn nightly_update(app: tauri::AppHandle, install: bool) -> Reply<bool> {
+    automatic_update(app, install, false).await
+}
+
+#[tauri::command]
+pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
+    if !config()?.try_exists().map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    automatic_update(app, true, true).await
+}
+
+async fn automatic_update(app: tauri::AppHandle, install: bool, launch: bool) -> Reply<bool> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = if install {
             match MUTATION.try_lock() {
@@ -279,11 +287,14 @@ pub(crate) async fn nightly_update(app: tauri::AppHandle, install: bool) -> Repl
         };
         let settings = settings()?;
         let mut attempted = false;
+        let mut installed = false;
         let result = (|| -> anyhow::Result<bool> {
             let mut nightly = NIGHTLY.lock().map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let now = chrono::Local::now().fixed_offset();
             let fingerprint = toml::to_string(&settings)?;
-            if !core::updates::desktop_window(&settings.updates, now)? {
+            if !settings.updates.automatic
+                || (!launch && !core::updates::desktop_window(&settings.updates, now)?)
+            {
                 nightly.pending = None;
                 return Ok(false);
             }
@@ -294,27 +305,31 @@ pub(crate) async fn nightly_update(app: tauri::AppHandle, install: bool) -> Repl
             {
                 nightly.pending = None;
             }
-            if !install
-                && core::updates::check_due(&settings.updates, now, nightly.last_check, true)?
-            {
-                nightly.last_check = Some(now);
+            let mut state = core::updates::DesktopUpdateState::load(&settings)?;
+            if (launch || !install) && state.due(&settings.updates, now, launch)? {
                 attempted = true;
+                state.record_attempt(&settings, now)?;
+                nightly.pending = None;
                 nightly.pending =
                     tauri::async_runtime::block_on(desktop_updater(&app, &settings)?.check())?
                         .map(|update| (fingerprint, update));
+                state.record_available(&settings, nightly.pending.is_some())?;
             }
             if install && let Some((_, update)) = nightly.pending.take() {
-                let Some(_idle) = core::updates::try_idle_guard(&settings)? else {
+                let Some(_idle) = core::updates::idle_guard(&settings, launch)? else {
                     nightly.pending = Some((toml::to_string(&settings)?, update));
                     return Ok(false);
                 };
                 attempted = true;
                 tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()))?;
+                installed = true;
+                // The installed version will recheck on the next window, without a restart loop.
+                state.record_available(&settings, false)?;
                 return Ok(true);
             }
             Ok(!install && nightly.pending.is_some())
         })();
-        let restart = install && result.as_ref().is_ok_and(|installed| *installed);
+        let restart = install && installed;
         let result = if attempted || result.is_err() {
             update_result(&settings, result)
         } else {
@@ -341,7 +356,7 @@ pub(crate) async fn update_desktop(app: tauri::AppHandle, install: bool) -> Repl
         let result = (|| -> anyhow::Result<String> {
             match tauri::async_runtime::block_on(desktop_updater(&app, &settings)?.check())? {
                 Some(update) if install => {
-                    let _idle = core::updates::try_idle_guard(&settings)?.ok_or_else(|| {
+                    let _idle = core::updates::idle_guard(&settings, false)?.ok_or_else(|| {
                         anyhow::anyhow!(
                             "Apply, sync, or a schedule change is running; retry when idle"
                         )
