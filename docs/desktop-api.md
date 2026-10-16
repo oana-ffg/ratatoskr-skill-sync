@@ -58,3 +58,5 @@ Snapshots include `legacy` duplicates when an enabled local Codex profile instal
 ## Structured alert settings
 
 Local settings support optional `[alert]` with `kind = "system"`, `"pushover"` (`token_env`, `user_env`), or `"ntfy"` (`url`, optional `token_env`). Custom commands continue to use `alert_command` argv with no shell. Delivery failures preserve retryable ledger state.
+
+`update_desktop({install})` returns `{message, available, installed}` from the native updater. Settings offers installation only after an available result and restart only after a successful installation; it does not infer state from the message text.
