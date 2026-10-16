@@ -381,10 +381,17 @@ element("save-skill").addEventListener("click", () => {
             : editing.document.metadata_hash,
       }),
     );
-    editing.document = await invoke<SkillDocument>("read_source_skill", {
+    const saved = await invoke<SkillDocument>("read_source_skill", {
       name: editing.skill.name,
       project: editing.skill.project,
     });
+    if (file === "SKILL.md") {
+      editing.document.markdown = saved.markdown;
+      editing.document.markdown_hash = saved.markdown_hash;
+    } else {
+      editing.document.metadata = saved.metadata;
+      editing.document.metadata_hash = saved.metadata_hash;
+    }
     message(
       "Source saved and syntax validated. Review the resulting output changes.",
     );
