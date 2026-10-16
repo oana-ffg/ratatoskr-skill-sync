@@ -56,3 +56,18 @@ Open at login is off until explicitly enabled through the Tauri autostart plugin
 PR #2 also exposes parser analysis and focused command endpoints for the separate UI redesign; see [desktop-api.md](desktop-api.md). All ranges are UTF-16 offsets. A regression test proves operation locks explicitly release even while another process retains a duplicated file descriptor. CLI acceptance exercised the new actions in an isolated temporary repository. The native desktop builds; its new command flows were not verified through native UI automation.
 
 Final local PR #2 checks: 59 Rust tests and 11 desktop tests passed, Rust formatting/strict Clippy passed for default targets and native desktop, locked helper/desktop builds passed, and npm ci/format/check/build passed. Real CLI acceptance was repeated against the final core. Native UI interaction, login after reboot, individual agent discovery and production auto-update remain unverified platform acceptance steps.
+
+## Workspace-independent desktop updates in 0.2.1
+
+The supervisor reported that the real 0.1.0 → 0.2.0 update on Brunnr skipped apps without a workspace. Version 0.2.0 is released from `15f5608`; earlier statements above about unpublished binaries describe the initial implementation stage.
+
+Regression coverage now exercises the desktop policy used by the native commands with injected check/install operations and real temporary state files:
+
+- Unconfigured launch catch-up installs, persists its completed check, and does not repeat after reopening.
+- Unconfigured nightly checks at midnight, installs on an idle tick, and checks again in the next window. A deferred available update is rechecked and installed on launch.
+- Manual checks and installations use compiled official defaults without creating a workspace config.
+- Configured endpoint/key overrides, disabled automatic updates, custom nightly time, and cross-process idle deferral still apply. The legacy workspace ledger remains readable and subsequent attempts persist in the app directory.
+- Network/install errors propagate; failed attempts are accounted for; corrupt state and invalid configuration are refused.
+- App UI tests open Settings from onboarding, exercise Check → Install → Restart, reject accidental workspace-setting reads, and verify native startup/nightly IPC calls and interval cleanup without a workspace.
+
+Local checks passed: 79 Rust tests, 24 frontend tests, Rust formatting, strict Clippy for default targets and native desktop (including tests), npm ci, Prettier, TypeScript, Vite production build, and native desktop/helper debug builds. Remote CI results are recorded in PR #4. A production-signed 0.2.1 update downloading, installing, and relaunching on Brunnr or Windows remains unverified: no release is cut by this change. The injected installer tests establish the policy and persistence, not a real operating-system installation. Reboot/login launch and an unattended midnight run also remain platform acceptance steps.

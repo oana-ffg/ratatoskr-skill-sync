@@ -128,7 +128,7 @@
       },
     ).catch(fail);
     const interval = setInterval(() => {
-      if (!isTauri() || !workspace || busy || !ready) return;
+      if (!isTauri() || busy || !ready) return;
       void runNightlyUpdate(
         () => api.command<boolean>("nightly_update", { install: false }),
         () => !dirty && !busy && !pending,
@@ -272,7 +272,14 @@
       {#key epoch}
         {#if !ready}<div class="empty-state">
             Opening workspace…
-          </div>{:else if !workspace}<section class="page onboarding">
+          </div>{:else if screen === "Settings"}<Settings
+            bind:this={settings}
+            onunsaved={(value) => (unsaved = value)}
+            {workspace}
+            onupdate={update}
+            onerror={fail}
+            ondirty={(v) => (dirty = v)}
+          />{:else if !workspace}<section class="page onboarding">
             <p class="eyebrow">WELCOME TO RATATOSKR</p>
             <h1>Your knowledge.<br />Every agent.</h1>
             <p class="muted">
@@ -359,13 +366,6 @@
             onerror={fail}
             ondirty={(v) => (dirty = v)}
           />{:else if screen === "Activity"}<Activity
-            {workspace}
-            onupdate={update}
-            onerror={fail}
-            ondirty={(v) => (dirty = v)}
-          />{:else if screen === "Settings"}<Settings
-            bind:this={settings}
-            onunsaved={(value) => (unsaved = value)}
             {workspace}
             onupdate={update}
             onerror={fail}

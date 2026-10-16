@@ -23,7 +23,7 @@ The workflow signs artifacts using Tauri/Minisign. Windows uses the signed NSIS 
 
 ## Local update settings
 
-An omitted `[updates]` table uses official defaults: automatic updates enabled at `00:00` local time. Set `automatic = false` to disable nightly installation, or set `time` to a 24-hour `HH:MM` value. The desktop panel edits these same settings.
+An omitted `[updates]` table uses official defaults: automatic updates enabled at `00:00` local time. Set `automatic = false` to disable nightly installation, or set `time` to a 24-hour `HH:MM` value. The desktop panel edits these same settings when a workspace is connected. Without a workspace config, the app uses the compiled official endpoint/key and the automatic `00:00` schedule. Settings → Updates is available from onboarding for manual checks, installation, and restart. Connecting a workspace enables its existing update settings, including explicit overrides.
 
 Forks may explicitly override `endpoint` (HTTPS without embedded credentials) and/or `public_key`. Omitted fields retain their compiled official values; empty or invalid explicit values fail validation. The desktop shows **Custom update override active** and the effective endpoint whenever either field is present. Public keys accept Tauri's base64-encoded public-key file or a raw Minisign public-key line. A manifest cannot replace the trusted key. Key rotation requires an explicit trust migration.
 
@@ -31,7 +31,9 @@ Forks may explicitly override `endpoint` (HTTPS without embedded credentials) an
 
 ## Nightly behavior
 
-The running desktop checks during the first hour after the configured time. The window spans midnight when needed. Polling every 30 seconds evaluates local state; attempts are saved in `<state_dir>/<machine>/desktop-update.json` before networking, so reopening does not repeat a completed check in the same nightly window. At launch, a missed window triggers a catch-up check before the workspace becomes interactive. An available signed update is installed and the app relaunches before editing starts. Startup waits for other helper apply/sync/schedule work to finish. A previously available update deferred by busy work is checked again on launch; changed update settings also trigger a fresh check.
+The running desktop checks during the first hour after the configured time. The window spans midnight when needed. Polling every 60 seconds evaluates local state, including during onboarding; attempts are saved in `<app_data_dir>/desktop-update.json` before networking, so reopening does not repeat a completed check in the same nightly window. When that app ledger is absent, an existing workspace ledger at `<state_dir>/<machine>/desktop-update.json` is read for continuity; the next attempt writes to the app directory. This keeps completed checks and deferred updates across the 0.2.0 transition.
+
+At launch, a missed window triggers a catch-up check before the workspace becomes interactive. An available signed update is installed and the app relaunches before editing starts. Startup waits for other helper apply/sync/schedule work to finish when a workspace exists. Without a workspace, installation needs no workspace locks. A previously available update deferred by busy work is checked again on launch; changed update settings also trigger a fresh check.
 
 During an interactive session, a cached available update waits while editors contain unsaved configuration, skill, source, or new-skill work, or while an app operation is busy. Installation rechecks the saved configuration and takes the same cross-process locks as helper sync, apply, and schedule changes. Editors are frozen through installation/relaunch only after they are idle. The connected workspace comes from its existing persisted local configuration. No update means no installation or restart. Work still busy at the end of the hour defers until the next night or app launch. A failed check alerts and retries the following night; an idle tick or reopening after that failed check does not hammer the endpoint. Startup errors are shown when the workspace becomes interactive.
 
@@ -40,3 +42,9 @@ The standalone helper stores its attempt timestamp in `<state_dir>/<machine>/hel
 Helper update failures never prevent the content pull/apply from running. Helper updates, desktop updates, and sync each use their own deduplicated notification state. An update failure and a sync failure can both alert during the same invocation. Skipped update checks and successful syncs cannot clear update alerts; a successful update check reports recovery. Failed update-alert delivery also leaves the sync running. The CLI still exits with an error for a failed update or notification, preserving all simultaneous failures in its output. Without `alert_command`, failures remain visible in CLI/scheduler output or the desktop status message.
 
 Standalone installation enforces HTTPS, size limits, a valid Minisign signature, a newer semantic version, and agreement between the signed binary's `--version` output and the manifest. Tauri enforces desktop signatures and matching signed versions.
+
+## 0.2.1 patch
+
+Fixes desktop updates for fresh installs and apps without a connected workspace. Startup catch-up, nightly checks, and manual Settings checks/installations share the same app-level settings resolver. Desktop attempt/deferral state belongs to the app data directory; helper update state remains workspace-specific. Existing configured update overrides and idle guards are preserved. Invalid configurations and corrupt update state remain visible errors.
+
+The version is bumped in the workspace, desktop package, native bundle config, and lockfiles. This PR does not build or publish a release.

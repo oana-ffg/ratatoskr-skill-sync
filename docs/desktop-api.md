@@ -1,4 +1,4 @@
-# Desktop command API (0.2.0)
+# Desktop command API (0.2.1)
 
 PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for the UI redesign. The desktop uses Svelte 5 and CodeMirror 6; structured edits use the same Rust core as the CLI. All command failures propagate as rejected invocations with contextual error text.
 
@@ -60,3 +60,7 @@ Snapshots include `legacy` duplicates when an enabled local Codex profile instal
 Local settings support optional `[alert]` with `kind = "system"`, `"pushover"` (`token_env`, `user_env`), or `"ntfy"` (`url`, optional `token_env`). Custom commands continue to use `alert_command` argv with no shell. Delivery failures preserve retryable ledger state.
 
 `update_desktop({install})` returns `{message, available, installed}` from the native updater. Settings offers installation only after an available result and restart only after a successful installation; it does not infer state from the message text.
+
+### Updates without a workspace
+
+`read_update_settings` returns the effective `endpoint`, `override_active`, `automatic`, and `time`. `startup_update`, `nightly_update`, and `update_desktop` work before a workspace is connected, using compiled official defaults. Existing configurations retain their update overrides. `read_local_settings`, `save_local_settings`, and `save_update_schedule` remain workspace operations; onboarding Settings displays the default schedule and exposes manual check/install/restart without invoking those operations.
