@@ -295,9 +295,7 @@ fn run() -> Result<i32> {
             if matches!(command, Action::Status)
                 && (!report.changes.is_empty()
                     || !report.conflicts.is_empty()
-                    || report.projects.iter().any(|p| {
-                        p.changed_files != 0 || p.outgoing_commits != Some(0) || p.error.is_some()
-                    }))
+                    || report.projects.iter().any(|p| p.needs_attention()))
             {
                 return Ok(1);
             }

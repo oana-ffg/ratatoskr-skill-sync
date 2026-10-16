@@ -185,8 +185,10 @@ pub(crate) fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
     mutate(|s| core::restore_backup(s, &backup).map(|_| ()))
 }
 #[tauri::command]
-pub(crate) fn sync_workspace() -> Reply<Snapshot> {
-    mutate(|s| core::sync(s).map(|_| ()))
+pub(crate) async fn sync_workspace() -> Reply<Snapshot> {
+    tauri::async_runtime::spawn_blocking(|| mutate(|s| core::sync(s).map(|_| ())))
+        .await
+        .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub(crate) fn preview_schedule(helper: PathBuf, seconds: u32) -> Reply<core::Schedule> {

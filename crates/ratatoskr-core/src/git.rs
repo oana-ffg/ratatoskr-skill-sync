@@ -21,6 +21,12 @@ pub struct ProjectStatus {
     pub error: Option<String>,
 }
 
+impl ProjectStatus {
+    pub fn needs_attention(&self) -> bool {
+        self.changed_files != 0 || self.outgoing_commits != Some(0) || self.error.is_some()
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Marker {
@@ -208,6 +214,26 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
     git(&settings.source, &["rev-parse", "--verify", "@{upstream}"])?;
     git(&settings.source, &["pull", "--ff-only", "--no-rebase"])?;
     let plan = apply(settings)?;
+    let pending: Vec<_> = plan
+        .projects
+        .iter()
+        .filter(|project| project.needs_attention())
+        .map(|project| {
+            format!(
+                "{} ({} uncommitted skill files, {} unpushed skill commits)",
+                project.root.display(),
+                project.changed_files,
+                project
+                    .outgoing_commits
+                    .map_or("unknown: missing upstream".into(), |n| n.to_string())
+            )
+        })
+        .collect();
+    ensure!(
+        pending.is_empty(),
+        "Outputs synced; project skill work needs attention: {}",
+        pending.join("; ")
+    );
     if let Some(updates) = &settings.updates
         && updates.automatic
         && crate::updates::standalone_helper()?

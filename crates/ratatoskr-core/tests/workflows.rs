@@ -366,10 +366,12 @@ fn project_monitor_detects_only_unpushed_skill_commits() {
     fs::write(project.join(".ratatoskr.toml"), "source='agent-skills'\n").unwrap();
     git(&project, &["add", "."]);
     git(&project, &["commit", "-m", "Initial"]);
-    git(
-        &project,
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    );
+    let remote_url = remote
+        .to_str()
+        .unwrap()
+        .trim_start_matches("\\\\?\\")
+        .replace('\\', "/");
+    git(&project, &["remote", "add", "origin", &remote_url]);
     git(&project, &["push", "-u", "origin", "main"]);
     fs::write(project.join("unrelated.txt"), "Change").unwrap();
     git(&project, &["add", "."]);

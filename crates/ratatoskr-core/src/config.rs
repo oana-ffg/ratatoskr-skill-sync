@@ -182,6 +182,10 @@ pub(crate) fn no_symlinks(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for part in path.components() {
         current.push(part);
+        // A Windows drive/UNC prefix is not a complete filesystem path until its root follows.
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(meta) => ensure!(
                 !meta.file_type().is_symlink(),

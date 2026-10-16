@@ -62,7 +62,7 @@ ratatoskr project add "$PWD"
 
 Use a dedicated clean deployment checkout with a Git upstream for scheduled syncing. Keep authoring in a separate checkout. `ratatoskr sync` pulls with `--ff-only`, applies, and exits; it refuses dirty or divergent content history.
 
-`ratatoskr schedule plan --helper` previews an OS job for the supplied absolute executable path. `schedule install` registers it; `schedule remove` removes only the recorded, unchanged job. `--seconds` accepts 60–86400 (default 60). The desktop app exposes the same operations. No resident watcher is installed.
+`ratatoskr schedule plan --helper` previews an OS job for the supplied absolute executable path. `schedule install` registers it; `schedule remove` removes only the recorded, unchanged job. `--seconds` accepts 60–86400 (default 60). The desktop app exposes the same operations. No resident watcher is installed. Pending project skill commits or pushes also return a sync error and use the configured alert command.
 
 `alert_command` in local configuration is an argv array. Ratatoskr appends a plain-English message and executes it without a shell. New failures alert immediately, unchanged failures repeat after 24 hours, and recovery alerts once. Failed delivery remains an error. Without an alert command, failures still return nonzero and appear in scheduler logs.
 
