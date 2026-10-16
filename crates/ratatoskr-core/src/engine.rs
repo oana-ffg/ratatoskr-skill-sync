@@ -888,7 +888,8 @@ pub fn adopt(settings: &Settings) -> Result<PathBuf> {
         }
     }
     for (_, path) in &desired.allowed {
-        if path.try_exists()? && !owned.files.contains_key(path) {
+        if desired.files.contains_key(path) && path.try_exists()? && !owned.files.contains_key(path)
+        {
             no_symlinks(path)?;
             owned.files.insert(
                 path.clone(),

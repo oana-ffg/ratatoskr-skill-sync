@@ -66,7 +66,7 @@ Use a dedicated clean deployment checkout with a Git upstream for scheduled sync
 
 `alert_command` in local configuration is an argv array. Ratatoskr appends a plain-English message and executes it without a shell. New failures alert immediately, unchanged failures repeat after 24 hours, and recovery alerts once. Failed delivery remains an error. Without an alert command, failures still return nonzero and appear in scheduler logs.
 
-`ratatoskr adopt` backs up existing matching target directories and global files before recording ownership. It does not write generated output. Review `plan` before applying: adopted files absent from source are scheduled for removal. `ratatoskr restore` accepts the backup directory printed by adoption, verifies every stored hash, and refuses current hand edits or unmanaged overwrite. Archiving a source skill moves it into `.ratatoskr-archive` on the same volume.
+`ratatoskr adopt` backs up existing matching target directories and global files with corresponding source content before recording ownership. It does not write generated output. Review `plan` before applying: adopted files absent from source are scheduled for removal. `ratatoskr restore` accepts the backup directory printed by adoption, verifies every stored hash, and refuses current hand edits or unmanaged overwrite. Archiving a source skill moves it into `.ratatoskr-archive` on the same volume.
 
 ## Updates and operating limits
 

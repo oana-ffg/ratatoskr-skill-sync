@@ -607,3 +607,19 @@ fn source_configuration_editing_validates_templates_and_detects_external_edits()
     );
     assert!(ratatoskr_core::read_source_file(&f.settings, "../outside.toml").is_err());
 }
+
+#[test]
+fn adoption_preserves_global_instructions_when_no_global_source_exists() {
+    let f = Fixture::new();
+    let global = f.settings.state_dir.join("test/staging/codex/AGENTS.md");
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(&global, "Existing instructions outside the content source").unwrap();
+    ratatoskr_core::adopt(&f.settings).unwrap();
+    let preview = plan(&f.settings).unwrap();
+    assert!(!preview.changes.iter().any(|change| change.path == global));
+    apply(&f.settings).unwrap();
+    assert_eq!(
+        fs::read_to_string(global).unwrap(),
+        "Existing instructions outside the content source"
+    );
+}

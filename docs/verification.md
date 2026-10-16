@@ -4,7 +4,7 @@ Initial draft prepared on macOS Apple Silicon on 2026-10-16. The owner explicitl
 
 ## Local results
 
-- 25 automated core/CLI workflow tests passed, covering rendering, conditions, variants, malformed source, ownership boundaries, concurrent edits, backup/restore, project rendering and Git status, scheduling definitions, setup, and signed payload tampering.
+- 26 automated core/CLI workflow tests passed, covering rendering, conditions, variants, malformed source, ownership boundaries, concurrent edits, backup/restore, project rendering and Git status, scheduling definitions, setup, and signed payload tampering.
 - Rust formatting and strict Clippy checks passed for core, CLI, and native desktop.
 - TypeScript, Prettier, and Vite production build passed.
 - Actual CLI exercised in an isolated temporary content repository: initialization, skill creation, per-harness output, enable/disable, apply, idempotence, and pull/sync through a local bare Git upstream.
