@@ -9,8 +9,8 @@
     "build": "npm run check && vite build",
     "tauri": "tauri",
     "prepare:helper": "node scripts/prepare-helper.mjs",
-    "format": "prettier --write src scripts tests e2e *.json *.ts",
-    "format:check": "prettier --check src scripts tests e2e *.json *.ts",
+    "format": "prettier --write src scripts tests e2e \"*.json\" \"*.ts\"",
+    "format:check": "prettier --check src scripts tests e2e \"*.json\" \"*.ts\"",
     "test": "node --experimental-strip-types --test tests/*.test.mjs && npm run prepare:fixtures && vitest run",
     "test:screenshots": "npm run prepare:fixtures && playwright test",
     "prepare:fixtures": "node scripts/prepare-fixtures.mjs"
