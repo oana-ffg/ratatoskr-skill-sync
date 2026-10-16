@@ -50,11 +50,27 @@ pub(crate) fn render(source: &str, context: &toml::Table, markdown: bool) -> Res
         );
         let mut position = 0;
         for block in blocks {
-            output.push_str(&source[position..block.opening.start]);
+            let opening = marker_line(source, block.opening.clone());
+            let closing = marker_line(source, block.closing.clone());
+            output.push_str(&source[position..opening.start]);
             if block_matches(&block.selectors, context) {
-                output.push_str(&source[block.body]);
+                output.push_str(&source[opening.end..closing.start]);
+                position = closing.end;
+            } else {
+                position = closing.end;
+                // Keep the separator before the excluded section, but do not also
+                // emit its trailing separator. Never normalize unrelated whitespace.
+                if output.ends_with("\n\n") || output.ends_with("\r\n\r\n") || output.is_empty() {
+                    while position < source.len() {
+                        let rest = &source[position..];
+                        let end = rest.find('\n').map_or(rest.len(), |i| i + 1);
+                        if !rest[..end].trim().is_empty() {
+                            break;
+                        }
+                        position += end;
+                    }
+                }
             }
-            position = block.closing.end;
         }
         output.push_str(&source[position..]);
     } else {
@@ -76,6 +92,91 @@ pub(crate) fn render(source: &str, context: &toml::Table, markdown: bool) -> Res
         "Malformed or recursive variable"
     );
     Ok(rendered)
+}
+
+/// A standalone marker owns its indentation and line ending. Inline markers
+/// own only the tag bytes, so surrounding text is preserved exactly.
+fn marker_line(source: &str, marker: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let start = source[..marker.start].rfind('\n').map_or(0, |i| i + 1);
+    let end = source[marker.end..]
+        .find('\n')
+        .map_or(source.len(), |i| marker.end + i + 1);
+    if source[start..marker.start].trim().is_empty() && source[marker.end..end].trim().is_empty() {
+        start..end
+    } else {
+        marker
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    fn context() -> toml::Table {
+        toml::from_str("harness='codex'").unwrap()
+    }
+
+    #[test]
+    fn standalone_markers_leave_no_blank_lines_when_included() {
+        for newline in ["\n", "\r\n"] {
+            let source = "Before\n  <!-- only harness=codex --> \nBody\n\nMore body\n<!-- /only -->\nAfter\n".replace('\n', newline);
+            let expected = "Before\nBody\n\nMore body\nAfter\n".replace('\n', newline);
+            assert_eq!(render(&source, &context(), true).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn excluded_sections_leave_no_marker_or_duplicate_separator_lines() {
+        for newline in ["\n", "\r\n"] {
+            for (source, expected) in [
+                (
+                    "Before\n<!-- only harness=claude -->\nBody\n<!-- /only -->\nAfter\n",
+                    "Before\nAfter\n",
+                ),
+                (
+                    "Before\n\n<!-- only harness=claude -->\nBody\n<!-- /only -->\n\nAfter\n",
+                    "Before\n\nAfter\n",
+                ),
+                (
+                    "<!-- only harness=claude -->\nBody\n<!-- /only -->\n\nAfter",
+                    "After",
+                ),
+                (
+                    "Before\n<!-- only harness=claude -->\nBody\n<!-- /only -->",
+                    "Before\n",
+                ),
+                ("<!-- only harness=claude -->\nBody\n<!-- /only -->", ""),
+                (
+                    "Before\n\n<!-- only harness=claude -->\nA\n<!-- /only -->\n\n<!-- only harness=claude -->\nB\n<!-- /only -->\n\nAfter",
+                    "Before\n\nAfter",
+                ),
+            ] {
+                assert_eq!(
+                    render(&source.replace('\n', newline), &context(), true).unwrap(),
+                    expected.replace('\n', newline)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inline_markers_and_unrelated_whitespace_stay_intact() {
+        let source = "Before <!-- only harness=codex -->inline<!-- /only --> after\n\n\nEnd\n";
+        assert_eq!(
+            render(source, &context(), true).unwrap(),
+            "Before inline after\n\n\nEnd\n"
+        );
+        assert_eq!(
+            render(
+                "A <!-- only harness=claude -->hidden<!-- /only --> B",
+                &context(),
+                true
+            )
+            .unwrap(),
+            "A  B"
+        );
+        assert_eq!(render(source, &context(), false).unwrap(), source);
+    }
 }
 
 use serde::Serialize;
