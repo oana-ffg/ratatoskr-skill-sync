@@ -140,35 +140,52 @@ pub fn helper_update(settings: &crate::Settings) -> Result<()> {
     })
 }
 
-fn helper_update_with(
+pub(crate) fn helper_update_with(
     settings: &crate::Settings,
     now: chrono::DateTime<chrono::FixedOffset>,
     check: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
-    if !settings.updates.automatic {
-        return Ok(());
+    let result = (|| -> Result<bool> {
+        if !settings.updates.automatic {
+            return Ok(false);
+        }
+        let path = settings
+            .state_dir
+            .join(&settings.machine)
+            .join("helper-update.json");
+        crate::config::no_symlinks(&path)?;
+        let state: HelperState = if path.try_exists()? {
+            serde_json::from_slice(&std::fs::read(&path)?)?
+        } else {
+            HelperState::default()
+        };
+        if check_due(&settings.updates, now, state.last_check, false)? {
+            // Record attempts before networking, including failures, to cap requests at one per day.
+            crate::config::atomic_write(
+                &path,
+                &serde_json::to_vec(&HelperState {
+                    last_check: Some(now),
+                })?,
+            )?;
+            check()?;
+            return Ok(true);
+        }
+        Ok(false)
+    })();
+    // A skipped check is not a recovery. Only actual attempts can clear an update alert.
+    if !matches!(result, Ok(false)) {
+        let error = result
+            .as_ref()
+            .err()
+            .map(|e| format!("Helper update: {e:#}"));
+        report_outcome(settings, error.as_deref(), UpdateKind::Helper).map_err(|notification| {
+            anyhow::anyhow!(
+                "{}; alert delivery failed: {notification:#}",
+                error.as_deref().unwrap_or("Helper update completed")
+            )
+        })?;
     }
-    let path = settings
-        .state_dir
-        .join(&settings.machine)
-        .join("helper-update.json");
-    crate::config::no_symlinks(&path)?;
-    let state: HelperState = if path.try_exists()? {
-        serde_json::from_slice(&std::fs::read(&path)?)?
-    } else {
-        HelperState::default()
-    };
-    if check_due(&settings.updates, now, state.last_check, false)? {
-        // Record attempts before networking, including failures, to cap requests at one per day.
-        crate::config::atomic_write(
-            &path,
-            &serde_json::to_vec(&HelperState {
-                last_check: Some(now),
-            })?,
-        )?;
-        check().context("Helper update failed")?;
-    }
-    Ok(())
+    result.map(|_| ())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
