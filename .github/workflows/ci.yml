@@ -50,3 +50,4 @@ jobs:
       - run: npm run prepare:helper -- --debug
         working-directory: desktop
       - run: cargo clippy --locked -p ratatoskr-desktop -- -D warnings
+      - run: cargo build --locked -p ratatoskr-desktop

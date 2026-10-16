@@ -16,7 +16,7 @@ Initial draft prepared on macOS Apple Silicon on 2026-10-16. The owner explicitl
 
 ## Remaining verification and setup
 
-- CI runs core tests on Linux, macOS and Windows, and desktop strict checks/build preparation on macOS and Windows. Consult the current GitHub Actions result for remote outcomes.
+- CI runs core tests on Linux, macOS and Windows, and desktop strict checks and native binary builds on macOS and Windows. Consult the current GitHub Actions result for remote outcomes.
 - Native interaction automation was unavailable on the development host. Building/launching the Mac executable and inspecting the browser frontend do not prove every native UI interaction.
 - A signed production release and an actual update from an older installed version have not been exercised. Production signing-key setup is required before the draft-release workflow can run.
 - Windows Task Scheduler registration, installer behavior, and a real Windows desktop session still require live acceptance. CI compilation does not establish those runtime results.
