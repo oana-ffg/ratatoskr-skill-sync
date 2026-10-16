@@ -14,6 +14,15 @@ pub(crate) struct Snapshot {
     skills: Vec<SkillEntry>,
     helper: PathBuf,
     source_files: Vec<String>,
+    updates: UpdateStatus,
+}
+
+#[derive(Serialize)]
+pub(crate) struct UpdateStatus {
+    endpoint: String,
+    override_active: bool,
+    automatic: bool,
+    time: String,
 }
 
 fn config() -> Reply<PathBuf> {
@@ -50,6 +59,12 @@ fn snapshot() -> Reply<Snapshot> {
         vec![]
     });
     Ok(Snapshot {
+        updates: UpdateStatus {
+            endpoint: settings.updates.endpoint().into(),
+            override_active: settings.updates.override_active(),
+            automatic: settings.updates.automatic,
+            time: settings.updates.time.clone(),
+        },
         config_text: fs::read_to_string(&path).map_err(|e| e.to_string())?,
         config_path: path,
         plan,
@@ -209,39 +224,163 @@ pub(crate) fn disable_schedule() -> Reply<String> {
     core::remove_schedule(&settings()?).map_err(|e| format!("{e:#}"))?;
     Ok("Background schedule removed.".into())
 }
+
+fn desktop_updater(
+    app: &tauri::AppHandle,
+    settings: &Settings,
+) -> anyhow::Result<tauri_plugin_updater::Updater> {
+    Ok(app
+        .updater_builder()
+        .pubkey(settings.updates.tauri_public_key()?)
+        .endpoints(vec![settings.updates.endpoint().parse()?])?
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?)
+}
+
+struct Nightly {
+    pending: Option<(String, tauri_plugin_updater::Update)>,
+}
+static NIGHTLY: Mutex<Nightly> = Mutex::new(Nightly { pending: None });
+
+fn update_result<T>(settings: &Settings, result: anyhow::Result<T>) -> Reply<T> {
+    let error = result
+        .as_ref()
+        .err()
+        .map(|e| format!("Desktop update: {e:#}"));
+    core::updates::report_outcome(
+        settings,
+        error.as_deref(),
+        core::updates::UpdateKind::Desktop,
+    )
+    .map_err(|notification| {
+        format!(
+            "{}; alert delivery failed: {notification:#}",
+            error.as_deref().unwrap_or("Update completed")
+        )
+    })?;
+    result.map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) async fn nightly_update(app: tauri::AppHandle, install: bool) -> Reply<bool> {
+    automatic_update(app, install, false).await
+}
+
+#[tauri::command]
+pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
+    if !config()?.try_exists().map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    automatic_update(app, true, true).await
+}
+
+async fn automatic_update(app: tauri::AppHandle, install: bool, launch: bool) -> Reply<bool> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = if install {
+            match MUTATION.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
+                Err(error) => return Err(error.to_string()),
+            }
+        } else {
+            None
+        };
+        let settings = settings()?;
+        let mut attempted = false;
+        let mut installed = false;
+        let result = (|| -> anyhow::Result<bool> {
+            let mut nightly = NIGHTLY.lock().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let now = chrono::Local::now().fixed_offset();
+            let fingerprint = toml::to_string(&settings)?;
+            if !settings.updates.automatic
+                || (!launch && !core::updates::desktop_window(&settings.updates, now)?)
+            {
+                nightly.pending = None;
+                return Ok(false);
+            }
+            if nightly
+                .pending
+                .as_ref()
+                .is_some_and(|(saved, _)| saved != &fingerprint)
+            {
+                nightly.pending = None;
+            }
+            let mut state = core::updates::DesktopUpdateState::load(&settings)?;
+            if (launch || !install) && state.due(&settings.updates, now, launch)? {
+                attempted = true;
+                state.record_attempt(&settings, now)?;
+                nightly.pending = None;
+                nightly.pending =
+                    tauri::async_runtime::block_on(desktop_updater(&app, &settings)?.check())?
+                        .map(|update| (fingerprint, update));
+                state.record_available(&settings, nightly.pending.is_some())?;
+            }
+            if install && let Some((_, update)) = nightly.pending.take() {
+                let Some(_idle) = core::updates::idle_guard(&settings, launch)? else {
+                    nightly.pending = Some((toml::to_string(&settings)?, update));
+                    return Ok(false);
+                };
+                attempted = true;
+                tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()))?;
+                installed = true;
+                // The installed version will recheck on the next window, without a restart loop.
+                state.record_available(&settings, false)?;
+                return Ok(true);
+            }
+            Ok(!install && nightly.pending.is_some())
+        })();
+        let restart = install && installed;
+        let result = if attempted || result.is_err() {
+            update_result(&settings, result)
+        } else {
+            result.map_err(|e| format!("{e:#}"))
+        };
+        // Installation succeeded even if alert recovery delivery failed; never lose that error.
+        if restart {
+            if let Err(error) = &result {
+                eprintln!("Ratatoskr: {error}");
+            }
+            app.restart();
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub(crate) async fn update_desktop(app: tauri::AppHandle, install: bool) -> Reply<String> {
-    let settings = settings()?;
-    let update_settings = settings.updates.ok_or(
-        "Configure an HTTPS update endpoint and trusted public key in Configuration first.",
-    )?;
-    let endpoint = update_settings
-        .endpoint
-        .parse()
-        .map_err(|e| format!("{e}"))?;
-    let updater = app
-        .updater_builder()
-        .pubkey(
-            update_settings
-                .tauri_public_key()
-                .map_err(|e| e.to_string())?,
-        )
-        .endpoints(vec![endpoint])
-        .map_err(|e| e.to_string())?
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-    match updater.check().await.map_err(|e| e.to_string())? {
-        Some(update) if install => {
-            update
-                .download_and_install(|_, _| (), || ())
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok("Signed desktop update installed. Restart to use it.".into())
-        }
-        Some(update) => Ok(format!("Desktop update available: {}", update.version)),
-        None => Ok("No newer desktop release available.".into()),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        let settings = settings()?;
+        let result = (|| -> anyhow::Result<String> {
+            match tauri::async_runtime::block_on(desktop_updater(&app, &settings)?.check())? {
+                Some(update) if install => {
+                    let _idle = core::updates::idle_guard(&settings, false)?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Apply, sync, or a schedule change is running; retry when idle"
+                        )
+                    })?;
+                    tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()))?;
+                    Ok("Signed desktop update installed. Restart to use it.".into())
+                }
+                Some(update) => Ok(format!("Desktop update available: {}", update.version)),
+                None => Ok("No newer desktop release available.".into()),
+            }
+        })();
+        update_result(&settings, result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub(crate) fn save_update_schedule(automatic: bool, time: String) -> Reply<Snapshot> {
+    mutate(|s| {
+        let mut candidate = s.clone();
+        candidate.updates.automatic = automatic;
+        candidate.updates.time = time;
+        core::save(&core::default_config_path()?, &candidate)
+    })
 }
 #[tauri::command]
 pub(crate) fn restart_desktop(app: tauri::AppHandle) {

@@ -110,6 +110,9 @@ fn record_path(settings: &Settings) -> PathBuf {
 
 pub fn install_schedule(settings: &Settings, schedule: &Schedule) -> Result<()> {
     settings.validate()?;
+    let lock = crate::config::state_lock(settings, "schedule.lock")?;
+    fs2::FileExt::try_lock_exclusive(&lock)
+        .context("Another schedule change or desktop update is running")?;
     ensure!(
         schedule.os == std::env::consts::OS,
         "Schedule belongs to another OS"
@@ -157,6 +160,9 @@ pub fn install_schedule(settings: &Settings, schedule: &Schedule) -> Result<()> 
 
 pub fn remove_schedule(settings: &Settings) -> Result<()> {
     settings.validate()?;
+    let lock = crate::config::state_lock(settings, "schedule.lock")?;
+    fs2::FileExt::try_lock_exclusive(&lock)
+        .context("Another schedule change or desktop update is running")?;
     let record = record_path(settings);
     no_symlinks(&record)?;
     let schedule: Schedule = serde_json::from_slice(&fs::read(&record)?)?;

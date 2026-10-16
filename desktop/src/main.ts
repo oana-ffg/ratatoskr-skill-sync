@@ -1,5 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import "./style.css";
+import {
+  runNightlyUpdate,
+  runStartupUpdate,
+  hasUnsavedEdits,
+  updateStatusText,
+  type UpdateStatus,
+} from "./update-policy";
 
 interface Project {
   root: string;
@@ -42,10 +49,12 @@ interface Snapshot {
   skills: Skill[];
   helper: string;
   source_files: string[];
+  updates: UpdateStatus;
 }
 
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) throw new Error("Missing app root");
+app.inert = true;
 app.innerHTML = `
   <aside><div class="brand"><img src="/ratatoskr.png" alt="Ratatoskr the squirrel"><span>Ratatoskr<small>SKILL SYNC</small></span></div><p class="eyebrow">ONE SOURCE. YOUR WHOLE GROVE.</p><nav aria-label="Workspace"><a href="#overview">Overview</a><a href="#changes">Pending changes</a><a href="#skills">Source skills</a><a href="#projects">Projects</a><a href="#automation">Background sync</a><a href="#configuration">Configuration</a></nav><p class="aside-note">Run the helper with this window closed.</p></aside>
   <section class="workspace"><header id="overview"><div><p class="eyebrow">YOUR AGENT WORKSPACE</p><h1>Everything, in its place.</h1><p id="subtitle">Connect a skill repository to see what needs syncing.</p></div><button id="refresh" class="secondary">Refresh</button></header>
@@ -59,7 +68,7 @@ app.innerHTML = `
   <section class="panel"><h2>Agent presets and machine profiles</h2><p>Edit harness definitions, machine conditions, or shared global instructions in your content repository.</p><label>Source file<select id="source-file"></select></label><button id="open-source" class="secondary">Open source file</button><label>Contents<textarea id="source-text" rows="12" spellcheck="false" disabled></textarea></label><button id="save-source" disabled>Validate and save source file</button></section>
   <section id="automation" class="panel"><p class="eyebrow">THE MESSENGER KEEPS RUNNING</p><h2>Background sync</h2><p>The helper runs independently through launchd on Mac or Task Scheduler on Windows. Use a clean deployment checkout with a Git upstream. Configure alert_command in local TOML for failure and recovery notifications.</p><form id="schedule-form"><label>Helper executable<input id="helper-path" required></label><label>Interval in seconds<input id="schedule-seconds" type="number" min="60" max="86400" value="60" required></label><button type="button" id="preview-schedule" class="secondary">Preview schedule</button><button type="submit">Install background schedule</button><button type="button" id="remove-schedule" class="secondary">Remove schedule</button></form><pre id="schedule-preview" hidden></pre><button id="sync-now" class="secondary">Pull and sync now</button></section>
   <section class="panel"><h2>Adoption and recovery</h2><p>Adoption backs up existing target skills before recording ownership. Review the resulting plan before applying: source files will replace adopted copies, and adopted files absent from source will be removed. Restore only verified backups from this workspace.</p><button id="adopt" class="secondary">Back up and adopt existing targets</button><form id="restore-form"><label>Backup directory<input id="backup-path" required></label><button type="submit" class="secondary">Restore backup</button></form></section>
-  <section class="panel"><h2>Signed updates</h2><p>Updates are opt-in. Configure an HTTPS release-manifest endpoint and its trusted signing public key in local TOML. Enable automatic to check on desktop startup and helper sync. No release has been published yet.</p><div class="button-row"><button id="check-updates" class="secondary">Check desktop updates</button><button id="install-update" class="secondary">Install signed desktop update</button><button id="restart" class="secondary">Restart app</button></div></section>
+  <section class="panel"><h2>Signed updates</h2><p>Official updates use the built-in signing key. Automatic updates wait for idle work, then install and relaunch this workspace. Unsaved edits defer updates for up to one hour. Launching the app catches up on a missed update before editing starts. Forks can explicitly override endpoint and public_key in local TOML.</p><p id="update-status" role="status"></p><form id="update-schedule-form"><label class="check"><input id="automatic-updates" type="checkbox" checked>Enable nightly updates</label><label>Local update time<input id="update-time" type="time" value="00:00" required></label><button type="submit">Save update schedule</button></form><div class="button-row"><button id="check-updates" class="secondary">Check desktop updates</button><button id="install-update" class="secondary">Install signed desktop update</button><button id="restart" class="secondary">Restart app</button></div></section>
   </section>`;
 
 function element<T extends HTMLElement>(id: string): T {
@@ -71,7 +80,11 @@ let snapshot: Snapshot | null = null;
 let busy = false;
 let configDirty = false;
 let sourceDocument: { file: string; text: string; hash: string } | null = null;
-let editing: { skill: Skill; document: SkillDocument } | null = null;
+let editing: {
+  skill: Skill;
+  document: SkillDocument;
+  saved: SkillDocument;
+} | null = null;
 function message(text: string, error = false): void {
   const target = element("message");
   target.textContent = text;
@@ -149,6 +162,13 @@ function render(result: Snapshot): void {
     projects.className = "empty";
     projects.textContent = "No projects registered.";
   }
+  element("update-status").textContent = updateStatusText(result.updates);
+  element("update-status").className = result.updates.override_active
+    ? "message error"
+    : "message";
+  element<HTMLInputElement>("automatic-updates").checked =
+    result.updates.automatic;
+  element<HTMLInputElement>("update-time").value = result.updates.time;
   element("config-path").textContent = result.config_path;
   if (!configDirty)
     element<HTMLTextAreaElement>("config-text").value = result.config_text;
@@ -188,7 +208,7 @@ function render(result: Snapshot): void {
           name: skill.name,
           project: skill.project,
         });
-        editing = { skill, document };
+        editing = { skill, document, saved: { ...document } };
         element("skill-editor").hidden = false;
         element("editor-title").textContent = skill.name;
         element<HTMLSelectElement>("editor-file").value = "SKILL.md";
@@ -347,8 +367,6 @@ element("project-form").addEventListener("submit", (event) => {
     message("Project registered. Its files will be checked on refresh.");
   });
 });
-void operation(refresh);
-
 element("editor-text").addEventListener("input", () => {
   if (!editing) return;
   if (element<HTMLSelectElement>("editor-file").value === "SKILL.md")
@@ -392,6 +410,7 @@ element("save-skill").addEventListener("click", () => {
       editing.document.metadata = saved.metadata;
       editing.document.metadata_hash = saved.metadata_hash;
     }
+    editing.saved = { ...saved };
     message(
       "Source saved and syntax validated. Review the resulting output changes.",
     );
@@ -407,6 +426,8 @@ element("new-skill-form").addEventListener("submit", (event) => {
         markdown: element<HTMLTextAreaElement>("new-skill-body").value,
       }),
     );
+    element<HTMLInputElement>("new-skill-name").value = "";
+    element<HTMLTextAreaElement>("new-skill-body").value = "";
     message("New source skill created and validated.");
   });
 });
@@ -504,4 +525,103 @@ element("save-source").addEventListener("click", () => {
       "Source configuration validated and saved. Review changes before applying.",
     );
   });
+});
+
+function unsavedChanges(): boolean {
+  if (!snapshot) return false;
+  return hasUnsavedEdits({
+    configuration: {
+      text: element<HTMLTextAreaElement>("config-text").value,
+      saved: snapshot.config_text,
+    },
+    source: sourceDocument
+      ? {
+          text: element<HTMLTextAreaElement>("source-text").value,
+          saved: sourceDocument.text,
+        }
+      : null,
+    skill: editing
+      ? {
+          markdown: editing.document.markdown,
+          metadata: editing.document.metadata,
+          savedMarkdown: editing.saved.markdown,
+          savedMetadata: editing.saved.metadata,
+        }
+      : null,
+    newSkill: {
+      name: element<HTMLInputElement>("new-skill-name").value,
+      markdown: element<HTMLTextAreaElement>("new-skill-body").value,
+    },
+    schedule: {
+      automatic: element<HTMLInputElement>("automatic-updates").checked,
+      savedAutomatic: snapshot.updates.automatic,
+      time: element<HTMLInputElement>("update-time").value,
+      savedTime: snapshot.updates.time,
+    },
+  });
+}
+
+element("update-schedule-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void operation(async () => {
+    render(
+      await invoke<Snapshot>("save_update_schedule", {
+        automatic: element<HTMLInputElement>("automatic-updates").checked,
+        time: element<HTMLInputElement>("update-time").value,
+      }),
+    );
+    message("Nightly update schedule saved.");
+  });
+});
+
+let checkingNightly = false;
+async function nightlyTick(): Promise<void> {
+  if (!isTauri() || !snapshot || checkingNightly || busy) return;
+  checkingNightly = true;
+  try {
+    await runNightlyUpdate(
+      () => invoke<boolean>("nightly_update", { install: false }),
+      () => !busy && !unsavedChanges(),
+      () =>
+        operation(async () => {
+          // Freeze editors only after checking for edits, through the install/relaunch boundary.
+          const controls = Array.from(
+            document.querySelectorAll<
+              HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+            >("input, textarea, select"),
+          );
+          const disabled = controls.map((control) => control.disabled);
+          controls.forEach((control) => {
+            control.disabled = true;
+          });
+          try {
+            await invoke<boolean>("nightly_update", { install: true });
+          } finally {
+            controls.forEach((control, index) => {
+              control.disabled = disabled[index];
+            });
+          }
+        }),
+    );
+  } catch (error) {
+    message(`Nightly update failed: ${String(error)}`, true);
+  } finally {
+    checkingNightly = false;
+  }
+}
+setInterval(() => {
+  void nightlyTick();
+}, 30_000);
+
+message("Checking for missed nightly updates…");
+void runStartupUpdate(
+  async () => {
+    if (isTauri()) await invoke<boolean>("startup_update");
+  },
+  async () => {
+    await operation(refresh);
+    app.inert = false;
+  },
+).catch((error: unknown) => {
+  message(`Startup update failed: ${String(error)}`, true);
 });

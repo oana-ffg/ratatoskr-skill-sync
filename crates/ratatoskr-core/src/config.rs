@@ -7,7 +7,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub source: PathBuf,
@@ -18,7 +18,27 @@ pub struct Settings {
     #[serde(default)]
     pub alert_command: Vec<String>,
     #[serde(default)]
-    pub updates: Option<crate::updates::UpdateSettings>,
+    pub updates: crate::updates::UpdateSettings,
+    #[serde(default = "default_deploy_branch")]
+    pub deploy_branch: String,
+}
+
+fn default_deploy_branch() -> String {
+    "main".into()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            source: PathBuf::new(),
+            machine: String::new(),
+            state_dir: PathBuf::new(),
+            projects: vec![],
+            alert_command: vec![],
+            updates: Default::default(),
+            deploy_branch: default_deploy_branch(),
+        }
+    }
 }
 
 impl Settings {
@@ -38,9 +58,11 @@ impl Settings {
         for project in &self.projects {
             ensure!(project.is_absolute(), "Project paths must be absolute");
         }
-        if let Some(updates) = &self.updates {
-            updates.validate()?;
-        }
+        ensure!(
+            !self.deploy_branch.is_empty(),
+            "Deploy branch must not be empty"
+        );
+        self.updates.validate()?;
         Ok(())
     }
 }
@@ -213,4 +235,16 @@ pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
     let a = folded(a);
     let b = folded(b);
     a.starts_with(&b) || b.starts_with(&a)
+}
+
+pub(crate) fn state_lock(settings: &Settings, name: &str) -> Result<fs::File> {
+    let path = settings.state_dir.join(&settings.machine).join(name);
+    no_symlinks(&path)?;
+    fs::create_dir_all(path.parent().context("State lock has no parent")?)?;
+    Ok(fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?)
 }

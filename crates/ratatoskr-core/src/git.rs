@@ -177,6 +177,10 @@ pub fn remove_project(config_path: &Path, root: &Path) -> Result<()> {
 }
 
 pub fn sync(settings: &Settings) -> Result<Plan> {
+    sync_with_update(settings, || crate::updates::helper_update(settings))
+}
+
+fn sync_with_update(settings: &Settings, update: impl FnOnce() -> Result<()>) -> Result<Plan> {
     settings.validate()?;
     use fs2::FileExt;
     let state = settings.state_dir.join(&settings.machine);
@@ -191,14 +195,23 @@ pub fn sync(settings: &Settings) -> Result<Plan> {
         .open(lock_path)?;
     lock.try_lock_exclusive()
         .context("Another Ratatoskr sync is running")?;
-    let result = sync_inner(settings);
-    let error = result.as_ref().err().map(|e| format!("{e:#}"));
-    if let Err(notification) = crate::notifications::outcome(settings, error.as_deref()) {
-        return Err(anyhow::anyhow!(
-            "{}; notification error: {notification:#}",
-            error.unwrap_or_else(|| "Sync completed".into())
-        ));
+    // Updating and syncing have separate outcomes and notification ledgers.
+    let deployment = validate_deploy_branch(settings);
+    let update_result = if deployment.is_ok() { update() } else { Ok(()) };
+    let result = deployment.and_then(|_| sync_inner(settings));
+    let sync_error = result.as_ref().err().map(|e| format!("{e:#}"));
+    let notification = crate::notifications::outcome(settings, sync_error.as_deref());
+    let mut errors = Vec::new();
+    if let Err(error) = update_result {
+        errors.push(format!("Helper update failed: {error:#}"));
     }
+    if let Some(error) = sync_error {
+        errors.push(format!("Sync failed: {error}"));
+    }
+    if let Err(error) = notification {
+        errors.push(format!("Sync alert delivery failed: {error:#}"));
+    }
+    ensure!(errors.is_empty(), "{}", errors.join("; "));
     result
 }
 
@@ -234,12 +247,192 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
         "Outputs synced; project skill work needs attention: {}",
         pending.join("; ")
     );
-    if let Some(updates) = &settings.updates
-        && updates.automatic
-        && crate::updates::standalone_helper()?
-        && let Some(release) = crate::updates::check(updates, env!("CARGO_PKG_VERSION"))?
-    {
-        crate::updates::install(updates, &release)?;
-    }
     Ok(plan)
+}
+
+fn validate_deploy_branch(settings: &Settings) -> Result<()> {
+    git(
+        &settings.source,
+        &["check-ref-format", "--branch", &settings.deploy_branch],
+    )?;
+    let branch = String::from_utf8(
+        git(
+            &settings.source,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )
+        .context("Content checkout is detached; refusing to pull or apply")?,
+    )?;
+    ensure!(
+        branch.trim() == settings.deploy_branch,
+        "Current content branch is {}; deploy_branch is {}; refusing to pull or apply",
+        branch.trim(),
+        settings.deploy_branch
+    );
+    let remote = String::from_utf8(
+        git(
+            &settings.source,
+            &[
+                "config",
+                "--get",
+                &format!("branch.{}.remote", settings.deploy_branch),
+            ],
+        )
+        .context("Deploy branch has no configured remote; refusing to pull or apply")?,
+    )?;
+    ensure!(
+        !remote.trim().is_empty() && remote.trim() != ".",
+        "Deploy branch must track a remote branch"
+    );
+    let upstream = String::from_utf8(
+        git(
+            &settings.source,
+            &["rev-parse", "--symbolic-full-name", "@{upstream}"],
+        )
+        .context("Deploy branch has no valid upstream; refusing to pull or apply")?,
+    )?;
+    let expected = format!("refs/remotes/{}/{}", remote.trim(), settings.deploy_branch);
+    ensure!(
+        upstream.trim() == expected,
+        "Content upstream is {}; expected {}; refusing to pull or apply",
+        upstream.trim(),
+        expected
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_update_still_syncs_and_alerts_independently() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("content");
+        fs::create_dir_all(source.join("machines")).unwrap();
+        fs::create_dir_all(source.join("skills/test")).unwrap();
+        fs::write(source.join("skills/test/skill.toml"), "").unwrap();
+        fs::write(source.join("harnesses.toml"), "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\n[codex.roots]\nmacos='{{af:home}}/.codex'\nwindows='{{af:home}}/.codex'\nlinux='{{af:home}}/.codex'\n").unwrap();
+        fs::write(
+            source.join("machines/test.toml"),
+            "os='macos'\nmode='staging'\nharnesses=['codex']\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("skills/test/SKILL.md"),
+            "---\nname: test\ndescription: Test sync\n---\nSynced content\n",
+        )
+        .unwrap();
+        let settings = Settings {
+            source: source.clone(),
+            machine: "test".into(),
+            state_dir: root.join("state"),
+            alert_command: vec![
+                "git".into(),
+                "-C".into(),
+                source.display().to_string(),
+                "config".into(),
+                "--add".into(),
+                "ratatoskr.alert".into(),
+            ],
+            ..Default::default()
+        };
+        let remote = root.join("remote.git");
+        fs::create_dir(&remote).unwrap();
+        git(&remote, &["init", "--bare", "-b", "main"]).unwrap();
+        git(&source, &["init", "-b", "main"]).unwrap();
+        git(&source, &["config", "user.name", "Ratatoskr tests"]).unwrap();
+        git(&source, &["config", "user.email", "tests@localhost"]).unwrap();
+        git(&source, &["config", "commit.gpgsign", "false"]).unwrap();
+        git(&source, &["add", "."]).unwrap();
+        git(&source, &["commit", "-m", "Content"]).unwrap();
+        git(&source, &["remote", "add", "origin", "../remote.git"]).unwrap();
+        git(&source, &["push", "-u", "origin", "main"]).unwrap();
+        let alerts = || {
+            String::from_utf8(git(&source, &["config", "--get-all", "ratatoskr.alert"]).unwrap())
+                .unwrap()
+        };
+        let run = |date: &str| {
+            sync_with_update(&settings, || {
+                crate::updates::helper_update_with(
+                    &settings,
+                    chrono::DateTime::parse_from_rfc3339(date).unwrap(),
+                    || anyhow::bail!("update endpoint offline"),
+                )
+            })
+        };
+        let error = run("2026-10-16T00:00:00+02:00").unwrap_err().to_string();
+        assert!(error.contains("update endpoint offline"));
+        assert!(!error.contains("Sync failed"), "{error}");
+        let output = settings
+            .state_dir
+            .join("test/staging/codex/skills/test/SKILL.md");
+        assert!(
+            fs::read_to_string(&output)
+                .unwrap()
+                .contains("Synced content")
+        );
+        let update_alert = fs::read(
+            settings
+                .state_dir
+                .join("test/helper-update-notification.json"),
+        )
+        .unwrap();
+        assert!(alerts().contains("Helper update: update endpoint offline"));
+        assert!(!settings.state_dir.join("test/notification.json").exists());
+
+        // Skipped checks neither repeat the alert nor falsely report recovery.
+        run("2026-10-16T01:00:00+02:00").unwrap();
+        assert_eq!(alerts().lines().count(), 1);
+        assert_eq!(
+            fs::read(
+                settings
+                    .state_dir
+                    .join("test/helper-update-notification.json")
+            )
+            .unwrap(),
+            update_alert
+        );
+        // The same failure on a later attempt is deduplicated too.
+        assert!(run("2026-10-17T00:00:00+02:00").is_err());
+        assert_eq!(alerts().lines().count(), 1);
+
+        fs::write(source.join("dirty.txt"), "Uncommitted").unwrap();
+        let error = run("2026-10-18T00:00:00+02:00").unwrap_err().to_string();
+        assert!(error.contains("update endpoint offline"));
+        assert!(error.contains("uncommitted files"));
+        assert_eq!(alerts().lines().count(), 2);
+        assert!(alerts().contains("Source checkout has uncommitted files"));
+        assert_eq!(
+            fs::read(
+                settings
+                    .state_dir
+                    .join("test/helper-update-notification.json")
+            )
+            .unwrap(),
+            update_alert
+        );
+
+        // Even failed update-alert delivery must not prevent applying synced content.
+        fs::remove_file(source.join("dirty.txt")).unwrap();
+        let mut undeliverable = settings.clone();
+        undeliverable.alert_command = vec!["git".into(), "ratatoskr-invalid-command".into()];
+        undeliverable.state_dir = root.join("undeliverable-state");
+        let error = sync_with_update(&undeliverable, || {
+            crate::updates::helper_update_with(
+                &undeliverable,
+                chrono::DateTime::parse_from_rfc3339("2026-10-19T00:00:00+02:00").unwrap(),
+                || anyhow::bail!("offline"),
+            )
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("alert delivery failed"));
+        assert!(
+            undeliverable
+                .state_dir
+                .join("test/staging/codex/skills/test/SKILL.md")
+                .exists()
+        );
+    }
 }

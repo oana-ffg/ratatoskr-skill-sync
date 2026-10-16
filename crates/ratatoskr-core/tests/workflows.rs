@@ -570,9 +570,10 @@ fn signed_updates_accept_tauri_signatures_and_reject_tampering() {
     assert!(ratatoskr_core::updates::verify(key, b"altered executable", signature).is_err());
     assert!(ratatoskr_core::updates::verify(key, payload, "invalid signature").is_err());
     let settings = ratatoskr_core::updates::UpdateSettings {
-        endpoint: "http://example.com/latest.json".into(),
-        public_key: key.into(),
+        endpoint: Some("http://example.com/latest.json".into()),
+        public_key: Some(key.into()),
         automatic: false,
+        ..Default::default()
     };
     assert!(settings.validate().is_err());
 }
@@ -622,4 +623,55 @@ fn adoption_preserves_global_instructions_when_no_global_source_exists() {
         fs::read_to_string(global).unwrap(),
         "Existing instructions outside the content source"
     );
+}
+
+#[test]
+fn sync_refuses_wrong_branch_upstream_and_detached_head_before_fetch_or_apply() {
+    let mut f = Fixture::new();
+    f.settings.updates.automatic = false;
+    f.settings.alert_command = vec![
+        "git".into(),
+        "-C".into(),
+        f.settings.source.display().to_string(),
+        "config".into(),
+        "ratatoskr.last-alert".into(),
+    ];
+    let remote = f.root.join("remote.git");
+    fs::create_dir(&remote).unwrap();
+    git(&remote, &["init", "--bare", "-b", "main"]);
+    let source = &f.settings.source;
+    git(source, &["init", "-b", "main"]);
+    git(source, &["config", "user.name", "Ratatoskr tests"]);
+    git(source, &["config", "user.email", "tests@localhost"]);
+    git(source, &["config", "commit.gpgsign", "false"]);
+    git(source, &["add", "."]);
+    git(source, &["commit", "-m", "Content"]);
+    // A relative local remote also works with Windows verbatim canonical paths.
+    git(source, &["remote", "add", "origin", "../remote.git"]);
+    git(source, &["push", "-u", "origin", "main"]);
+    git(source, &["switch", "-c", "experiment"]);
+    git(source, &["push", "-u", "origin", "experiment"]);
+    let assert_refused = || {
+        assert!(sync(&f.settings).is_err());
+        assert!(!source.join(".git/FETCH_HEAD").exists());
+        assert!(!f.output().exists());
+        let alert =
+            fs::read_to_string(f.settings.state_dir.join("test/notification.json")).unwrap();
+        assert!(alert.contains("error"));
+    };
+    assert_refused();
+    git(source, &["switch", "main"]);
+    git(source, &["branch", "--set-upstream-to=origin/experiment"]);
+    assert_refused();
+    git(source, &["branch", "--unset-upstream"]);
+    assert_refused();
+    git(source, &["checkout", "--detach"]);
+    assert_refused();
+    git(source, &["switch", "main"]);
+    git(source, &["branch", "--set-upstream-to=origin/main"]);
+    sync(&f.settings).unwrap();
+    assert!(f.output().exists());
+    f.settings.deploy_branch = "experiment".into();
+    git(&f.settings.source, &["switch", "experiment"]);
+    sync(&f.settings).unwrap();
 }
