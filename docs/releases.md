@@ -5,7 +5,7 @@ The initial draft has no published binaries or configured production signing key
 ## Prepare a release
 
 1. From `desktop`, run `npm run tauri -- signer generate -w` with a new secure private-key path. Keep the private key and password outside this repository. Retain an offline backup.
-2. Add the generated private-key file contents as the GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`. Add its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Do not paste either into issues, source, or chats.
+2. Add the generated private-key file contents as the GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`. Add its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Add the generated `.pub` file contents as the repository variable `TAURI_SIGNING_PUBLIC_KEY`. Do not paste either into issues, source, or chats.
 3. Set matching versions in workspace `Cargo.toml`, `desktop/package.json`, and `desktop/src-tauri/tauri.conf.json`; refresh both lockfiles. Version bumps must go through the normal review workflow.
 4. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles, plus separate raw helper executables. The bundled helper is prepared from the same source version.
 5. Download and test the artifacts on actual Macs and Windows before publishing the draft release. Inspect `latest.json`, including all six platforms. Publish the draft when ready. The workflow does not publish it automatically.
@@ -24,4 +24,4 @@ The CLI's `update` command checks; `update --install` installs. Automatic standa
 
 A standalone helper update checks HTTPS, size limits, a valid Minisign signature, a newer semantic version, and agreement between the signed binary's `--version` output and the manifest. Tauri verifies desktop signatures and requires the signed app version to match the manifest. Treat signing-key rotation as an explicit trust migration; editing an unsigned manifest cannot change the locally trusted public key.
 
-The packaged updater configuration intentionally has no static trusted key (`pubkey` is empty). Every update operation first validates the local update settings and supplies that trusted key at runtime. This supports separate content deployments and prevents a development/test key from becoming a production trust root.
+The packaged updater configuration intentionally has no static trusted key (`pubkey` is empty). Every update operation first validates the local update settings and supplies that trusted key at runtime. Signed-release builds inject the real public key through a build overlay so Tauri can verify packaging signatures. Local runtime settings still choose the trusted update endpoint/key. This supports separate content deployments and prevents a development/test key from becoming a production trust root.
