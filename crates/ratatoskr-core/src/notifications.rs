@@ -1,5 +1,5 @@
 use crate::{
-    Settings,
+    SecretReference, Settings,
     config::{atomic_write, no_symlinks},
 };
 use anyhow::{Context, Result, ensure};
@@ -57,7 +57,11 @@ pub(crate) fn outcome_for(settings: &Settings, error: Option<&str>, filename: &s
         |e| format!("Ratatoskr {}: {e}", settings.machine),
     );
     if let Some(alert) = &settings.alert {
-        alert.deliver(&message)?;
+        if let Err(error) = alert.deliver(&message) {
+            state.error = Some(format!("{message}; alert delivery failed: {error:#}"));
+            atomic_write(&path, &serde_json::to_vec(&state)?)?;
+            return Err(error.context("Alert delivery failed"));
+        }
     } else {
         let (program, args) = settings
             .alert_command
@@ -135,40 +139,47 @@ mod tests {
 pub enum AlertSettings {
     System,
     Pushover {
-        token_env: String,
-        user_env: String,
+        #[serde(
+            alias = "token_env",
+            deserialize_with = "crate::secrets::required_reference"
+        )]
+        token: SecretReference,
+        #[serde(
+            alias = "user_env",
+            deserialize_with = "crate::secrets::required_reference"
+        )]
+        user: SecretReference,
     },
     Ntfy {
         url: String,
-        #[serde(default)]
-        token_env: String,
+        #[serde(
+            default,
+            alias = "token_env",
+            deserialize_with = "crate::secrets::optional_reference",
+            skip_serializing_if = "Option::is_none"
+        )]
+        token: Option<SecretReference>,
     },
 }
 impl AlertSettings {
     pub fn validate(&self) -> Result<()> {
-        let env_name = |s: &str| -> Result<()> {
-            ensure!(
-                !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-                "Enter an environment variable name for alert credentials"
-            );
-            Ok(())
-        };
         match self {
-            Self::Pushover {
-                token_env,
-                user_env,
-            } => {
-                env_name(token_env)?;
-                env_name(user_env)?;
+            Self::Pushover { token, user } => {
+                token.validate()?;
+                user.validate()?;
             }
-            Self::Ntfy { url, token_env } => {
+            Self::Ntfy { url, token } => {
                 let parsed = reqwest::Url::parse(url)?;
                 ensure!(
                     parsed.scheme() == "https" && parsed.host_str().is_some(),
                     "ntfy requires an HTTPS topic URL"
                 );
-                if !token_env.is_empty() {
-                    env_name(token_env)?;
+                ensure!(
+                    parsed.username().is_empty() && parsed.password().is_none(),
+                    "Store ntfy credentials as a secret reference, not in the URL"
+                );
+                if let Some(token) = token {
+                    token.validate()?;
                 }
             }
             _ => (),
@@ -181,14 +192,11 @@ impl AlertSettings {
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
         match self {
-            Self::Pushover {
-                token_env,
-                user_env,
-            } => {
-                let token = std::env::var(token_env)
-                    .context("Pushover token environment variable is unavailable")?;
-                let user = std::env::var(user_env)
-                    .context("Pushover user environment variable is unavailable")?;
+            Self::Pushover { token, user } => {
+                let token = token
+                    .resolve()
+                    .context("Resolve Pushover application token")?;
+                let user = user.resolve().context("Resolve Pushover user key")?;
                 let body: serde_json::Value = client
                     .post("https://api.pushover.net/1/messages.json")
                     .form(&[
@@ -201,13 +209,11 @@ impl AlertSettings {
                     .json()?;
                 ensure!(body["status"] == 1, "Pushover rejected the alert");
             }
-            Self::Ntfy { url, token_env } => {
+            Self::Ntfy { url, token } => {
                 let mut request = client.post(url).body(message.to_owned());
-                if !token_env.is_empty() {
-                    request = request.bearer_auth(
-                        std::env::var(token_env)
-                            .context("ntfy token environment variable is unavailable")?,
-                    );
+                if let Some(token) = token {
+                    request =
+                        request.bearer_auth(token.resolve().context("Resolve ntfy bearer token")?);
                 }
                 request.send()?.error_for_status()?;
             }
@@ -228,5 +234,59 @@ impl AlertSettings {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    #[test]
+    fn legacy_environment_settings_migrate_without_values() {
+        let alert: AlertSettings = serde_json::from_value(serde_json::json!({"kind":"pushover", "token_env":"PUSH_TOKEN", "user_env":"PUSH_USER"})).unwrap();
+        alert.validate().unwrap();
+        let stored = serde_json::to_value(alert).unwrap();
+        assert_eq!(
+            stored["token"],
+            serde_json::json!({"kind":"environment","variable":"PUSH_TOKEN"})
+        );
+        assert!(stored.get("token_env").is_none());
+        let public: AlertSettings = serde_json::from_value(
+            serde_json::json!({"kind":"ntfy","url":"https://ntfy.sh/ratatoskr","token_env":""}),
+        )
+        .unwrap();
+        assert!(serde_json::to_value(public).unwrap().get("token").is_none());
+    }
+    #[test]
+    fn failed_secret_resolution_is_visible_and_retryable() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            machine: "test".into(),
+            state_dir: temp.path().canonicalize().unwrap(),
+            alert: Some(AlertSettings::Pushover {
+                token: SecretReference::Environment {
+                    variable: "RATATOSKR_MISSING_ALERT_TEST".into(),
+                },
+                user: SecretReference::Environment {
+                    variable: "RATATOSKR_MISSING_USER_TEST".into(),
+                },
+            }),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            assert!(outcome(&settings, Some("sync failed")).is_err());
+            let error = current_error(&settings, "notification.json")
+                .unwrap()
+                .unwrap();
+            assert!(
+                error.contains("sync failed")
+                    && error.contains("alert delivery failed")
+                    && error.contains("variable unavailable")
+            );
+        }
+        let state: State = serde_json::from_slice(
+            &fs::read(settings.state_dir.join("test/notification.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(state.delivered_error.is_none());
     }
 }

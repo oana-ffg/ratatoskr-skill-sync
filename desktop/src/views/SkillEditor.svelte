@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     api,
     agentName,
@@ -73,6 +73,32 @@
   let extraKey = $state("");
   let extraValue = $state("");
   let description = $state("");
+  function growDescription(node: HTMLTextAreaElement, _value: string) {
+    let active = true;
+    let width = 0;
+    function resize() {
+      if (!active) return;
+      node.style.height = "auto";
+      const style = getComputedStyle(node);
+      node.style.height = `${node.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)}px`;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width !== width) {
+        width = entry.contentRect.width;
+        resize();
+      }
+    });
+    observer.observe(node);
+    return {
+      update(_value: string) {
+        void tick().then(resize);
+      },
+      destroy() {
+        active = false;
+        observer.disconnect();
+      },
+    };
+  }
   const dirty = $derived(
     !!document &&
       (markdown !== document.markdown ||
@@ -360,9 +386,6 @@
     <section class="editor-source">
       <div class="page-heading compact">
         <div>
-          <p class="eyebrow">
-            {skill.project ? "PROJECT SKILL" : "GLOBAL SKILL"}
-          </p>
           <h1>{skill.name}</h1>
         </div>
         <div class="heading-actions">
@@ -394,6 +417,7 @@
         ><textarea
           aria-label="Description"
           rows="2"
+          use:growDescription={description}
           bind:value={description}
           oninput={(e) => {
             void edit({ kind: "description", value: e.currentTarget.value });

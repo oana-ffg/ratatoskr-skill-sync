@@ -34,11 +34,7 @@
 <section class="page">
   <div class="page-heading">
     <div>
-      <p class="eyebrow">WORKING IN THE BACKGROUND</p>
       <h1>Activity</h1>
-      <p class="muted">
-        Your skills stay connected, even with this window closed.
-      </p>
     </div>
     <button
       disabled={busy}
@@ -130,7 +126,6 @@
   <article class="panel log-panel">
     <div class="section-heading">
       <h2>Recent log</h2>
-      <span class="muted small">Bounded local history</span>
     </div>
     <pre>{workspace.jobs.log || "No log entries yet."}</pre>
   </article>

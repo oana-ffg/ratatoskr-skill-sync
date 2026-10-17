@@ -21,12 +21,66 @@ pub struct LegacyFile {
 pub struct LegacySkill {
     pub name: String,
     pub path: PathBuf,
+    pub destination: PathBuf,
     pub files: Vec<LegacyFile>,
 }
 
 pub fn legacy_duplicates(settings: &Settings) -> Result<Vec<LegacySkill>> {
     let base = directories::BaseDirs::new().context("Home directory unavailable")?;
-    duplicates_in(settings, base.home_dir())
+    let duplicates = duplicates_in(settings, base.home_dir())?;
+    unresolved(settings, duplicates)
+}
+
+fn decisions_path(settings: &Settings) -> PathBuf {
+    settings
+        .state_dir
+        .join(&settings.machine)
+        .join("legacy-decisions.json")
+}
+
+fn decisions(settings: &Settings) -> Result<Vec<LegacySkill>> {
+    let path = decisions_path(settings);
+    no_symlinks(&path)?;
+    if !path.try_exists()? {
+        return Ok(vec![]);
+    }
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn unresolved(settings: &Settings, duplicates: Vec<LegacySkill>) -> Result<Vec<LegacySkill>> {
+    let accepted = decisions(settings)?;
+    Ok(duplicates
+        .into_iter()
+        .filter(|skill| !accepted.contains(skill))
+        .collect())
+}
+
+/// A keep-both decision applies only to the exact reviewed legacy bytes and permissions.
+pub fn keep_legacy(settings: &Settings, expected: &str) -> Result<()> {
+    let base = directories::BaseDirs::new().context("Home directory unavailable")?;
+    keep_in(settings, expected, base.home_dir())
+}
+
+fn keep_in(settings: &Settings, expected: &str, actual_home: &Path) -> Result<()> {
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    let expected: LegacySkill = serde_json::from_str(expected)?;
+    let current = duplicates_in(settings, actual_home)?
+        .into_iter()
+        .find(|skill| skill.name == expected.name)
+        .context("Legacy duplicate no longer exists")?;
+    ensure!(
+        current == expected,
+        "Legacy skill changed since preview; review it again"
+    );
+    if let Some(ownership) = crate::engine::legacy_ownership(settings, &current.path)? {
+        // Kept copies become unmanaged, so Apply must not remove or validate them as targets.
+        crate::engine::detach_legacy_ownership(settings, &current.path, &ownership)?;
+    }
+    let mut accepted = decisions(settings)?;
+    accepted.retain(|skill| skill.name != current.name);
+    accepted.push(current);
+    crate::config::atomic_write(&decisions_path(settings), &serde_json::to_vec(&accepted)?)
+        .context("Old copy preserved; could not save the keep-both decision. Choose again to retry")
 }
 fn duplicates_in(settings: &Settings, actual_home: &Path) -> Result<Vec<LegacySkill>> {
     let contexts = crate::engine::template_contexts(settings)?;
@@ -123,6 +177,7 @@ fn duplicates_in(settings: &Settings, actual_home: &Path) -> Result<Vec<LegacySk
         out.push(LegacySkill {
             name: skill.name,
             path,
+            destination: destination.clone(),
             files,
         });
     }
@@ -224,7 +279,14 @@ fn resolve_in(settings: &Settings, expected: &str, actual_home: &Path) -> Result
 mod tests {
     use super::*;
     #[test]
+    fn keep_both_preserves_bytes_and_releases_old_ownership() -> Result<()> {
+        cutover(true)
+    }
+    #[test]
     fn codex_cutover_previews_all_bytes_and_refuses_stale_or_redirected_backups() -> Result<()> {
+        cutover(false)
+    }
+    fn cutover(keep: bool) -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().canonicalize()?;
         let home = root.join("home");
@@ -260,10 +322,32 @@ mod tests {
             state_dir: root.join("state"),
             ..Default::default()
         };
+        let duplicate = duplicates_in(&settings, &home)?.remove(0);
+        let reviewed = serde_json::to_string(&duplicate)?;
+        keep_in(&settings, &reviewed, &home)?;
+        assert!(unresolved(&settings, duplicates_in(&settings, &home)?)?.is_empty());
+        assert_eq!(fs::read_to_string(legacy.join("SKILL.md"))?, "user edit");
+        fs::write(legacy.join("SKILL.md"), "changed after keep")?;
+        assert_eq!(
+            unresolved(&settings, duplicates_in(&settings, &home)?)?.len(),
+            1
+        );
+        assert!(keep_in(&settings, &reviewed, &home).is_err());
+        fs::write(legacy.join("SKILL.md"), "user edit")?;
         let manifest = settings.state_dir.join("test/manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         let owned = serde_json::json!({"source":settings.source,"machine":"test","roots":[legacy],"files":{(legacy.join("SKILL.md").to_string_lossy().to_string()):{"sha256":format!("{:x}",Sha256::digest(b"user edit")),"executable":false}},"project_roots":{}});
         fs::write(&manifest, serde_json::to_vec(&owned)?)?;
+        if keep {
+            keep_in(&settings, &reviewed, &home)?;
+            let remaining: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+            assert!(remaining["files"].as_object().unwrap().is_empty());
+            assert!(remaining["roots"].as_array().unwrap().is_empty());
+            assert_eq!(fs::read_to_string(legacy.join("SKILL.md"))?, "user edit");
+            assert_eq!(fs::read(legacy.join("__pycache__/keep.pyc"))?, [0, 1, 255]);
+            assert!(unresolved(&settings, duplicates_in(&settings, &home)?)?.is_empty());
+            return Ok(());
+        }
         let mut preview = LegacyResolution {
             skill: duplicates_in(&settings, &home)?.remove(0),
             backup: home.join(".codex/ratatoskr-backups/test-review"),

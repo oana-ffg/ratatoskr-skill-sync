@@ -11,6 +11,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::preview_legacy_resolution,
             commands::resolve_legacy,
+            commands::keep_legacy,
             commands::skill_target_statuses,
             commands::preview_install_path,
             commands::create_desktop_skill,

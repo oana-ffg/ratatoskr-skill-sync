@@ -88,9 +88,7 @@
 <section class="page">
   <div class="page-heading">
     <div>
-      <p class="eyebrow">YOUR SHARED KNOWLEDGE</p>
       <h1>Skills <span class="count">{workspace.skills.length}</span></h1>
-      <p class="muted">One source. The right instructions for every agent.</p>
     </div>
     <button class="primary" onclick={() => (creating = true)}
       >＋ New skill</button
@@ -162,14 +160,12 @@
   </div>
   {#if !visible.length}<div class="empty-state">
       <h2>
-        {workspace.skills.length
-          ? "No matching skills"
-          : "A home for your skills"}
+        {workspace.skills.length ? "No matching skills" : "No skills yet"}
       </h2>
       <p>Add a skill to share it across your agents and machines.</p>
     </div>{/if}
   <div class="library-footer">
-    <span>◈ Source controlled · local first</span><span
+    <span
       >{workspace.preview_targets.length} agent × machine {workspace
         .preview_targets.length === 1
         ? "target"

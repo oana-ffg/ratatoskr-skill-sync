@@ -1,4 +1,4 @@
-# Desktop command API (0.2.1)
+# Desktop command API (0.2.2)
 
 PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for the UI redesign. The desktop uses Svelte 5 and CodeMirror 6; structured edits use the same Rust core as the CLI. All command failures propagate as rejected invocations with contextual error text.
 
@@ -53,11 +53,22 @@ Existing `read_workspace`, source editing, configuration, project, sync/apply an
 
 ## Legacy Codex cut-over
 
-Snapshots include `legacy` duplicates when an enabled local Codex profile installs outside the legacy skill root. `preview_legacy_resolution({name})` returns every file's SHA-256/executable state and the proposed same-volume archive destination. `resolve_legacy({expected})` accepts the complete serialized preview, rechecks it under the operation lock, saves a receipt and renames the full directory. The receipt includes any selected legacy ownership; only archived paths are detached, and a failed ownership update rolls the rename back. It refuses changed content, symlinks, existing backups or redirected archives. Live core Apply also blocks duplicates, including CLI and scheduled sync. Recovery uses the archive receipt; these archives do not use the workspace restore format.
+Snapshots include `legacy` duplicates when an enabled local Codex profile installs outside the legacy skill root. `preview_legacy_resolution({name})` returns every file's SHA-256/executable state and the proposed same-volume archive destination. `resolve_legacy({expected})` accepts the complete serialized preview, rechecks it under the operation lock, saves a receipt and renames the full directory. The receipt includes any selected legacy ownership; only archived paths are detached, and a failed ownership update rolls the rename back. It refuses changed content, symlinks, existing backups or redirected archives. `keep_legacy({expected})` accepts the serialized duplicate, rechecks its complete fingerprint under the operation lock, releases any old ownership without modifying the copy, and records the choice in local state. Changed legacy bytes, permissions or a changed destination invalidate that decision. Live core Apply blocks unresolved duplicates, including CLI and scheduled sync. Recovery uses the archive receipt; these archives do not use the workspace restore format.
 
 ## Structured alert settings
 
-Local settings support optional `[alert]` with `kind = "system"`, `"pushover"` (`token_env`, `user_env`), or `"ntfy"` (`url`, optional `token_env`). Custom commands continue to use `alert_command` argv with no shell. Delivery failures preserve retryable ledger state.
+Local settings support optional `[alert]` with `kind = "system"`, `"pushover"` (`token`, `user` references), or `"ntfy"` (`url`, optional `token` reference). A reference is one of:
+
+- `{kind: "gopass", entry}`: resolves `gopass show -o` for the named entry.
+- `{kind: "keychain", service, account}`: resolves a generic password item from macOS Keychain.
+- `{kind: "windows-credential", target}`: resolves a generic UTF-16 text password from Windows Credential Manager.
+- `{kind: "environment", variable}`: reads the named environment variable.
+
+Only references are serialized; credentials are read on each delivery. Store access failures propagate to CLI/scheduler errors and the corresponding Activity error ledger, remain immediately retryable, and never include provider stdout/stderr. The macOS helper includes standard Homebrew tool directories when resolving gopass. UI defaults come from the selected machine's `gopass` capability, then its native secret store. ntfy delivers push notifications to subscribers of the configured HTTPS topic.
+
+v0.2.1 `token_env`/`user_env` fields are accepted as environment references and replaced with canonical reference tables on save. Custom commands continue to use `alert_command` argv with no shell.
+
+Plans include `install_targets` with the renderer's harness, skill root, instructions file and project scope, plus `staging_root` when staging is active. Review groups by skill × agent × project; the badge counts these groups, unresolved legacy copies and otherwise unrepresented errors once each. File details expand inside their group. Apply names its write/removal count and shows the effective staging or real destinations.
 
 `update_desktop({install})` returns `{message, available, installed}` from the native updater. Settings offers installation only after an available result and restart only after a successful installation; it does not infer state from the message text.
 

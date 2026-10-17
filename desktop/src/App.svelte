@@ -280,8 +280,7 @@
             onerror={fail}
             ondirty={(v) => (dirty = v)}
           />{:else if !workspace}<section class="page onboarding">
-            <p class="eyebrow">WELCOME TO RATATOSKR</p>
-            <h1>Your knowledge.<br />Every agent.</h1>
+            <h1>Connect a workspace</h1>
             <p class="muted">
               Connect a content repository or create one to start sharing
               skills.

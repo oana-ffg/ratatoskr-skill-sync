@@ -72,6 +72,17 @@ fn main() -> anyhow::Result<()> {
         )?;
         fs::write(dir.join("skill.toml"), metadata)?;
     }
+    let realistic = include_str!("../tests/fixtures/realistic-skill.md");
+    let realistic_dir = source.join("skills/aws-project-migration");
+    fs::create_dir_all(realistic_dir.join("references"))?;
+    fs::write(realistic_dir.join("SKILL.md"), realistic)?;
+    fs::write(realistic_dir.join("skill.toml"), "")?;
+    for index in 1..=7 {
+        fs::write(
+            realistic_dir.join(format!("references/check-{index}.md")),
+            format!("Verify deployment checkpoint {index}.\n"),
+        )?;
+    }
     let settings = core::Settings {
         source,
         machine: "brunnr".into(),
@@ -94,7 +105,7 @@ fn main() -> anyhow::Result<()> {
         "preview_install_path" => serde_json::to_value(core::preview_install_path(
             &settings,
             None,
-            "recordings",
+            args["name"].as_str().unwrap_or("recordings"),
             m,
             h,
         )?)?,
@@ -103,13 +114,17 @@ fn main() -> anyhow::Result<()> {
             &serde_json::from_value::<Vec<String>>(args["versions"].clone())?,
         ))?,
         "editor_view" => serde_json::to_value(core::editor_view(text, metadata)?)?,
-        "analyze_skill" => {
-            serde_json::to_value(core::analyze_skill(&settings, "recordings", text, m, h)?)?
-        }
+        "analyze_skill" => serde_json::to_value(core::analyze_skill(
+            &settings,
+            args["name"].as_str().unwrap_or("recordings"),
+            text,
+            m,
+            h,
+        )?)?,
         "preview_skill" => serde_json::to_value(core::preview_skill(
             &settings,
             None,
-            "recordings",
+            args["name"].as_str().unwrap_or("recordings"),
             text,
             metadata,
             m,
@@ -124,6 +139,14 @@ fn main() -> anyhow::Result<()> {
             &settings,
             args["file"].as_str().unwrap_or("harnesses.toml"),
         )?)?,
+        "realistic_resources" => serde_json::to_value(core::skill_resources(
+            &settings,
+            None,
+            "aws-project-migration",
+        )?)?,
+        "realistic_document" => {
+            serde_json::to_value(core::read_skill(&settings, None, "aws-project-migration")?)?
+        }
         "fixture" => {
             core::apply(&settings)?;
             let installed = settings
@@ -149,10 +172,24 @@ fn main() -> anyhow::Result<()> {
             let preview =
                 core::preview_resolution(&settings, &claude, core::ConflictAction::Adopt)?;
             core::resolve_conflict(&settings, &serde_json::to_string(&preview)?)?;
+            // Eight ready files per agent, so grouping is exercised beyond SKILL.md.
+            fs::write(
+                realistic_dir.join("SKILL.md"),
+                realistic.replace(
+                    "Inspect the application",
+                    "Inspect and inventory the application",
+                ),
+            )?;
+            for index in 1..=7 {
+                fs::write(
+                    realistic_dir.join(format!("references/check-{index}.md")),
+                    format!("Verify and record deployment checkpoint {index}.\n"),
+                )?;
+            }
             let mut plan = serde_json::to_value(core::plan(&settings)?)?;
             plan["projects"] = json!([{"root":"/projects/audio-tools","changed_files":2,"outgoing_commits":1,"upstream":"origin/main","error":null,"source":"/projects/audio-tools/.ratatoskr"},{"root":"/projects/website","changed_files":0,"outgoing_commits":0,"upstream":"origin/main","error":null,"source":"/projects/website/.ratatoskr"}]);
             let skills = core::list_skills(&settings)?;
-            json!({"workspace":{"plan":plan,"skills":skills,"helper":"/Applications/Ratatoskr.app/Contents/MacOS/ratatoskr","helper_error":null,"jobs":{"last_run":{"started_at":1792173480_u64,"finished_at":1792173490_u64,"error":null},"current_error":null,"helper_update_error":null,"desktop_update_error":null,"log":"18:35:00  Checking content repository\n18:35:01  Source unchanged\n18:35:02  Rendered 5 skills for 2 agents\n18:35:03  Sync completed successfully"},"presets":core::agent_presets(),"preview_targets":core::preview_targets(&settings)?,"source_files":core::source_files(&settings)?,"updates":{"automatic":true,"time":"02:00","override_active":false,"endpoint":"https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json"},"legacy":[]},"document":core::read_skill(&settings,None,"recordings")?,"info":core::editor_view(md,meta)?,"analysis":core::analyze_skill(&settings,"recordings",md,"brunnr","codex")?,"values":core::value_options(&settings,"brunnr","codex")?,"resources":core::skill_resources(&settings,None,"recordings")?,"statuses":core::skill_target_statuses(&settings)?,"local_settings":settings})
+            json!({"workspace":{"plan":plan,"skills":skills,"helper":"/Applications/Ratatoskr.app/Contents/MacOS/ratatoskr","helper_error":null,"jobs":{"last_run":{"started_at":1792173480_u64,"finished_at":1792173490_u64,"error":null},"current_error":null,"helper_update_error":null,"desktop_update_error":null,"log":"18:35:00  Checking content repository\n18:35:01  Source unchanged\n18:35:02  Rendered 5 skills for 2 agents\n18:35:03  Sync completed successfully"},"presets":core::agent_presets(),"preview_targets":core::preview_targets(&settings)?,"source_files":core::source_files(&settings)?,"updates":{"automatic":true,"time":"02:00","override_active":false,"endpoint":"https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json"},"legacy":[{"name":"aws-project-migration","path":"/fixture-home/.codex/skills/aws-project-migration","destination":"/fixture-home/.agents/skills","files":[{"path":"SKILL.md","sha256":core::read_skill(&settings,None,"aws-project-migration")?.markdown_hash,"executable":false}]}]},"document":core::read_skill(&settings,None,"recordings")?,"info":core::editor_view(md,meta)?,"analysis":core::analyze_skill(&settings,"recordings",md,"brunnr","codex")?,"values":core::value_options(&settings,"brunnr","codex")?,"resources":core::skill_resources(&settings,None,"recordings")?,"statuses":core::skill_target_statuses(&settings)?,"local_settings":settings})
         }
         other => anyhow::bail!("Unsupported fixture command: {other}"),
     };

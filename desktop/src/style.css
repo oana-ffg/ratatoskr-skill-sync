@@ -166,8 +166,7 @@ small,
 .muted {
   color: var(--muted);
 }
-.eyebrow,
-.overline {
+.eyebrow {
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 1.5px;
@@ -800,6 +799,9 @@ nav button.active {
   margin-bottom: 6px;
 }
 .description-field textarea {
+  max-height: 16rem;
+  overflow-y: auto;
+  resize: none;
   font-size: 12px;
   background: var(--surface);
 }
@@ -1107,9 +1109,7 @@ nav button.active {
 .conflict-card {
   border-left: 3px solid var(--amber);
 }
-.conflict-card .overline {
-  font-size: 9px;
-}
+
 .conflict-card h2 {
   margin: 8px 0;
 }
@@ -1497,4 +1497,35 @@ dialog::backdrop {
 .neutral .word-change {
   background: var(--blue-soft);
   color: var(--blue);
+}
+
+.apply-destination {
+  margin-bottom: 24px;
+  overflow-wrap: anywhere;
+}
+.legacy-section {
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.legacy-section .conflict-card:last-child {
+  margin-bottom: 0;
+}
+.review-file {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.review-file > summary {
+  color: var(--text);
+  margin-bottom: 12px;
+}
+.secret-reference {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 16px 0;
+  padding: 12px 16px;
+}
+.secret-reference legend {
+  padding: 0 6px;
 }

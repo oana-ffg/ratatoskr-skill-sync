@@ -6,7 +6,7 @@
     setSource,
   } from "../editor/source";
   import { onMount } from "svelte";
-  import { EditorState, Transaction } from "@codemirror/state";
+  import { Compartment, EditorState, Transaction } from "@codemirror/state";
   import {
     EditorView,
     keymap,
@@ -42,6 +42,7 @@
     onselection: (range: Range) => void;
     onblock: (block: Block, remove: boolean) => void;
   } = $props();
+  const gutter = new Compartment();
   let host: HTMLDivElement;
   let view = $state<EditorView>();
 
@@ -88,7 +89,7 @@
         extensions: [
           EditorState.lineSeparator.of("\n"),
           sourceExtension(value),
-          lineNumbers(),
+          gutter.of(raw ? lineNumbers() : []),
           drawSelection(),
           highlightActiveLine(),
           history(),
@@ -137,13 +138,16 @@
   });
   function updatePresentation() {
     view?.dispatch({
-      effects: present.of({
-        analysis,
-        frontmatter,
-        raw,
-        onblock,
-        source: view.state.field(sourceField).source,
-      }),
+      effects: [
+        gutter.reconfigure(raw ? lineNumbers() : []),
+        present.of({
+          analysis,
+          frontmatter,
+          raw,
+          onblock,
+          source: view.state.field(sourceField).source,
+        }),
+      ],
     });
   }
   $effect(() => {

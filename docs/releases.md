@@ -48,3 +48,9 @@ Standalone installation enforces HTTPS, size limits, a valid Minisign signature,
 Fixes desktop updates for fresh installs and apps without a connected workspace. Startup catch-up, nightly checks, and manual Settings checks/installations share the same app-level settings resolver. Desktop attempt/deferral state belongs to the app data directory; helper update state remains workspace-specific. Existing configured update overrides and idle guards are preserved. Invalid configurations and corrupt update state remain visible errors.
 
 The version is bumped in the workspace, desktop package, native bundle config, and lockfiles. This PR does not build or publish a release.
+
+## 0.2.2 patch
+
+Fixes the structured editor's hidden-frontmatter layout and limits line numbers to Markdown source mode. Removes decorative copy from every app view. Review changes groups files by skill and agent, counts attention items, names concrete staging/live destinations, and separates legacy Codex choices. Alert credentials use references to gopass, macOS Keychain, Windows Credential Manager or environment variables; v0.2.1 environment-name settings remain readable and migrate on save.
+
+The version is bumped in the workspace, desktop package, native bundle config, and lockfiles. Release preparation still uses the signed draft-release workflow. No release is published by this PR. Brunnr's first real v0.2.1 → v0.2.2 overnight installation is an acceptance check after approval and publication.

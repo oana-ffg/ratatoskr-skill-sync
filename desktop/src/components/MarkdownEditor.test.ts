@@ -1,4 +1,4 @@
-import { render } from "@testing-library/svelte";
+import { render, waitFor } from "@testing-library/svelte";
 import { test, expect, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
 import { undo } from "@codemirror/commands";
@@ -45,4 +45,62 @@ test("the actual editor preserves mixed line endings through typing, structured 
   expect(changed).toHaveBeenLastCalledWith(command.markdown);
   undo(view);
   expect(view.state.field(sourceField).source).toBe(original);
+});
+
+test("realistic multi-paragraph skill hides whole frontmatter blocks and enables line numbers only in source mode", async () => {
+  const document = oracle("realistic_document") as { markdown: string };
+  const info = oracle("editor_view", {
+    markdown: document.markdown,
+    metadata: "",
+  }) as Info;
+  const analysis = oracle("analyze_skill", {
+    markdown: document.markdown,
+  }) as Analysis;
+  const changed = vi.fn();
+  const { container, rerender } = render(MarkdownEditor, {
+    value: document.markdown,
+    analysis,
+    frontmatter: info.frontmatter,
+    onchange: changed,
+    onselection: vi.fn(),
+    onblock: vi.fn(),
+    raw: false,
+  });
+  await waitFor(() =>
+    expect(container.querySelector(".cm-content")).toHaveTextContent(
+      "Inspect the application",
+    ),
+  );
+  expect(container.querySelector(".cm-gutters")).toBeNull();
+  expect(container.querySelector(".cm-content")).not.toHaveTextContent(
+    "description:",
+  );
+  const view = EditorView.findFromDOM(
+    container.querySelector(".cm-editor") as HTMLElement,
+  )!;
+  const { decorationField } = await import("../editor/decorations");
+  let replacement: { from: number; to: number; block: boolean } | undefined;
+  view.state
+    .field(decorationField)
+    .between(0, view.state.doc.length, (from, to, decoration) => {
+      if (from === 0) replacement = { from, to, block: decoration.spec.block };
+    });
+  expect(replacement).toEqual({
+    from: 0,
+    to: info.frontmatter.to,
+    block: true,
+  });
+  await rerender({ raw: true });
+  await waitFor(() =>
+    expect(container.querySelector(".cm-lineNumbers")).not.toBeNull(),
+  );
+  expect(container.querySelector(".cm-content")).toHaveTextContent(
+    "description:",
+  );
+  await rerender({ raw: false });
+  await waitFor(() =>
+    expect(container.querySelector(".cm-gutters")).toBeNull(),
+  );
+  expect(view.state.field(sourceField).source).toBe(document.markdown);
+  expect(changed).not.toHaveBeenCalled();
 });
