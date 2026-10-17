@@ -799,6 +799,9 @@ nav button.active {
   margin-bottom: 6px;
 }
 .description-field textarea {
+  max-height: 16rem;
+  overflow-y: auto;
+  resize: none;
   font-size: 12px;
   background: var(--surface);
 }

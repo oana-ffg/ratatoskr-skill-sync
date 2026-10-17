@@ -337,8 +337,11 @@ export function reviewSummary(workspace: Snapshot) {
     items.filter((g) => g.conflicts.length).length +
     errors.length +
     legacy.length;
+  const writes = readyChanges.filter((c) => c.action !== "remove").length;
+  const removes = readyChanges.length - writes;
   return {
-    readyChanges,
+    readyCount: readyChanges.length,
+    applyAction: applyAction(plan.mode, writes, removes),
     groups: items,
     errors,
     decisions,
@@ -346,11 +349,11 @@ export function reviewSummary(workspace: Snapshot) {
   };
 }
 
-export function applyAction(workspace: Snapshot): string {
-  const writes = workspace.plan.changes.filter(
-    (c) => c.action !== "remove",
-  ).length;
-  const removes = workspace.plan.changes.length - writes;
+function applyAction(
+  mode: Snapshot["plan"]["mode"],
+  writes: number,
+  removes: number,
+): string {
   const actions = [
     writes ? `Write ${writes} ${writes === 1 ? "file" : "files"}` : "",
     removes ? `remove ${removes} ${removes === 1 ? "file" : "files"}` : "",
@@ -358,6 +361,6 @@ export function applyAction(workspace: Snapshot): string {
     .filter(Boolean)
     .join(" and ");
   return actions
-    ? `${actions[0].toUpperCase()}${actions.slice(1)} ${workspace.plan.mode === "staging" ? "in the staging folder" : "in the real agent folders"}`
+    ? `${actions[0].toUpperCase()}${actions.slice(1)} ${mode === "staging" ? "in the staging folder" : "in the real agent folders"}`
     : "No files to apply";
 }

@@ -88,6 +88,17 @@ test("all main screens", async ({ page }) => {
   await expect(page.getByLabel("Description")).toHaveValue(
     /Inspect, migrate, deploy/,
   );
+  const description = page.getByLabel("Description");
+  await expect
+    .poll(() =>
+      description.evaluate(
+        (node: HTMLTextAreaElement) => node.scrollHeight - node.clientHeight,
+      ),
+    )
+    .toBeLessThanOrEqual(1);
+  await expect(page.locator(".editor-source .eyebrow")).not.toContainText([
+    "GLOBAL SKILL",
+  ]);
   await expect(page.locator(".cm-gutters")).toHaveCount(0);
   await expect(page.locator(".cm-content")).not.toContainText("description:");
   // A long wrapped YAML description must contribute no hidden block height.
@@ -112,6 +123,39 @@ test("all main screens", async ({ page }) => {
   await page
     .getByRole("button", { name: "Markdown source", exact: true })
     .click();
+  const originalDescription = await description.inputValue();
+  await description.fill(
+    Array.from({ length: 30 }, (_, i) => `Description line ${i + 1}`).join(
+      "\n",
+    ),
+  );
+  await expect
+    .poll(() =>
+      description.evaluate((node: HTMLTextAreaElement) => node.clientHeight),
+    )
+    .toBeGreaterThan(200);
+  expect(
+    await description.evaluate(
+      (node: HTMLTextAreaElement) => node.getBoundingClientRect().height,
+    ),
+  ).toBeLessThanOrEqual(256);
+  expect(
+    await description.evaluate(
+      (node: HTMLTextAreaElement) => node.scrollHeight,
+    ),
+  ).toBeGreaterThan(256);
+  await description.fill(originalDescription);
+  await expect
+    .poll(() =>
+      description.evaluate(
+        (node: HTMLTextAreaElement) => node.scrollHeight - node.clientHeight,
+      ),
+    )
+    .toBeLessThanOrEqual(1);
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Save", exact: true }),
+  ).toHaveCount(0);
   for (const [screen, file] of [
     ["Review changes", "review-changes"],
     ["Projects", "projects"],
@@ -129,7 +173,7 @@ test("all main screens", async ({ page }) => {
     if (screen === "Review changes") {
       await expect(
         page.getByRole("button", {
-          name: "Write 18 files in the staging folder",
+          name: "Write 17 files in the staging folder",
           exact: true,
         }),
       ).toBeVisible();

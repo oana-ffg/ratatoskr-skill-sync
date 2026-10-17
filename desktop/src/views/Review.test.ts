@@ -9,7 +9,7 @@ import { test, expect, vi, beforeEach } from "vitest";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import Review from "./Review.svelte";
 import { fixture } from "../../tests/fixture";
-import { reviewSummary, applyAction, type Snapshot } from "../api";
+import { reviewSummary, type Snapshot } from "../api";
 beforeEach(() => clearMocks());
 const props = (workspace: Snapshot) => ({
   workspace,
@@ -34,7 +34,7 @@ test("attention badge groups eight files per skill and agent, and counts legacy 
   expect(within(group).queryByText("SKILL.md · update")).toBeInTheDocument();
   expect(group.querySelector(".group-files")).not.toHaveAttribute("open");
   expect(
-    screen.getByRole("button", { name: applyAction(fixture.workspace) }),
+    screen.getByRole("button", { name: summary.applyAction }),
   ).toBeDisabled();
   expect(
     screen.getByText(/Your real agent folders are not touched/),
@@ -43,6 +43,33 @@ test("attention badge groups eight files per skill and agent, and counts legacy 
     screen.getByRole("region", { name: "Older Codex copies" }),
   ).toHaveTextContent("/fixture-home/.agents/skills");
 });
+test.each([false, true])(
+  "ready count and Apply agree with conflicts and removals=%s",
+  (withRemoval) => {
+    const workspace = structuredClone(fixture.workspace);
+    if (withRemoval) workspace.plan.changes[0].action = "remove";
+    const summary = reviewSummary(workspace);
+    expect(summary.readyCount).toBe(17);
+    render(Review, props(workspace));
+    expect(screen.getByText(/items needing attention ·/)).toHaveTextContent(
+      `${summary.readyCount} ready files`,
+    );
+    const button = screen.getByRole("button", {
+      name: /in the staging folder/,
+    });
+    const counts = [...button.textContent!.matchAll(/(\d+) files?/g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(counts.reduce((total, count) => total + count, 0)).toBe(
+      summary.readyCount,
+    );
+    expect(button).toHaveTextContent(
+      withRemoval
+        ? "Write 16 files and remove 1 file in the staging folder"
+        : "Write 17 files in the staging folder",
+    );
+  },
+);
 test("keep both submits only the explicitly reviewed duplicate and surfaces failures", async () => {
   const calls = vi.fn(() => {
     throw new Error("Legacy skill changed since preview; review it again");

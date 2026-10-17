@@ -7,7 +7,7 @@
     type Conflict,
     type Resolution,
   } from "../api";
-  import { errorText, title, reviewSummary, applyAction } from "../api";
+  import { errorText, title, reviewSummary } from "../api";
   const loadConflictEditor = () =>
     import("../components/ConflictSource.svelte");
   import Diff from "../components/Diff.svelte";
@@ -109,8 +109,8 @@
       <h1>Review changes <span class="count">{summary.total}</span></h1>
       <p class="muted">
         {summary.total}
-        {summary.total === 1 ? "item" : "items"} needing attention · {summary
-          .readyChanges.length} ready files · {summary.decisions}
+        {summary.total === 1 ? "item" : "items"} needing attention · {summary.readyCount}
+        ready files · {summary.decisions}
         {summary.decisions === 1 ? "decision" : "decisions"}
       </p>
     </div>
@@ -121,7 +121,7 @@
         !workspace.plan.changes.length ||
         workspace.legacy.length > 0}
       onclick={apply}
-      aria-describedby="apply-destination">{applyAction(workspace)}</button
+      aria-describedby="apply-destination">{summary.applyAction}</button
     >
   </div>
   <div id="apply-destination" class="apply-destination">
