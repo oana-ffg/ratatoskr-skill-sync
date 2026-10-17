@@ -151,8 +151,11 @@ fn windows_credential(target: &str) -> Result<String> {
         );
         let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, size) };
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes)
             .collect();
         String::from_utf16(&units)
             .map_err(|_| anyhow::anyhow!("Windows credential is not valid UTF-16"))
