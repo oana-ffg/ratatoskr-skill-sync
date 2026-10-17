@@ -50,9 +50,7 @@ impl SecretReference {
     pub(crate) fn resolve(&self) -> Result<String> {
         self.validate()?;
         let secret = match self {
-            Self::Environment { variable } => std::env::var(variable).with_context(|| {
-                format!("Resolve environment secret reference {variable}: variable unavailable")
-            })?,
+            Self::Environment { variable } => environment_value(variable, std::env::var(variable))?,
             Self::Gopass { entry } => {
                 let mut command = gopass_command()?;
                 command.args(["show", "-o", entry]);
@@ -67,6 +65,18 @@ impl SecretReference {
         );
         Ok(secret)
     }
+}
+
+fn environment_value(
+    variable: &str,
+    value: std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    // VarError::NotUnicode contains the value; never attach it as an error source.
+    value.map_err(|_| {
+        anyhow::anyhow!(
+            "Resolve environment secret reference {variable}: variable unavailable or not UTF-8"
+        )
+    })
 }
 
 fn gopass_command() -> Result<Command> {
@@ -194,6 +204,12 @@ mod tests {
             reference.validate().unwrap();
             assert_eq!(serde_json::to_string(&reference).unwrap(), text);
         }
+        let error = environment_value(
+            "TEST_REFERENCE",
+            Err(std::env::VarError::NotUnicode("private-value".into())),
+        )
+        .unwrap_err();
+        assert!(!format!("{error:#}").contains("private-value"));
         let missing = SecretReference::Environment {
             variable: "RATATOSKR_MISSING_SECRET_TEST".into(),
         };
