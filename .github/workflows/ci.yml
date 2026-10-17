@@ -54,6 +54,16 @@ jobs:
         working-directory: desktop
       - run: cargo clippy --locked -p ratatoskr-desktop -- -D warnings
       - run: cargo build --locked -p ratatoskr-desktop
+      - name: Bundle macOS app
+        if: runner.os == 'macOS'
+        run: npm run tauri -- build --bundles app
+        working-directory: desktop
+      - name: Verify macOS bundle signature
+        if: runner.os == 'macOS'
+        run: |
+          app="target/release/bundle/macos/Ratatoskr Skill Sync.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/ratatoskr"
 
   screenshots:
     runs-on: ubuntu-latest

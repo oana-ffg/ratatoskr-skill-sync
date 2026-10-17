@@ -39,6 +39,12 @@ jobs:
         working-directory: desktop
       - name: Build and sign desktop bundle
         run: node scripts/build-release.mjs ${{ matrix.target }} ${{ matrix.bundle }}
+      - name: Verify macOS bundle signature
+        if: runner.os == 'macOS'
+        run: |
+          app="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/ratatoskr"
       - name: Stage and sign standalone helper
         shell: bash
         run: |
