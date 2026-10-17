@@ -31,12 +31,22 @@ pub struct Change {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct InstallTarget {
+    pub harness: String,
+    pub skills_root: PathBuf,
+    pub instructions_file: PathBuf,
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Plan {
     pub source: PathBuf,
     pub machine: String,
     pub mode: String,
     pub skills: usize,
     pub targets: usize,
+    pub install_targets: Vec<InstallTarget>,
+    pub staging_root: Option<PathBuf>,
     pub changes: Vec<Change>,
     pub conflicts: Vec<String>,
     pub conflict_details: Vec<Conflict>,
@@ -86,6 +96,7 @@ struct Desired {
     files: BTreeMap<PathBuf, Rendered>,
     roots: BTreeSet<PathBuf>,
     allowed: Vec<(PathBuf, PathBuf)>,
+    install_targets: Vec<InstallTarget>,
     mode: String,
     skills: usize,
     targets: usize,
@@ -255,6 +266,7 @@ fn render_scope(
         files: BTreeMap::new(),
         roots: BTreeSet::new(),
         allowed: vec![],
+        install_targets: vec![],
         mode: mode.into(),
         skills: 0,
         targets: enabled.len(),
@@ -372,6 +384,12 @@ fn render_scope(
         result
             .allowed
             .push((skills_base.clone(), global_file.clone()));
+        result.install_targets.push(InstallTarget {
+            harness: name.into(),
+            skills_root: skills_base.clone(),
+            instructions_file: global_file.clone(),
+            project: project.map(Path::to_path_buf),
+        });
         let skills_dir = content.join("skills");
         no_symlinks(&skills_dir)?;
         if skills_dir.try_exists()? {
@@ -561,6 +579,7 @@ fn desired(settings: &Settings) -> Result<Desired> {
         }
         result.roots.extend(project.roots);
         result.allowed.extend(project.allowed);
+        result.install_targets.extend(project.install_targets);
         result.skills += project.skills;
         result.targets += project.targets;
     }
@@ -728,7 +747,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
     }
     if desired.mode == "live" {
         for duplicate in crate::legacy_duplicates(settings)? {
-            conflicts.push(format!("Codex still scans a legacy copy of {} at {}. Review and archive it explicitly before Apply.", duplicate.name, duplicate.path.display()));
+            conflicts.push(format!("Codex still scans a legacy copy of {} at {}. Choose whether to back up and retire it or keep both before Apply.", duplicate.name, duplicate.path.display()));
         }
     }
     Ok(Plan {
@@ -737,6 +756,9 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
         mode: desired.mode.clone(),
         skills: desired.skills,
         targets: desired.targets,
+        install_targets: desired.install_targets.clone(),
+        staging_root: (desired.mode == "staging")
+            .then(|| settings.state_dir.join(&settings.machine).join("staging")),
         changes,
         conflicts,
         conflict_details,

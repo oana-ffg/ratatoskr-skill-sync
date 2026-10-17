@@ -109,7 +109,7 @@ function build(p: Presentation, doc: Text): DecorationSet {
     from >= 0 && at(to) <= viewLength && from < to;
   if (p.frontmatter && valid(p.frontmatter.from, p.frontmatter.to))
     ranges.push(
-      Decoration.replace({ atomic: true }).range(
+      Decoration.replace({ block: true, atomic: true }).range(
         at(p.frontmatter.from),
         at(p.frontmatter.to),
       ),

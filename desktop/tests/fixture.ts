@@ -53,11 +53,15 @@ export function fixtureIPC(
     case "read_workspace":
       return fixture.workspace;
     case "read_source_skill":
-      return fixture.document;
+      return args.name === "aws-project-migration"
+        ? oracle("realistic_document")
+        : fixture.document;
     case "list_values":
       return fixture.values;
     case "list_skill_resources":
-      return fixture.resources;
+      return args.name === "aws-project-migration"
+        ? oracle("realistic_resources")
+        : fixture.resources;
     case "skill_target_statuses":
       return fixture.statuses;
     case "read_local_settings":

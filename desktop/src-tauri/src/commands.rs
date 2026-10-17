@@ -54,6 +54,8 @@ fn snapshot() -> Reply<Snapshot> {
         mode: "blocked".into(),
         skills: 0,
         targets: 0,
+        install_targets: vec![],
+        staging_root: None,
         changes: vec![],
         conflicts: vec![format!("Preview failed: {error:#}")],
         conflict_details: vec![],
@@ -711,4 +713,9 @@ pub(crate) async fn choose_project_source(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) fn keep_legacy(expected: String) -> Reply<Snapshot> {
+    mutate(|s| core::keep_legacy(s, &expected))
 }

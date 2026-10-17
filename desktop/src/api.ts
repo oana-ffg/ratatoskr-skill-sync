@@ -84,12 +84,20 @@ export interface Conflict {
   source: string | null;
   copy_back_blocked: string | null;
 }
+export interface InstallTarget {
+  harness: string;
+  skills_root: string;
+  instructions_file: string;
+  project: string | null;
+}
 export interface Plan {
   source: string;
   machine: string;
   mode: string;
   skills: number;
   targets: number;
+  install_targets: InstallTarget[];
+  staging_root: string | null;
   changes: Change[];
   conflicts: string[];
   conflict_details: Conflict[];
@@ -108,6 +116,7 @@ export interface Jobs {
 }
 export interface Legacy {
   name: string;
+  destination: string;
   path: string;
   files: { path: string; sha256: string; executable: boolean }[];
 }
@@ -128,6 +137,15 @@ export interface Snapshot {
   };
   legacy: Legacy[];
 }
+export type SecretReference =
+  | { kind: "gopass"; entry: string }
+  | { kind: "keychain"; service: string; account: string }
+  | { kind: "windows-credential"; target: string }
+  | { kind: "environment"; variable: string };
+export type AlertSettings =
+  | { kind: "system" }
+  | { kind: "pushover"; token: SecretReference; user: SecretReference }
+  | { kind: "ntfy"; url: string; token?: SecretReference };
 export interface LocalSettings {
   source: string;
   machine: string;
@@ -136,7 +154,7 @@ export interface LocalSettings {
   alert_command: string[];
   deploy_branch: string;
   updates: Table & { automatic: boolean; time: string };
-  alert?: Table | null;
+  alert?: AlertSettings | null;
 }
 export interface Resolution {
   action: string;
@@ -252,17 +270,94 @@ export const emptyAnalysis: Analysis = {
   diagnostics: [],
 };
 
-/** The plan also lists blocked writes as changes; count each conflict only once. */
+export interface ReviewGroup {
+  key: string;
+  name: string;
+  harness: string | null;
+  project: string | null;
+  changes: Change[];
+  conflicts: Conflict[];
+}
+const portable = (path: string) =>
+  path.replaceAll("\\", "/").replace(/\/$/, "");
+const within = (path: string, root: string) =>
+  portable(path) === portable(root) ||
+  portable(path).startsWith(`${portable(root)}/`);
+
+/** Group by actual rendered destination, including custom roots and project scope. */
 export function reviewSummary(workspace: Snapshot) {
-  const readyChanges = workspace.plan.changes.filter(
-    (change) =>
-      !workspace.plan.conflict_details.some(
-        (conflict) =>
-          change.path === conflict.path ||
-          change.path.startsWith(`${conflict.path}/`) ||
-          change.path.startsWith(`${conflict.path}\\`),
-      ),
+  const { plan, legacy } = workspace;
+  const readyChanges = plan.changes.filter(
+    (change) => !plan.conflict_details.some((c) => within(change.path, c.path)),
   );
-  const decisions = workspace.plan.conflicts.length + workspace.legacy.length;
-  return { readyChanges, decisions, total: readyChanges.length + decisions };
+  const groups = new Map<string, ReviewGroup>();
+  function group(path: string) {
+    const target = plan.install_targets.find(
+      (t) =>
+        within(path, t.skills_root) ||
+        portable(path) === portable(t.instructions_file),
+    );
+    const name = target
+      ? portable(path) === portable(target.instructions_file)
+        ? basename(target.instructions_file)
+        : portable(path)
+            .slice(portable(target.skills_root).length + 1)
+            .split("/")[0]
+      : basename(path);
+    const key = JSON.stringify([
+      target?.project,
+      target?.harness,
+      target?.skills_root ?? path,
+      name,
+    ]);
+    let value = groups.get(key);
+    if (!value) {
+      value = {
+        key,
+        name,
+        harness: target?.harness ?? null,
+        project: target?.project ?? null,
+        changes: [],
+        conflicts: [],
+      };
+      groups.set(key, value);
+    }
+    return value;
+  }
+  for (const change of readyChanges) group(change.path).changes.push(change);
+  for (const conflict of plan.conflict_details)
+    group(conflict.path).conflicts.push(conflict);
+  const errors = plan.conflicts.filter(
+    (message) =>
+      !plan.conflict_details.some((c) => message.includes(c.path)) &&
+      !legacy.some((item) => message.includes(item.path)),
+  );
+  const items = [...groups.values()];
+  const decisions =
+    items.filter((g) => g.conflicts.length).length +
+    errors.length +
+    legacy.length;
+  return {
+    readyChanges,
+    groups: items,
+    errors,
+    decisions,
+    total: items.length + errors.length + legacy.length,
+  };
+}
+
+export function applyAction(workspace: Snapshot): string {
+  const writes = workspace.plan.changes.filter(
+    (c) => c.action !== "remove",
+  ).length;
+  const removes = workspace.plan.changes.length - writes;
+  const actions = [
+    writes ? `Write ${writes} ${writes === 1 ? "file" : "files"}` : "",
+    removes ? `remove ${removes} ${removes === 1 ? "file" : "files"}` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  return actions
+    ? `${actions[0].toUpperCase()}${actions.slice(1)} ${workspace.plan.mode === "staging" ? "in the staging folder" : "in the real agent folders"}`
+    : "No files to apply";
 }

@@ -400,7 +400,12 @@ pub fn save_local_configuration(
         "Use workspace/project actions to change locations"
     );
     candidate.validate()?;
-    let before = toml::Value::try_from(&current)?;
+    let mut before = toml::Value::try_from(&current)?;
+    // Compare the on-disk alert keys: deserialization upgrades v0.2.1 references.
+    // Otherwise patching would leave token_env/user_env beside the new keys.
+    if let Some(alert) = toml::from_str::<toml::Table>(&text)?.get("alert") {
+        before["alert"] = alert.clone();
+    }
     let after = toml::Value::try_from(candidate)?;
     let edited = edit_toml_values(
         &text,

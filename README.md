@@ -8,11 +8,11 @@ Ratatoskr is a Rust command-line helper with an optional Tauri 2 desktop app. Th
 
 ## Desktop interface
 
-The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlighting, editable conditional headers, variable pills, targeting chips and a Rust-rendered live preview. Description, targeting, agent definitions, machine values and settings have forms. **You never need to edit template tags or TOML by hand.** Markdown source mode is optional. Light/dark appearance follows the OS.
+The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlighting, editable conditional headers, variable pills, targeting chips and a Rust-rendered live preview. Description, targeting, agent definitions, machine values and settings have forms. **You never need to edit template tags or TOML by hand.** Markdown source mode is optional. The app is dark-only.
 
-[Desktop walkthrough and design decisions](docs/desktop-ui.md) · [Light/dark screenshots](docs/screenshots/README.md)
+[Desktop walkthrough and design decisions](docs/desktop-ui.md) · [Dark screenshots](docs/screenshots/README.md)
 
-## Features in 0.2.1
+## Features in 0.2.2
 
 - Render machine, OS, harness, and capability conditions; substitute variables; select file variants; add harness-specific frontmatter.
 - Preview output diffs and identify hand edits, removals, executable permission changes and unmanaged collisions. Resolve each conflict with a reviewed, backed-up copy-back, reinstall or adoption. Ambiguous templates have a mapped-source editor instead of guessed reverse-mapping.
@@ -22,7 +22,7 @@ The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlightin
 - Install or remove a per-user launchd or Windows Task Scheduler job. Each run fast-forwards a clean content checkout, applies it, and exits. System, Pushover, ntfy or command-based failure/recovery alerts are deduplicated. View the last run, current ledger errors and bounded logs in the app; helper paths are detected automatically.
 - Check and install cryptographically signed helper and desktop updates, with nightly automatic updates enabled by default. A release workflow builds signed draft releases for Apple Silicon, Intel Mac, and Windows x64.
 
-**Pre-1.0:** version 0.2.1 fixes desktop updates before a workspace is connected. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
+**Pre-1.0:** version 0.2.2 fixes structured-editor layout with long frontmatter, groups review work by skill and agent, and adds secret-store references for alerts. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
 
 ## Build and run
 
@@ -96,9 +96,13 @@ For existing unmanaged imports, the legacy bulk `ratatoskr adopt` backs up exist
 
 ## Codex legacy cut-over
 
-Codex's preset installs skills in `.agents/skills`. Codex also discovers `~/.codex/skills`; same-named copies can both appear. When Codex is enabled, **Review changes** lists legacy duplicates even in staging. Live Apply (including CLI/background sync) refuses to proceed until they are resolved.
+Codex's preset installs skills in `.agents/skills`. Codex also discovers `~/.codex/skills`; same-named copies can both appear. When Codex is enabled, **Review changes** lists legacy duplicates even in staging. Live Apply (including CLI/background sync) refuses to proceed until you explicitly retire the old copy or choose **Keep both copies**. Nothing changes before that choice.
 
-The explicit **Review legacy copy** action previews every file and fingerprint, including runtime artifacts. **Back up and archive** moves the entire old directory on the same volume into `~/.codex/ratatoskr-backups/`, outside scanned skill folders, and saves a JSON receipt, including any prior Ratatoskr ownership records for that skill. Archived paths are released from the old ownership manifest so the new target can be applied. No files are silently deleted. Changed files or a redirected backup invalidate the preview. For manual recovery, move the archived directory back to the original path recorded in its receipt after checking for an existing destination. This archive is separate from `ratatoskr restore` workspace backups.
+The explicit **Back up and retire the old copy** action previews every file and fingerprint, including runtime artifacts. **Back up and retire old copy** moves the entire old directory on the same volume into `~/.codex/ratatoskr-backups/`, outside scanned skill folders, and saves a JSON receipt, including any prior Ratatoskr ownership records for that skill. Archived paths are released from the old ownership manifest so the new target can be applied. No files are silently deleted. Changed files or a redirected backup invalidate the preview. For manual recovery, move the archived directory back to the original path recorded in its receipt after checking for an existing destination. This archive is separate from `ratatoskr restore` workspace backups.
+
+**Keep both copies** preserves every legacy file and releases any old Ratatoskr ownership so that copy stays unmanaged. The decision is local to this workspace and records the reviewed file hashes, permissions and configured destination. A changed old copy or destination needs a new decision.
+
+Alert credentials use references to **gopass**, **macOS Keychain**, **Windows Credential Manager**, or **environment variables**. The Settings form defaults to gopass when the selected machine declares that capability. Only names are stored locally; credentials are resolved for each delivery, and resolution failures stay visible in Activity and scheduler output. Existing environment-name settings migrate when saved. See [alert reference fields](docs/desktop-api.md#structured-alert-settings).
 
 ## Resolve conflicts
 

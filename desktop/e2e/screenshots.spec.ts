@@ -77,6 +77,41 @@ test("all main screens", async ({ page }) => {
   await expect(page.getByRole("dialog")).toContainText("Shows for: Codex");
   await capture("only-for-picker");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Skills/ })
+    .click();
+  await page
+    .getByRole("button", { name: /aws-project-migration Enabled/ })
+    .click();
+  await page.clock.runFor(250);
+  await expect(page.getByLabel("Description")).toHaveValue(
+    /Inspect, migrate, deploy/,
+  );
+  await expect(page.locator(".cm-gutters")).toHaveCount(0);
+  await expect(page.locator(".cm-content")).not.toContainText("description:");
+  // A long wrapped YAML description must contribute no hidden block height.
+  const offset = await page.locator(".cm-content").evaluate((content) => {
+    const line = [...content.querySelectorAll(".cm-line")].find((line) =>
+      line.textContent?.includes("# AWS project migration"),
+    )!;
+    return (
+      line.getBoundingClientRect().top - content.getBoundingClientRect().top
+    );
+  });
+  expect(offset).toBeLessThan(35);
+  await expect(page.locator(".status-pill.success")).toHaveText("✓ Valid");
+  await capture("realistic-skill-editor");
+  await page
+    .getByRole("button", { name: "Markdown source", exact: true })
+    .click();
+  await page.clock.runFor(100);
+  await expect(page.locator(".cm-lineNumbers")).toBeVisible();
+  await expect(page.locator(".cm-content")).toContainText("description:");
+  await capture("markdown-source");
+  await page
+    .getByRole("button", { name: "Markdown source", exact: true })
+    .click();
   for (const [screen, file] of [
     ["Review changes", "review-changes"],
     ["Projects", "projects"],
@@ -93,10 +128,13 @@ test("all main screens", async ({ page }) => {
     ).toBeVisible();
     if (screen === "Review changes") {
       await expect(
-        page.getByRole("button", { name: "Apply 1 change", exact: true }),
+        page.getByRole("button", {
+          name: "Write 18 files in the staging folder",
+          exact: true,
+        }),
       ).toBeVisible();
       await expect(page.locator(".page-heading .muted")).toContainText(
-        "1 ready · 1 needs your decision.",
+        "5 items needing attention · 17 ready files · 2 decisions",
       );
       await expect(
         page.locator(".conflict-card .diff-add, .conflict-card .diff-remove"),
@@ -104,9 +142,26 @@ test("all main screens", async ({ page }) => {
       await expect(
         page.locator(".conflict-card .word-change").first(),
       ).toBeVisible();
+      const claude = page.locator(".change-card").filter({
+        has: page.getByRole("heading", {
+          name: "aws-project-migration → Claude Code: 8 files",
+          exact: true,
+        }),
+      });
+      await claude.locator(".group-files > summary").click();
+      await claude
+        .locator(".review-file > summary")
+        .filter({ hasText: "SKILL.md" })
+        .click();
       await expect(
-        page.locator(".change-card .diff-grid h3").first(),
+        claude.locator(".review-file .diff-grid h3").first(),
       ).toHaveText("Your source (rendered)");
+      await expect(
+        page.getByRole("region", { name: "Older Codex copies" }),
+      ).toContainText("Nothing changes until you choose");
+      await expect(page.locator("#apply-destination")).toContainText(
+        "Your real agent folders are not touched",
+      );
       await expect(
         page.getByRole("heading", {
           name: /Codex’s copy of recordings was edited on Brunnr/,
@@ -149,7 +204,28 @@ test("all main screens", async ({ page }) => {
     await expect(
       page.getByRole("button", { name: "Save", exact: true }),
     ).toHaveCount(0);
+    if (screen === "Settings") {
+      await page
+        .getByRole("combobox", { name: "Delivery", exact: true })
+        .selectOption("pushover");
+      await expect(
+        page.getByLabel("Application token secret store"),
+      ).toHaveValue("gopass");
+      await page
+        .getByLabel("Application token gopass entry")
+        .fill("pushover/codex-approvals/app-token");
+      await page
+        .getByLabel("User key gopass entry")
+        .fill("pushover/codex-approvals/user-key");
+    }
     await capture(file);
+    if (screen === "Settings") {
+      await page
+        .getByRole("combobox", { name: "Delivery", exact: true })
+        .selectOption("ntfy");
+      await page.getByLabel("Topic requires a bearer token").check();
+      await capture("ntfy-settings");
+    }
   }
   expect(errors).toEqual([]);
 });

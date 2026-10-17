@@ -149,11 +149,7 @@
 <section class="page">
   <div class="page-heading">
     <div>
-      <p class="eyebrow">A PLACE FOR EVERY AGENT</p>
       <h1>Agents & machines</h1>
-      <p class="muted">
-        Choose who receives your skills, and what each machine can do.
-      </p>
     </div>
   </div>
   <div class="section-heading">

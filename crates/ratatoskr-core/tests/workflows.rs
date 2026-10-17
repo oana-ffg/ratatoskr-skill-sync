@@ -1418,3 +1418,42 @@ fn rename_updates_variant_identities_and_keeps_resources_and_metadata() {
         before.metadata
     );
 }
+
+#[test]
+fn legacy_alert_settings_save_as_references_without_duplicate_keys() {
+    let f = Fixture::new();
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    let prefix = format!(
+        "# Preserve local settings\n{}",
+        fs::read_to_string(&config).unwrap()
+    );
+    fs::write(
+        &config,
+        format!(
+            "{prefix}\n[alert]\nkind='pushover'\ntoken_env='PUSH_TOKEN'\nuser_env='PUSH_USER'\n"
+        ),
+    )
+    .unwrap();
+    let mut local = ratatoskr_core::local_configuration(&config).unwrap();
+    local.settings.alert = Some(ratatoskr_core::AlertSettings::Pushover {
+        token: ratatoskr_core::SecretReference::Gopass {
+            entry: "pushover/codex-approvals/app-token".into(),
+        },
+        user: ratatoskr_core::SecretReference::Gopass {
+            entry: "pushover/codex-approvals/user-key".into(),
+        },
+    });
+    ratatoskr_core::save_local_configuration(&config, &local.settings, &local.hash).unwrap();
+    let stored = fs::read_to_string(&config).unwrap();
+    assert!(stored.starts_with(&prefix));
+    assert!(!stored.contains("token_env") && !stored.contains("user_env"));
+    let roundtrip = load(&config).unwrap();
+    assert_eq!(
+        serde_json::to_value(roundtrip.alert).unwrap(),
+        serde_json::to_value(local.settings.alert).unwrap()
+    );
+    let local = ratatoskr_core::local_configuration(&config).unwrap();
+    ratatoskr_core::save_local_configuration(&config, &local.settings, &local.hash).unwrap();
+    assert_eq!(fs::read_to_string(config).unwrap(), stored);
+}

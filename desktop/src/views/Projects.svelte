@@ -55,11 +55,9 @@
 <section class="page">
   <div class="page-heading">
     <div>
-      <p class="eyebrow">KNOWLEDGE WITH CONTEXT</p>
       <h1>
         Projects <span class="count">{workspace.plan.projects.length}</span>
       </h1>
-      <p class="muted">Keep project skills close to the code they belong to.</p>
     </div>
     <button class="primary" onclick={choose}>＋ Add project…</button>
   </div>
@@ -99,7 +97,7 @@
       </article>{/each}
   </div>
   {#if !workspace.plan.projects.length}<div class="empty-state">
-      <h2>Skills that travel with your projects</h2>
+      <h2>No projects connected</h2>
       <p>Choose a repository to monitor its project skills.</p>
       <button onclick={choose}>Choose project folder…</button>
     </div>{/if}
