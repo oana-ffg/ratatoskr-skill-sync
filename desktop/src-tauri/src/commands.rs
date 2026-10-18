@@ -227,7 +227,15 @@ pub(crate) fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
     mutate(|s| core::restore_backup(s, &backup).map(|_| ()))
 }
 #[tauri::command]
-pub(crate) async fn sync_workspace() -> Reply<Snapshot> {
+pub(crate) async fn sync_workspace(app: tauri::AppHandle) -> Reply<Snapshot> {
+    #[cfg(windows)]
+    {
+        crate::tray::request_sync(&app);
+        return snapshot();
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    #[cfg(not(windows))]
     tauri::async_runtime::spawn_blocking(|| mutate(|s| core::sync(s).map(|_| ())))
         .await
         .map_err(|e| e.to_string())?
@@ -252,6 +260,75 @@ pub(crate) fn disable_schedule() -> Reply<String> {
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     core::remove_schedule(&settings()?).map_err(|e| format!("{e:#}"))?;
     Ok("Background schedule removed.".into())
+}
+
+fn install_desktop_update(
+    app: &tauri::AppHandle,
+    update: tauri_plugin_updater::Update,
+) -> anyhow::Result<()> {
+    #[cfg(not(windows))]
+    let _ = app;
+    #[cfg(windows)]
+    crate::tray::prepare_restart(app)?;
+    let result = tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()));
+    #[cfg(windows)]
+    if result.is_err() {
+        crate::tray::cancel_restart(app)?;
+    }
+    result.map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) fn set_desktop_busy(app: tauri::AppHandle, busy: bool) {
+    #[cfg(windows)]
+    app.state::<crate::tray::Runtime>()
+        .desktop_busy
+        .store(busy, std::sync::atomic::Ordering::Release);
+    #[cfg(not(windows))]
+    let _ = (app, busy);
+}
+#[tauri::command]
+pub(crate) fn background_status(app: tauri::AppHandle) -> Reply<Option<serde_json::Value>> {
+    #[cfg(windows)]
+    return crate::tray::status(&app)
+        .and_then(|s| serde_json::to_value(s).map(Some).map_err(Into::into))
+        .map_err(|e| format!("{e:#}"));
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(None)
+    }
+}
+#[tauri::command]
+pub(crate) fn set_background_preferences(
+    app: tauri::AppHandle,
+    paused: bool,
+    interval_seconds: u32,
+) -> Reply<()> {
+    #[cfg(windows)]
+    {
+        crate::tray::set_preferences(&app, paused, interval_seconds)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, paused, interval_seconds);
+        Err("Tray sync is Windows-only".into())
+    }
+}
+#[tauri::command]
+pub(crate) fn migrate_background(app: tauri::AppHandle) -> Reply<()> {
+    #[cfg(windows)]
+    {
+        crate::tray::request_migration(&app);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Tray sync is Windows-only".into())
+    }
 }
 
 fn desktop_updater(
@@ -297,7 +374,11 @@ pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
     automatic_update(app, true, true).await
 }
 
-async fn automatic_update(app: tauri::AppHandle, install: bool, launch: bool) -> Reply<bool> {
+pub(crate) async fn automatic_update(
+    app: tauri::AppHandle,
+    install: bool,
+    launch: bool,
+) -> Reply<bool> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = if install {
             match MUTATION.try_lock() {
@@ -323,7 +404,7 @@ async fn automatic_update(app: tauri::AppHandle, install: bool, launch: bool) ->
                         .map_err(Into::into)
                 },
                 |update| {
-                    tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()))?;
+                    install_desktop_update(&app, update)?;
                     installed = true;
                     Ok(())
                 },
@@ -392,7 +473,7 @@ pub(crate) async fn update_desktop(
             },
             |update| update.version.clone(),
             |update| {
-                tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()))?;
+                install_desktop_update(&app, update)?;
                 Ok(())
             },
         );
@@ -411,7 +492,9 @@ pub(crate) fn save_update_schedule(automatic: bool, time: String) -> Reply<Snaps
     })
 }
 #[tauri::command]
-pub(crate) fn restart_desktop(app: tauri::AppHandle) {
+pub(crate) fn restart_desktop(app: tauri::AppHandle) -> Reply<()> {
+    #[cfg(windows)]
+    crate::tray::prepare_restart(&app).map_err(|e| format!("{e:#}"))?;
     app.restart();
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import BackgroundSync from "../components/BackgroundSync.svelte";
   import { onMount } from "svelte";
   import {
     api,
@@ -219,7 +220,8 @@
       </div>
       {#if message}<p role="status" class="success-message">{message}</p>{/if}
     </article>{/if}
-  {#if settings}<article class="panel">
+  {#if settings}<BackgroundSync {onerror} />
+    <article class="panel">
       <div class="section-heading">
         <div>
           <h2>Startup</h2>

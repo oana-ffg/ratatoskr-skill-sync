@@ -184,13 +184,46 @@ fn sync_with_update(settings: &Settings, update: impl FnOnce() -> Result<()>) ->
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
     let _lock = crate::config::operation_lock(settings, "sync.lock")?;
+    sync_locked(settings, update, false)
+}
+
+/// The desktop owns helper updates and native notifications itself.
+pub(crate) fn sync_in_process(settings: &Settings) -> Result<Option<Plan>> {
+    settings.validate()?;
+    let Some(_lock) = crate::config::try_operation_lock(settings, "sync.lock")? else {
+        return Ok(None);
+    };
+    sync_locked(settings, || Ok(()), true).map(Some)
+}
+
+fn sync_locked(
+    settings: &Settings,
+    update: impl FnOnce() -> Result<()>,
+    desktop: bool,
+) -> Result<Plan> {
     let run = crate::jobs::start(settings)?;
     // Updating and syncing have separate outcomes and notification ledgers.
     let deployment = validate_deploy_branch(settings);
     let update_result = if deployment.is_ok() { update() } else { Ok(()) };
-    let result = deployment.and_then(|_| sync_inner(settings));
+    let result = deployment.and_then(|_| {
+        let plan = sync_inner(settings)?;
+        if desktop {
+            ensure!(
+                plan.conflicts.is_empty(),
+                "Sync completed with conflicts: {}",
+                plan.conflicts.join("; ")
+            );
+        }
+        Ok(plan)
+    });
     let sync_error = result.as_ref().err().map(|e| format!("{e:#}"));
-    let notification = crate::notifications::outcome(settings, sync_error.as_deref());
+    let notification = if desktop && matches!(settings.alert, Some(crate::AlertSettings::System)) {
+        let mut alerts = settings.clone();
+        alerts.alert = None;
+        crate::notifications::outcome(&alerts, sync_error.as_deref())
+    } else {
+        crate::notifications::outcome(settings, sync_error.as_deref())
+    };
     let mut errors = Vec::new();
     if let Err(error) = update_result {
         errors.push(format!("Helper update failed: {error:#}"));

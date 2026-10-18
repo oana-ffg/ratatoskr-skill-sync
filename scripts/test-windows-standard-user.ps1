@@ -31,9 +31,12 @@ try {
     }
     & icacls.exe $root /grant "*${sid}:(OI)(CI)M"
     if ($LASTEXITCODE -ne 0) { throw "Grant fixture permissions failed: $LASTEXITCODE" }
-    foreach ($binary in @('ratatoskr.exe', 'ratatoskrw.exe')) {
+    foreach ($binary in @('ratatoskr.exe')) {
         Copy-Item (Join-Path $PSScriptRoot "../target/debug/$binary") (Join-Path $root $binary)
     }
+    $tests = @(Get-ChildItem (Join-Path $PSScriptRoot '../target/debug/deps/windows_schedule-*.exe'))
+    if ($tests.Count -ne 1) { throw "Expected one Windows migration test executable, found $($tests.Count)" }
+    Copy-Item $tests[0].FullName (Join-Path $root 'windows_schedule.exe')
     $child = Join-Path $root 'standard-user-check.ps1'
     Copy-Item (Join-Path $PSScriptRoot 'windows-standard-user-check.ps1') $child
     Start-Service seclogon
@@ -77,4 +80,4 @@ finally {
     if ($rootCreated) { Invoke-Cleanup 'fixture' { Remove-Item $root -Recurse -Force } }
 }
 if ($failures.Count -ne 0) { throw ($failures -join "`n") }
-Write-Host 'PASS: standard-user schedule registration/removal; task, account, profile and fixture cleaned up'
+Write-Host 'PASS: standard-user legacy task migration; task, account, profile and fixture cleaned up'

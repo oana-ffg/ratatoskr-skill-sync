@@ -7,18 +7,8 @@ use anyhow::{Context, Result, ensure};
 use std::{
     fs,
     io::Write,
-    os::windows::io::AsRawHandle,
     path::{Path, PathBuf},
 };
-
-#[derive(Debug)]
-pub struct RecordedSyncError(String);
-impl std::fmt::Display for RecordedSyncError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for RecordedSyncError {}
 
 fn diagnostics(config: &Path) -> Result<(Settings, bool)> {
     no_symlinks(config)?;
@@ -55,126 +45,73 @@ fn diagnostics(config: &Path) -> Result<(Settings, bool)> {
     ))
 }
 
-struct Logs {
-    stdout: fs::File,
-    stderr: fs::File,
-    old_stdout: windows_sys::Win32::Foundation::HANDLE,
-    old_stderr: windows_sys::Win32::Foundation::HANDLE,
-}
-
-impl Logs {
-    fn open(settings: &Settings) -> Result<Self> {
-        use windows_sys::Win32::System::Console::{
-            GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
-        };
-        let directory = settings.state_dir.join(&settings.machine);
-        no_symlinks(&directory)?;
-        fs::create_dir_all(&directory)?;
-        let open = |filename: &str| -> Result<fs::File> {
-            let path = directory.join(filename);
-            no_symlinks(&path)?;
-            Ok(fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(path)?)
-        };
-        let logs = Self {
-            stdout: open("sync.stdout.log")?,
-            stderr: open("sync.stderr.log")?,
-            old_stdout: unsafe { GetStdHandle(STD_OUTPUT_HANDLE) },
-            old_stderr: unsafe { GetStdHandle(STD_ERROR_HANDLE) },
-        };
-        // The helper owns this process. Keep the file handles alive through all
-        // core calls so eprintln!, lock-release failures and panic diagnostics
-        // are durable too, even though the PE subsystem has no console.
-        ensure!(
-            unsafe { SetStdHandle(STD_OUTPUT_HANDLE, logs.stdout.as_raw_handle()) } != 0,
-            "Redirect background stdout: {}",
-            std::io::Error::last_os_error()
-        );
-        if unsafe { SetStdHandle(STD_ERROR_HANDLE, logs.stderr.as_raw_handle()) } == 0 {
-            let error = std::io::Error::last_os_error();
-            ensure!(
-                unsafe { SetStdHandle(STD_OUTPUT_HANDLE, logs.old_stdout) } != 0,
-                "Restore stdout after stderr redirection failed: {error}; {}",
-                std::io::Error::last_os_error()
-            );
-            return Err(error.into());
-        }
-        Ok(logs)
-    }
-
-    fn close(mut self) -> Result<()> {
-        use windows_sys::Win32::System::Console::{
-            STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
-        };
-        // Attempt both restorations before checking either result.
-        let stdout = unsafe { SetStdHandle(STD_OUTPUT_HANDLE, self.old_stdout) };
-        let stdout_error = std::io::Error::last_os_error();
-        let stderr = unsafe { SetStdHandle(STD_ERROR_HANDLE, self.old_stderr) };
-        ensure!(
-            stdout != 0 && stderr != 0,
-            "Restore background output handles: stdout={stdout} ({stdout_error}), stderr={stderr} ({})",
-            std::io::Error::last_os_error()
-        );
-        self.stdout.flush()?;
-        self.stderr.flush()?;
-        Ok(())
-    }
-}
-
-/// Direct core entry point for the windowless Windows task. No console or CLI subprocess.
-pub fn scheduled_sync(config: &Path) -> Result<()> {
+/// Direct core entry point for tray runs. Logs use owned file handles, never
+/// process-wide stdout redirection inside a multithreaded desktop application.
+/// None means the existing sync operation lock was busy; no run was started.
+pub fn recorded_sync(config: &Path) -> Result<Option<crate::Plan>> {
     ensure!(
         config.is_absolute(),
-        "Scheduled config path must be absolute"
+        "Background config path must be absolute"
     );
-    let (diagnostics, bootstrap) = diagnostics(config)?;
-    let mut logs = Logs::open(&diagnostics).context("Open background sync logs")?;
+    let (diagnostics, _) = diagnostics(config)?;
+    let directory = diagnostics.state_dir.join(&diagnostics.machine);
+    no_symlinks(&directory)?;
+    fs::create_dir_all(&directory)?;
+    let open = |filename: &str| -> Result<fs::File> {
+        let path = directory.join(filename);
+        no_symlinks(&path)?;
+        if path.try_exists()? && fs::metadata(&path)?.len() > 262_144 {
+            let bytes = fs::read(&path)?;
+            crate::config::atomic_write(&path, &bytes[bytes.len().saturating_sub(65_536)..])?;
+        }
+        Ok(fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?)
+    };
+    let mut stdout = open("sync.stdout.log").context("Open background output log")?;
+    let mut stderr = open("sync.stderr.log").context("Open background error log")?;
     let result = (|| {
         let settings = match crate::load(config) {
             Ok(settings) => settings,
             Err(error) => {
-                let run = jobs::start(&diagnostics).context("Start configuration-error ledger")?;
-                jobs::finish(&diagnostics, run, Some(&format!("{error:#}")))
-                    .context("Finish configuration-error ledger")?;
+                let Some(_lock) = crate::config::try_operation_lock(&diagnostics, "sync.lock")?
+                else {
+                    return Ok(None);
+                };
+                let run = jobs::start(&diagnostics)?;
+                jobs::finish(&diagnostics, run, Some(&format!("{error:#}")))?;
                 return Err(error);
             }
         };
-        let report = crate::sync(&settings)?;
-        writeln!(logs.stdout, "{}", serde_json::to_string_pretty(&report)?)?;
-        ensure!(report.conflicts.is_empty(), "Sync completed with conflicts");
-        Ok(())
+        crate::git::sync_in_process(&settings)
     })();
-    let error = result
-        .as_ref()
-        .err()
-        .map(|error: &anyhow::Error| format!("{error:#}"));
-    // Captures even load/lock failures, plus any stderr emitted by the core.
-    let write = if let Some(error) = &error {
-        writeln!(logs.stderr, "{error}")
-    } else {
-        Ok(())
-    };
-    let close = logs.close();
-    if write.is_err() || close.is_err() {
-        anyhow::bail!(
-            "Background sync: {}; error-log write: {write:?}; log close: {close:?}",
-            error.as_deref().unwrap_or("completed")
-        );
+    match &result {
+        Ok(Some(plan)) => writeln!(stdout, "{}", serde_json::to_string(plan)?)?,
+        Ok(None) => (),
+        Err(error) => writeln!(stderr, "{error:#}")?,
     }
-    if let Some(error) = error {
-        return Err(RecordedSyncError(format!(
-            "{error}; diagnostics: {}{}",
-            diagnostics.state_dir.display(),
-            if bootstrap {
-                " (configuration could not be loaded)"
-            } else {
-                ""
-            }
-        ))
-        .into());
+    stdout.flush()?;
+    stderr.flush()?;
+    result
+}
+
+/// Configuration errors still have a safe bootstrap ledger beside the config.
+pub fn record_background_problem(config: &Path, error: Option<&str>) -> Result<()> {
+    let (diagnostics, _) = diagnostics(config)?;
+    crate::tray::record_problem(&diagnostics, error)
+}
+pub fn notify_background(
+    config: &Path,
+    error: Option<&str>,
+    send: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
+    let (diagnostics, _) = diagnostics(config)?;
+    let mut state = crate::tray::NotificationState::load(&diagnostics)?;
+    let previous = state.clone();
+    state.deliver(error, send)?;
+    if state != previous {
+        state.save(&diagnostics)?;
     }
     Ok(())
 }

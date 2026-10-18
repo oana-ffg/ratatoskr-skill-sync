@@ -73,3 +73,36 @@ test("ntfy explains subscriptions and all stores are selectable without reading 
     ),
   );
 });
+
+test("Windows settings expose tray sync and preserve the existing login preference", async () => {
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "background_status")
+      return {
+        paused: false,
+        interval_seconds: 60,
+        running: false,
+        last_success: null,
+        skills: 29,
+        error: null,
+        migration_error: null,
+      };
+    if (cmd === "login_enabled") return true;
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  render(Settings, {
+    workspace: fixture.workspace,
+    onupdate: vi.fn(),
+    onerror: vi.fn(),
+    ondirty: vi.fn(),
+  });
+  expect(
+    await screen.findByText("Tray mode · Recommended on Windows"),
+  ).toBeVisible();
+  expect(await screen.findByLabelText("Open Ratatoskr at login")).toBeChecked();
+  expect(screen.queryByRole("button", { name: "Review schedule…" })).toBeNull();
+  expect(calls).not.toHaveBeenCalledWith(
+    "set_login_enabled",
+    expect.anything(),
+  );
+});

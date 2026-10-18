@@ -1,7 +1,7 @@
-#![cfg(all(windows, feature = "windows-helper"))]
+#![cfg(windows)]
 
-use anyhow::{Context, Result, bail, ensure};
-use ratatoskr_core::{Schedule, Settings, save, schedule_plan};
+use anyhow::{Context, Result, ensure};
+use ratatoskr_core::{Schedule, Settings, migrate_windows_schedule, save, tray::TrayPreferences};
 use std::{
     fs,
     path::Path,
@@ -14,202 +14,172 @@ fn checked(command: &mut Command) -> Result<Output> {
         .with_context(|| format!("Start {command:?}"))?;
     ensure!(
         output.status.success(),
-        "{command:?} exited with {}\nstdout: {}\nstderr: {}",
-        output.status,
+        "{command:?}: {} {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(output)
 }
-
-fn query_definition(label: &str) -> Result<String> {
-    let output = checked(Command::new("schtasks").args(["/Query", "/TN", label, "/XML"]))?;
-    let bytes = output.stdout;
-    if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[b'<', 0]) {
-        let start = if bytes.starts_with(&[0xff, 0xfe]) {
-            2
-        } else {
-            0
-        };
-        let (pairs, remainder) = bytes[start..].as_chunks::<2>();
-        ensure!(remainder.is_empty(), "Truncated scheduler XML output");
-        Ok(String::from_utf16(
-            &pairs
-                .iter()
-                .map(|pair| u16::from_le_bytes(*pair))
-                .collect::<Vec<_>>(),
-        )?)
-    } else {
-        // schtasks can also use the active console code page. Action executable
-        // names are ASCII, independent of the encoding of the Unicode fixture.
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
-    }
+fn registered(label: &str) -> Result<bool> {
+    let output = checked(Command::new("schtasks").args(["/Query", "/FO", "CSV", "/NH"]))?;
+    Ok(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.split(',')
+            .next()
+            .is_some_and(|name| name.trim_matches('"').trim_start_matches('\\') == label)
+    }))
 }
-
+fn write_definition(schedule: &Schedule, utf8: bool) -> Result<()> {
+    let bytes: Vec<u8> = if utf8 {
+        schedule.definition.as_bytes().to_vec()
+    } else {
+        std::iter::once(0xfeff)
+            .chain(schedule.definition.encode_utf16())
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    };
+    fs::write(&schedule.path, bytes)?;
+    Ok(())
+}
 fn cli(config: &Path, action: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ratatoskr"));
-    command.args(["--config"]).arg(config);
-    command.args(["--json", "schedule", action]);
+    let executable = std::env::var_os("RATATOSKR_TEST_CLI")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_ratatoskr").into());
+    let mut command = Command::new(executable);
+    command
+        .arg("--config")
+        .arg(config)
+        .args(["--json", "schedule", action]);
     command
 }
 
-// Each plan gets a fresh wall-clock StartBoundary. Only that value may differ
-// between separate CLI plan/install calls; every other XML character must match.
-fn without_start_boundary(definition: &str) -> Result<(&str, &str)> {
-    let (before, rest) = definition
-        .split_once("<StartBoundary>")
-        .context("Missing StartBoundary")?;
-    let (_, after) = rest
-        .split_once("</StartBoundary>")
-        .context("Unclosed StartBoundary")?;
-    Ok((before, after))
-}
-
 #[test]
-fn windows_schedule_cli_registers_queries_and_removes_real_task() -> Result<()> {
+fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_owned_tasks()
+-> Result<()> {
     let temp = tempfile::tempdir()?;
-    let root = temp.path().canonicalize()?;
+    let config = std::env::var_os("RATATOSKR_TEST_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(temp.path().join("config Æ 🦀 & test.toml"));
+    let config = config
+        .parent()
+        .context("Config parent missing")?
+        .canonicalize()?
+        .join(config.file_name().context("Config filename missing")?);
+    let root = config.parent().unwrap();
     let source = root.join("source");
-    fs::create_dir(&source)?;
+    fs::create_dir_all(&source)?;
     let settings = Settings {
         source,
         machine: "schedule-ci".into(),
         state_dir: root.join("state"),
-        ..Settings::default()
+        ..Default::default()
     };
-    let config = root.join("config Æ 🦀 & test.toml");
     save(&config, &settings)?;
-    // Both binaries run against this disposable non-Git checkout only. No
-    // update/pull/apply can happen, even if the immediate trigger fires.
-    let helper = root.join("ratatoskr.exe");
-    let windowless = root.join("ratatoskrw.exe");
-    fs::copy(env!("CARGO_BIN_EXE_ratatoskr"), &helper)?;
-    fs::copy(env!("CARGO_BIN_EXE_ratatoskrw"), &windowless)?;
-    let planned = schedule_plan(&settings, &config, &helper, 60)?;
-    let mut needs_cleanup = false;
+    // Derive the same label through an absent ownership error, without adding
+    // a task-creation API to the product. SHA256 matches historical labels.
+    let label_output = checked(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command",
+        "$hash=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($env:RATATOSKR_TEST_PATH)); 'io.github.oana-ffg.ratatoskr.'+([BitConverter]::ToString($hash).Replace('-','').ToLowerInvariant()).Substring(0,12)"])
+        .env("RATATOSKR_TEST_PATH", &config))?;
+    let label = String::from_utf8(label_output.stdout)?.trim().to_owned();
+    let directory = settings.state_dir.join(&settings.machine);
+    fs::create_dir_all(&directory)?;
+    let record = directory.join("installed-schedule.json");
+    let definition = format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>Ratatoskr CI harmless legacy fixture</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT120S</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>2099-01-01T00:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><ExecutionTimeLimit>PT1M</ExecutionTimeLimit></Settings><Actions><Exec><Command>cmd.exe</Command><Arguments>/c exit 0</Arguments></Exec></Actions></Task>"#
+    );
+    let mut schedule = Schedule {
+        label: label.clone(),
+        path: directory.join("schedule.xml"),
+        definition,
+        os: "windows".into(),
+    };
+    let mut task_exists = false;
     let result = (|| -> Result<()> {
-        let preview = checked(cli(&config, "plan").arg("--helper").arg(&helper))?;
-        let preview = String::from_utf8(preview.stdout)?;
-        ensure!(!planned.path.exists(), "Preview wrote a schedule file");
-        ensure!(preview.starts_with("<?xml version=\"1.0\" encoding=\"UTF-16\"?>"));
-
-        // Clean up even if installation fails after registering the task.
-        needs_cleanup = true;
-        checked(
-            cli(&config, "install")
-                .arg("--helper")
-                .arg(&helper)
-                .args(["--seconds", "60"]),
-        )?;
-        let record = settings
-            .state_dir
-            .join(&settings.machine)
-            .join("installed-schedule.json");
-        let installed: Schedule = serde_json::from_slice(&fs::read(&record)?)?;
-        ensure!(installed.label == planned.label);
-        let bytes = fs::read(&installed.path)?;
-        ensure!(bytes.starts_with(&[0xff, 0xfe]), "Missing UTF-16LE BOM");
-        let (pairs, remainder) = bytes[2..].as_chunks::<2>();
-        ensure!(remainder.is_empty(), "Truncated UTF-16 code unit");
-        let units: Vec<_> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
-        let definition = String::from_utf16(&units)?;
+        let install = cli(&config, "install").output()?;
+        ensure!(!install.status.success());
+        ensure!(String::from_utf8_lossy(&install.stderr).contains("tray sync"));
         ensure!(
-            definition == installed.definition,
-            "Installed bytes differ from recorded XML"
+            !registered(&label)? && !record.exists(),
+            "schedule install registered a task"
         );
-        ensure!(definition.contains("config Æ 🦀 &amp; test.toml"));
-        ensure!(definition.contains("ratatoskrw.exe</Command>"));
-        ensure!(query_definition(&installed.label)?.contains("ratatoskrw.exe"));
-        ensure!(
-            !definition.contains(r"\\?\"),
-            "Verbatim paths leaked into task actions"
-        );
-        ensure!(definition.contains("<LogonType>InteractiveToken</LogonType>"));
-        ensure!(definition.contains("<RunLevel>LeastPrivilege</RunLevel>"));
-        ensure!(definition.contains("<Actions Context=\"Author\">"));
-        ensure!(
-            without_start_boundary(preview.trim_end())? == without_start_boundary(&definition)?,
-            "CLI preview differs from installed XML"
-        );
-
-        // Exercise the exact /Create /XML /TN /F import used for regression
-        // coverage, using the actual file written by schedule install.
+        // Seed via the real registration harness, never via product code.
+        write_definition(&schedule, false)?;
         checked(
             Command::new("schtasks")
-                .args(["/Create", "/XML"])
-                .arg(&installed.path)
-                .args(["/TN", &installed.label, "/F"]),
+                .args(["/Create", "/TN", &label, "/XML"])
+                .arg(&schedule.path),
         )?;
-        checked(Command::new("schtasks").args(["/Query", "/TN", &installed.label, "/XML"]))?;
-
-        let mut edited = bytes.clone();
-        edited.extend_from_slice(&[b' ', 0]);
-        fs::write(&installed.path, &edited)?;
-        let refused_install = cli(&config, "install")
-            .arg("--helper")
-            .arg(&helper)
-            .output()?;
+        task_exists = true;
+        let unowned = migrate_windows_schedule(&settings, &config).unwrap_err();
+        ensure!(format!("{unowned:#}").contains("no ownership record"));
+        ensure!(registered(&label)?, "Unowned task was removed");
+        ratatoskr_core::tray::record_problem(&settings, Some(&format!("{unowned:#}")))?;
         ensure!(
-            !refused_install.status.success(),
-            "Replacement accepted edited XML"
+            ratatoskr_core::job_status(&settings)?
+                .background_error
+                .is_some()
         );
-        ensure!(
-            fs::read(&installed.path)? == edited,
-            "Refusal changed user-edited bytes"
-        );
-        let refused = cli(&config, "remove").output()?;
-        ensure!(!refused.status.success(), "Removal accepted edited XML");
-        ensure!(String::from_utf8_lossy(&refused.stderr).contains("Schedule definition changed"));
-        checked(Command::new("schtasks").args(["/Query", "/TN", &installed.label]))?;
-        fs::write(&installed.path, bytes)?;
 
-        // Seed a real legacy task/ownership record using the console action.
-        // Test migration from both old UTF-8 and current UTF-16 definitions.
-        for legacy_utf8 in [false, true] {
-            let mut legacy = installed.clone();
-            legacy.definition = legacy.definition.replace("ratatoskrw.exe", "ratatoskr.exe");
-            let utf16: Vec<u8> = std::iter::once(0xfeff)
-                .chain(legacy.definition.encode_utf16())
-                .flat_map(u16::to_le_bytes)
-                .collect();
-            fs::write(&legacy.path, &utf16)?;
-            checked(
-                Command::new("schtasks")
-                    .args(["/Create", "/XML"])
-                    .arg(&legacy.path)
-                    .args(["/TN", &legacy.label, "/F"]),
-            )?;
-            if legacy_utf8 {
-                legacy.definition = legacy
+        for (disabled, utf8) in [(false, false), (true, false), (false, true), (true, true)] {
+            if !task_exists {
+                schedule.definition = schedule
+                    .definition
+                    .replace("encoding=\"UTF-8\"", "encoding=\"UTF-16\"");
+                write_definition(&schedule, false)?;
+                checked(
+                    Command::new("schtasks")
+                        .args(["/Create", "/TN", &label, "/XML"])
+                        .arg(&schedule.path),
+                )?;
+                task_exists = true;
+            }
+            if disabled {
+                checked(Command::new("schtasks").args(["/Change", "/TN", &label, "/DISABLE"]))?;
+            }
+            if utf8 {
+                schedule.definition = schedule
                     .definition
                     .replace("encoding=\"UTF-16\"", "encoding=\"UTF-8\"");
-                fs::write(&legacy.path, legacy.definition.as_bytes())?;
             }
-            fs::write(&record, serde_json::to_vec(&legacy)?)?;
-            checked(cli(&config, "install").arg("--helper").arg(&helper))?;
-            let replaced: Schedule = serde_json::from_slice(&fs::read(&record)?)?;
-            ensure!(replaced.label == legacy.label && replaced.path == legacy.path);
-            ensure!(replaced.definition.contains("ratatoskrw.exe</Command>"));
-            ensure!(query_definition(&legacy.label)?.contains("ratatoskrw.exe"));
+            write_definition(&schedule, utf8)?;
+            fs::write(&record, serde_json::to_vec(&schedule)?)?;
+            TrayPreferences {
+                paused: true,
+                interval_seconds: 60,
+            }
+            .save(&settings)?;
+            let original = fs::read(&schedule.path)?;
+            let mut changed = original.clone();
+            changed.push(b' ');
+            fs::write(&schedule.path, &changed)?;
+            ensure!(migrate_windows_schedule(&settings, &config).is_err());
+            ensure!(
+                registered(&label)? && fs::read(&schedule.path)? == changed,
+                "Edited task was changed"
+            );
+            fs::write(&schedule.path, original)?;
+            ensure!(migrate_windows_schedule(&settings, &config)?);
+            task_exists = false;
+            ensure!(!registered(&label)? && !schedule.path.exists() && !record.exists());
+            let preferences = TrayPreferences::load(&settings)?;
+            ensure!(
+                !preferences.paused && preferences.interval_seconds == 120,
+                "Migration did not enable tray sync with existing interval"
+            );
+            println!(
+                "PASS: owned task removed; disabled={disabled}, legacy_utf8={utf8}; tray sync enabled"
+            );
         }
-
-        // The real remove path must read the UTF-16 file, check ownership and
-        // successfully invoke schtasks /Delete /TN <name> /F.
-        checked(&mut cli(&config, "remove"))?;
-        needs_cleanup = false;
-        ensure!(!installed.path.exists() && !record.exists());
-        let deleted = Command::new("schtasks")
-            .args(["/Query", "/TN", &installed.label])
-            .output()?;
-        ensure!(!deleted.status.success(), "Task still exists after removal");
+        ensure!(
+            !migrate_windows_schedule(&settings, &config)?,
+            "Migration must be idempotent"
+        );
         Ok(())
     })();
-    if needs_cleanup {
-        let cleanup =
-            checked(Command::new("schtasks").args(["/Delete", "/TN", &planned.label, "/F"]));
-        if let Err(error) = cleanup {
-            bail!("Task cleanup failed: {error:#}; test result: {result:?}");
-        }
+    if task_exists {
+        let cleanup = checked(Command::new("schtasks").args(["/Delete", "/TN", &label, "/F"]));
+        ensure!(
+            cleanup.is_ok(),
+            "Task cleanup failed: {cleanup:?}; test: {result:?}"
+        );
     }
     result
 }

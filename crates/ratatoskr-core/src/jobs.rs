@@ -23,6 +23,7 @@ pub struct JobStatus {
     pub current_error: Option<String>,
     pub helper_update_error: Option<String>,
     pub desktop_update_error: Option<String>,
+    pub background_error: Option<String>,
     pub log: String,
 }
 
@@ -118,6 +119,7 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
         }
     }
     Ok(JobStatus {
+        background_error: crate::tray::problem(settings)?,
         last_run,
         current_error: crate::notifications::current_error(settings, "notification.json")?,
         helper_update_error: crate::notifications::current_error(

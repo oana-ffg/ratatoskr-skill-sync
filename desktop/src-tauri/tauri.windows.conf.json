@@ -4,8 +4,22 @@
       "nsis"
     ],
     "externalBin": [
-      "binaries/ratatoskr",
-      "binaries/ratatoskrw"
+      "binaries/ratatoskr"
+    ]
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ratatoskr Skill Sync",
+        "width": 1180,
+        "height": 850,
+        "minWidth": 560,
+        "minHeight": 600,
+        "theme": "Dark",
+        "backgroundColor": "#101510",
+        "visible": false
+      }
     ]
   }
 }

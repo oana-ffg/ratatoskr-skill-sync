@@ -11,9 +11,6 @@ use std::{
     process::Command,
 };
 
-#[cfg(windows)]
-mod windows;
-
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Schedule {
     pub label: String,
@@ -58,16 +55,23 @@ fn xml(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+pub(crate) fn schedule_label(config: &Path) -> String {
+    let id = format!("{:x}", Sha256::digest(config.to_string_lossy().as_bytes()));
+    format!("io.github.oana-ffg.ratatoskr.{}", &id[..12])
+}
+
 pub fn schedule_plan(
     settings: &Settings,
     config: &Path,
     helper: &Path,
     seconds: u32,
 ) -> Result<Schedule> {
+    ensure!(
+        !cfg!(windows),
+        "Windows uses tray sync. Open Ratatoskr Skill Sync and enable Open at login in Settings; schedule install is disabled."
+    );
     settings.validate()?;
     no_symlinks(config)?;
-    #[cfg(windows)]
-    let helper = &helper.with_file_name("ratatoskrw.exe");
     no_symlinks(helper)?;
     ensure!(
         config.is_absolute() && helper.is_absolute() && helper.is_file(),
@@ -77,15 +81,8 @@ pub fn schedule_plan(
         (60..=86400).contains(&seconds),
         "Schedule interval must be 60–86400 seconds"
     );
-    let id = format!("{:x}", Sha256::digest(config.to_string_lossy().as_bytes()));
-    let label = format!("io.github.oana-ffg.ratatoskr.{}", &id[..12]);
+    let label = schedule_label(config);
     let state = settings.state_dir.join(&settings.machine);
-    // Keep ownership/label paths unchanged. Only simplify paths handed to the
-    // scheduler, where canonicalize's verbatim prefix is unnecessary for normal paths.
-    #[cfg(windows)]
-    let (config, helper) = (dunce::simplified(config), dunce::simplified(helper));
-    #[cfg(windows)]
-    let arguments = xml(&format!("--config \"{}\" sync", config.to_string_lossy()));
     let config = xml(&config.to_string_lossy());
     let helper = xml(&helper.to_string_lossy());
     let os = std::env::consts::OS;
@@ -108,17 +105,9 @@ pub fn schedule_plan(
                 ),
             )
         }
-        #[cfg(windows)]
-        "windows" => {
-            let sid = xml(&windows::current_user_sid()?);
-            let start = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
-            (
-                state.join("schedule.xml"),
-                format!(
-                    "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><URI>\\{label}</URI><Description>Ratatoskr Skill Sync</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT{seconds}S</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>{start}</StartBoundary><Enabled>true</Enabled></TimeTrigger><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Author\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT30M</ExecutionTimeLimit></Settings><Actions Context=\"Author\"><Exec><Command>{helper}</Command><Arguments>{arguments}</Arguments></Exec></Actions></Task>"
-                ),
-            )
-        }
+        "windows" => bail!(
+            "Windows uses tray sync. Open Ratatoskr Skill Sync and enable Open at login in Settings. Scheduled tasks are no longer supported."
+        ),
         _ => bail!("Scheduler installation is supported on macOS and Windows"),
     };
     no_symlinks(&path)?;
@@ -131,7 +120,7 @@ pub fn schedule_plan(
 }
 
 fn run(command: &str, args: &[&str]) -> Result<()> {
-    let output = Command::new(command).args(args).output()?;
+    let output = crate::process::command(command).args(args).output()?;
     ensure!(
         output.status.success(),
         "{command}: {} {}",
@@ -158,86 +147,30 @@ pub fn install_schedule(settings: &Settings, schedule: &Schedule) -> Result<()> 
     no_symlinks(&schedule.path)?;
     let record = record_path(settings);
     no_symlinks(&record)?;
-    let previous = if schedule.os == "windows" && record.try_exists()? {
-        let previous = owned_schedule(settings)?;
-        ensure!(
-            previous.os == schedule.os
-                && previous.label == schedule.label
-                && previous.path == schedule.path,
-            "Existing schedule identity differs; preserving it for manual review"
-        );
-        Some(previous)
-    } else {
-        ensure!(
-            !schedule.path.try_exists()? && !record.try_exists()?,
-            "A schedule already exists; remove the owned schedule before replacing it"
-        );
-        None
-    };
-    let previous_bytes = previous
-        .as_ref()
-        .map(|_| fs::read(&schedule.path))
-        .transpose()?;
+    ensure!(
+        schedule.os == "macos",
+        "Windows uses tray sync. Open Ratatoskr Skill Sync and enable Open at login in Settings; schedule install is disabled."
+    );
+    ensure!(
+        !schedule.path.try_exists()? && !record.try_exists()?,
+        "A schedule already exists; remove the owned schedule before replacing it"
+    );
     fs::create_dir_all(settings.state_dir.join(&settings.machine))?;
     atomic_write(&schedule.path, &schedule.definition_bytes())?;
-    let result = if schedule.os == "macos" {
-        let uid = Command::new("id").arg("-u").output()?;
-        ensure!(uid.status.success(), "Cannot determine login UID");
-        run(
-            "launchctl",
-            &[
-                "bootstrap",
-                &format!("gui/{}", String::from_utf8(uid.stdout)?.trim()),
-                &schedule.path.to_string_lossy(),
-            ],
-        )
-    } else {
-        let mut args = vec!["/Create", "/TN", &schedule.label, "/XML"];
-        let path = schedule.path.to_string_lossy();
-        args.push(&path);
-        // /F is authorized only after verifying the previous ownership record
-        // and its exact bytes. A task without our record is never overwritten.
-        if previous.is_some() {
-            args.push("/F");
-        }
-        run("schtasks", &args)
-    };
-    if let Err(error) = result {
-        if let Some(bytes) = &previous_bytes {
-            atomic_write(&schedule.path, bytes)
-                .context("Restore previous schedule after registration failure")?;
-        } else {
-            fs::remove_file(&schedule.path)?;
-        }
+    let uid = Command::new("id").arg("-u").output()?;
+    ensure!(uid.status.success(), "Cannot determine login UID");
+    if let Err(error) = run(
+        "launchctl",
+        &[
+            "bootstrap",
+            &format!("gui/{}", String::from_utf8(uid.stdout)?.trim()),
+            &schedule.path.to_string_lossy(),
+        ],
+    ) {
+        fs::remove_file(&schedule.path)?;
         return Err(error);
     }
-    if let Err(error) = atomic_write(&record, &serde_json::to_vec_pretty(schedule)?) {
-        if let Some(bytes) = previous_bytes {
-            atomic_write(&schedule.path, &bytes)
-                .context("Restore previous schedule after ownership-write failure")?;
-            run(
-                "schtasks",
-                &[
-                    "/Create",
-                    "/TN",
-                    &schedule.label,
-                    "/XML",
-                    &schedule.path.to_string_lossy(),
-                    "/F",
-                ],
-            )
-            .with_context(|| {
-                format!("Restore registered task after ownership-write failure: {error:#}")
-            })?;
-        } else if schedule.os == "windows" {
-            run("schtasks", &["/Delete", "/TN", &schedule.label, "/F"])
-                .with_context(|| format!("Remove task after ownership-write failure: {error:#}"))?;
-            fs::remove_file(&schedule.path).with_context(|| {
-                format!("Remove definition after ownership-write failure: {error:#}")
-            })?;
-        }
-        return Err(error.context("Save installed schedule ownership"));
-    }
+    atomic_write(&record, &serde_json::to_vec_pretty(schedule)?)?;
     Ok(())
 }
 
@@ -257,6 +190,10 @@ pub fn remove_schedule(settings: &Settings) -> Result<()> {
     settings.validate()?;
     let _lock = crate::config::operation_lock(settings, "schedule.lock")?;
     let schedule = owned_schedule(settings)?;
+    ensure!(
+        schedule.os == std::env::consts::OS,
+        "Schedule belongs to another OS"
+    );
     if schedule.os == "macos" {
         let uid = Command::new("id").arg("-u").output()?;
         ensure!(uid.status.success(), "Cannot determine login UID");
@@ -277,6 +214,60 @@ pub fn remove_schedule(settings: &Settings) -> Result<()> {
     fs::remove_file(schedule.path)?;
     fs::remove_file(record_path(settings))?;
     Ok(())
+}
+
+/// Migrate only a recorded, byte-exact definition for this exact configuration.
+/// Disabled and enabled tasks share the same safe deletion path.
+#[cfg(windows)]
+pub fn migrate_windows_schedule(settings: &Settings, config: &Path) -> Result<bool> {
+    settings.validate()?;
+    let record = record_path(settings);
+    no_symlinks(&record)?;
+    let label = schedule_label(config);
+    if !record.try_exists()? {
+        let output = crate::process::command("schtasks")
+            .args(["/Query", "/FO", "CSV", "/NH"])
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "Inspect legacy tasks: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tasks = String::from_utf8_lossy(&output.stdout);
+        ensure!(
+            !tasks.lines().any(|line| line
+                .split(',')
+                .next()
+                .is_some_and(|name| name.trim_matches('"').trim_start_matches('\\') == label)),
+            "Legacy task {label} has no ownership record; preserving it for manual review. Tray sync is blocked until resolved."
+        );
+        return Ok(false);
+    }
+    // Validate identity before remove_schedule takes its lock and repeats the
+    // byte-exact check. Never trust a record for another task or path.
+    let owned = owned_schedule(settings)?;
+    ensure!(
+        owned.os == "windows"
+            && owned.label == label
+            && owned.path
+                == settings
+                    .state_dir
+                    .join(&settings.machine)
+                    .join("schedule.xml"),
+        "Legacy task identity differs; preserving it for manual review"
+    );
+    let interval = regex::Regex::new(r"<Interval>PT(\d+)S</Interval>")?
+        .captures(&owned.definition)
+        .map(|c| c[1].parse::<u32>())
+        .transpose()?;
+    remove_schedule(settings)?;
+    let mut preferences = crate::tray::TrayPreferences::load(settings)?;
+    preferences.paused = false;
+    if let Some(seconds) = interval {
+        preferences.interval_seconds = seconds;
+    }
+    preferences.save(settings)?;
+    Ok(true)
 }
 
 #[cfg(test)]

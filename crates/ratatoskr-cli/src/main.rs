@@ -438,6 +438,11 @@ fn run() -> Result<i32> {
             }
         }
         Action::Schedule { action } => {
+            #[cfg(windows)]
+            anyhow::ensure!(
+                matches!(action, ScheduleAction::Remove),
+                "Windows uses tray sync. Open Ratatoskr Skill Sync and enable Open at login in Settings; schedule install is disabled."
+            );
             let settings = load(&path)?;
             match action {
                 ScheduleAction::Plan { helper, seconds } => println!(

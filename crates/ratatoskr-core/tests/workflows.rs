@@ -540,19 +540,25 @@ fn schedule_preview_escapes_paths_and_does_not_install_anything() {
     let f = Fixture::new();
     let helper = f.root.join("Ratatoskr & helper");
     fs::write(&helper, "Test helper").unwrap();
-    #[cfg(windows)]
-    fs::write(
-        helper.with_file_name("ratatoskrw.exe"),
-        "Test background helper",
-    )
-    .unwrap();
     let config = f.root.join("configuration & data.toml");
     save(&config, &f.settings).unwrap();
-    let schedule = ratatoskr_core::schedule_plan(&f.settings, &config, &helper, 60).unwrap();
-    assert!(schedule.definition.contains("&amp;"));
-    assert!(!schedule.definition.contains("&amp;amp;"));
-    assert!(!f.settings.state_dir.exists());
-    assert!(ratatoskr_core::schedule_plan(&f.settings, &config, &helper, 1).is_err());
+    #[cfg(windows)]
+    {
+        let error = ratatoskr_core::schedule_plan(&f.settings, &config, &helper, 60)
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("tray sync"));
+        assert!(!f.settings.state_dir.exists());
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let schedule = ratatoskr_core::schedule_plan(&f.settings, &config, &helper, 60).unwrap();
+        assert!(schedule.definition.contains("&amp;"));
+        assert!(!schedule.definition.contains("&amp;amp;"));
+        assert!(!f.settings.state_dir.exists());
+        assert!(ratatoskr_core::schedule_plan(&f.settings, &config, &helper, 1).is_err());
+    }
 }
 
 #[test]

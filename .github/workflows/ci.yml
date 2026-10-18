@@ -15,18 +15,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      HELPER_FEATURES: ${{ matrix.os == 'windows-latest' && '--features windows-helper' || '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets ${{ env.HELPER_FEATURES }} -- -D warnings
-      - run: cargo test --locked ${{ env.HELPER_FEATURES }}
-      - name: Register and remove schedule as a standard Windows user
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: Compare macOS launchd plist bytes with PR base
+        if: runner.os == 'macOS' && github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/compare-macos-schedule.py
+      - name: Migrate legacy tasks as a standard Windows user
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-windows-standard-user.ps1
@@ -65,7 +70,7 @@ jobs:
         if: runner.os == 'macOS'
         run: npm run tauri -- build --bundles app
         working-directory: desktop
-      - name: Bundle Windows installer with both helpers
+      - name: Bundle Windows tray app installer
         if: runner.os == 'Windows'
         run: npm run tauri -- build --bundles nsis
         working-directory: desktop
