@@ -32,6 +32,7 @@ pub(crate) struct Status {
 }
 pub(crate) struct Runtime {
     status: Mutex<Status>,
+    preferences: Mutex<()>,
     gate: RunGate,
     sync_requested: AtomicBool,
     migrate_requested: AtomicBool,
@@ -46,6 +47,20 @@ impl Runtime {
             .lock()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .clone())
+    }
+    fn begin_run(&self) -> Result<Option<core::tray::RunPermit<'_>>> {
+        let mut state = self
+            .status
+            .lock()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        if state.paused || state.migration_error.is_some() {
+            return Ok(None);
+        }
+        let permit = self.gate.enter(false);
+        if permit.is_some() {
+            state.running = true;
+        }
+        Ok(permit)
     }
     fn change(&self, action: impl FnOnce(&mut Status)) -> Result<()> {
         let mut state = self
@@ -98,13 +113,17 @@ pub(crate) fn set_preferences(
     paused: bool,
     interval_seconds: u32,
 ) -> Result<Status> {
+    let runtime = app.state::<Runtime>();
+    let _preferences = runtime
+        .preferences
+        .lock()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let settings = core::load(&core::default_config_path()?)?;
     TrayPreferences {
         paused,
         interval_seconds,
     }
     .save(&settings)?;
-    let runtime = app.state::<Runtime>();
     runtime.change(|s| {
         s.paused = paused;
         s.interval_seconds = interval_seconds;
@@ -219,6 +238,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
             interval_seconds: 60,
             ..Default::default()
         }),
+        preferences: Mutex::new(()),
         gate: RunGate::default(),
         sync_requested: AtomicBool::new(true),
         migrate_requested: AtomicBool::new(true),
@@ -408,6 +428,10 @@ fn run_loop(app: &tauri::AppHandle) {
                 || Instant::now() >= next_migration
             {
                 next_migration = Instant::now() + Duration::from_secs(60);
+                let _preferences = runtime
+                    .preferences
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let migration = core::migrate_windows_schedule(&settings, &config);
                 runtime
                     .change(|s| s.migration_error = migration.err().map(|e| format!("{e:#}")))?;
@@ -423,10 +447,9 @@ fn run_loop(app: &tauri::AppHandle) {
                 && !state.paused
                 && (manual || Instant::now() >= next_sync)
             {
-                let Some(_permit) = runtime.gate.enter(state.paused) else {
+                let Some(_permit) = runtime.begin_run()? else {
                     return Ok(());
                 };
-                runtime.change(|s| s.running = true)?;
                 let outcome = core::recorded_sync(&config);
                 runtime.change(|s| s.running = false)?;
                 next_sync = Instant::now() + Duration::from_secs(state.interval_seconds.into());
