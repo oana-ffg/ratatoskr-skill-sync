@@ -66,6 +66,8 @@ pub fn schedule_plan(
 ) -> Result<Schedule> {
     settings.validate()?;
     no_symlinks(config)?;
+    #[cfg(windows)]
+    let helper = &helper.with_file_name("ratatoskrw.exe");
     no_symlinks(helper)?;
     ensure!(
         config.is_absolute() && helper.is_absolute() && helper.is_file(),
@@ -154,10 +156,28 @@ pub fn install_schedule(settings: &Settings, schedule: &Schedule) -> Result<()> 
         "Schedule belongs to another OS"
     );
     no_symlinks(&schedule.path)?;
-    ensure!(
-        !schedule.path.try_exists()? && !record_path(settings).try_exists()?,
-        "A schedule already exists; remove the owned schedule before replacing it"
-    );
+    let record = record_path(settings);
+    no_symlinks(&record)?;
+    let previous = if schedule.os == "windows" && record.try_exists()? {
+        let previous = owned_schedule(settings)?;
+        ensure!(
+            previous.os == schedule.os
+                && previous.label == schedule.label
+                && previous.path == schedule.path,
+            "Existing schedule identity differs; preserving it for manual review"
+        );
+        Some(previous)
+    } else {
+        ensure!(
+            !schedule.path.try_exists()? && !record.try_exists()?,
+            "A schedule already exists; remove the owned schedule before replacing it"
+        );
+        None
+    };
+    let previous_bytes = previous
+        .as_ref()
+        .map(|_| fs::read(&schedule.path))
+        .transpose()?;
     fs::create_dir_all(settings.state_dir.join(&settings.machine))?;
     atomic_write(&schedule.path, &schedule.definition_bytes())?;
     let result = if schedule.os == "macos" {
@@ -172,31 +192,56 @@ pub fn install_schedule(settings: &Settings, schedule: &Schedule) -> Result<()> 
             ],
         )
     } else {
-        run(
-            "schtasks",
-            &[
-                "/Create",
-                "/TN",
-                &schedule.label,
-                "/XML",
-                &schedule.path.to_string_lossy(),
-            ],
-        )
+        let mut args = vec!["/Create", "/TN", &schedule.label, "/XML"];
+        let path = schedule.path.to_string_lossy();
+        args.push(&path);
+        // /F is authorized only after verifying the previous ownership record
+        // and its exact bytes. A task without our record is never overwritten.
+        if previous.is_some() {
+            args.push("/F");
+        }
+        run("schtasks", &args)
     };
     if let Err(error) = result {
-        fs::remove_file(&schedule.path)?;
+        if let Some(bytes) = &previous_bytes {
+            atomic_write(&schedule.path, bytes)
+                .context("Restore previous schedule after registration failure")?;
+        } else {
+            fs::remove_file(&schedule.path)?;
+        }
         return Err(error);
     }
-    atomic_write(
-        &record_path(settings),
-        &serde_json::to_vec_pretty(schedule)?,
-    )?;
+    if let Err(error) = atomic_write(&record, &serde_json::to_vec_pretty(schedule)?) {
+        if let Some(bytes) = previous_bytes {
+            atomic_write(&schedule.path, &bytes)
+                .context("Restore previous schedule after ownership-write failure")?;
+            run(
+                "schtasks",
+                &[
+                    "/Create",
+                    "/TN",
+                    &schedule.label,
+                    "/XML",
+                    &schedule.path.to_string_lossy(),
+                    "/F",
+                ],
+            )
+            .with_context(|| {
+                format!("Restore registered task after ownership-write failure: {error:#}")
+            })?;
+        } else if schedule.os == "windows" {
+            run("schtasks", &["/Delete", "/TN", &schedule.label, "/F"])
+                .with_context(|| format!("Remove task after ownership-write failure: {error:#}"))?;
+            fs::remove_file(&schedule.path).with_context(|| {
+                format!("Remove definition after ownership-write failure: {error:#}")
+            })?;
+        }
+        return Err(error.context("Save installed schedule ownership"));
+    }
     Ok(())
 }
 
-pub fn remove_schedule(settings: &Settings) -> Result<()> {
-    settings.validate()?;
-    let _lock = crate::config::operation_lock(settings, "schedule.lock")?;
+fn owned_schedule(settings: &Settings) -> Result<Schedule> {
     let record = record_path(settings);
     no_symlinks(&record)?;
     let schedule: Schedule = serde_json::from_slice(&fs::read(&record)?)?;
@@ -205,6 +250,13 @@ pub fn remove_schedule(settings: &Settings) -> Result<()> {
         schedule.matches_definition(&fs::read(&schedule.path)?),
         "Schedule definition changed; preserving it for manual review"
     );
+    Ok(schedule)
+}
+
+pub fn remove_schedule(settings: &Settings) -> Result<()> {
+    settings.validate()?;
+    let _lock = crate::config::operation_lock(settings, "schedule.lock")?;
+    let schedule = owned_schedule(settings)?;
     if schedule.os == "macos" {
         let uid = Command::new("id").arg("-u").output()?;
         ensure!(uid.status.success(), "Cannot determine login UID");
@@ -223,7 +275,7 @@ pub fn remove_schedule(settings: &Settings) -> Result<()> {
         run("schtasks", &["/Delete", "/TN", &schedule.label, "/F"])?;
     }
     fs::remove_file(schedule.path)?;
-    fs::remove_file(record)?;
+    fs::remove_file(record_path(settings))?;
     Ok(())
 }
 

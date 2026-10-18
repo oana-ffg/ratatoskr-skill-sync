@@ -31,7 +31,9 @@ try {
     }
     & icacls.exe $root /grant "*${sid}:(OI)(CI)M"
     if ($LASTEXITCODE -ne 0) { throw "Grant fixture permissions failed: $LASTEXITCODE" }
-    Copy-Item (Join-Path $PSScriptRoot '../target/debug/ratatoskr.exe') (Join-Path $root 'ratatoskr.exe')
+    foreach ($binary in @('ratatoskr.exe', 'ratatoskrw.exe')) {
+        Copy-Item (Join-Path $PSScriptRoot "../target/debug/$binary") (Join-Path $root $binary)
+    }
     $child = Join-Path $root 'standard-user-check.ps1'
     Copy-Item (Join-Path $PSScriptRoot 'windows-standard-user-check.ps1') $child
     Start-Service seclogon

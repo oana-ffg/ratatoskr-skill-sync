@@ -62,6 +62,13 @@ jobs:
           fi
           cd desktop
           npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" "../artifacts/ratatoskr-${{ matrix.platform }}${extension}"
+      - name: Stage and sign windowless Windows helper
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/ratatoskrw.exe" artifacts/ratatoskrw-${{ matrix.platform }}.exe
+          cd desktop
+          npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" "../artifacts/ratatoskrw-${{ matrix.platform }}.exe"
       - name: Collect desktop artifacts
         shell: bash
         run: |

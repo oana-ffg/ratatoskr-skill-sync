@@ -28,20 +28,25 @@ run("cargo", [
   "ratatoskr-skill-sync",
   "--target",
   triple,
+  ...(triple.includes("windows") ? ["--features", "windows-helper"] : []),
   ...(release ? ["--release"] : []),
 ]);
 const extension = triple.includes("windows") ? ".exe" : "";
-const source = resolve(
-  process.env.CARGO_TARGET_DIR || resolve(root, "target"),
-  triple,
-  release ? "release" : "debug",
-  `ratatoskr${extension}`,
-);
-const destination = resolve(
-  root,
-  "desktop/src-tauri/binaries",
-  `ratatoskr-${triple}${extension}`,
-);
-mkdirSync(dirname(destination), { recursive: true });
-copyFileSync(source, destination);
-console.log(`Prepared helper for ${triple}`);
+for (const name of triple.includes("windows")
+  ? ["ratatoskr", "ratatoskrw"]
+  : ["ratatoskr"]) {
+  const source = resolve(
+    process.env.CARGO_TARGET_DIR || resolve(root, "target"),
+    triple,
+    release ? "release" : "debug",
+    `${name}${extension}`,
+  );
+  const destination = resolve(
+    root,
+    "desktop/src-tauri/binaries",
+    `${name}-${triple}${extension}`,
+  );
+  mkdirSync(dirname(destination), { recursive: true });
+  copyFileSync(source, destination);
+}
+console.log(`Prepared helpers for ${triple}`);

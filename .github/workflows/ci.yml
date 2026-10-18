@@ -15,6 +15,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      HELPER_FEATURES: ${{ matrix.os == 'windows-latest' && '--features windows-helper' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,8 +24,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --locked
+      - run: cargo clippy --all-targets ${{ env.HELPER_FEATURES }} -- -D warnings
+      - run: cargo test --locked ${{ env.HELPER_FEATURES }}
       - name: Register and remove schedule as a standard Windows user
         if: runner.os == 'Windows'
         shell: pwsh
@@ -47,6 +49,7 @@ jobs:
         working-directory: desktop
       - run: npm run format:check
         working-directory: desktop
+      - run: node --test scripts/tests/*.test.mjs
       - run: npm test
         working-directory: desktop
       - run: npm run check
@@ -61,6 +64,10 @@ jobs:
       - name: Bundle macOS app
         if: runner.os == 'macOS'
         run: npm run tauri -- build --bundles app
+        working-directory: desktop
+      - name: Bundle Windows installer with both helpers
+        if: runner.os == 'Windows'
+        run: npm run tauri -- build --bundles nsis
         working-directory: desktop
       - name: Verify macOS bundle signature
         if: runner.os == 'macOS'

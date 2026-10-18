@@ -6,7 +6,6 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -67,7 +66,7 @@ pub(crate) fn outcome_for(settings: &Settings, error: Option<&str>, filename: &s
             .alert_command
             .split_first()
             .context("No alert program configured")?;
-        let output = Command::new(program)
+        let output = crate::process::command(program)
             .args(args)
             .arg(message)
             .output()
@@ -219,13 +218,13 @@ impl AlertSettings {
             }
             Self::System => {
                 #[cfg(target_os="macos")]
-                let result=Command::new("osascript").args(["-e","on run argv\ndisplay notification (item 1 of argv) with title \"Ratatoskr Skill Sync\"\nend run",message]).output()?;
+                let result=crate::process::command("osascript").args(["-e","on run argv\ndisplay notification (item 1 of argv) with title \"Ratatoskr Skill Sync\"\nend run",message]).output()?;
                 #[cfg(target_os = "linux")]
-                let result = Command::new("notify-send")
+                let result = crate::process::command("notify-send")
                     .args(["Ratatoskr Skill Sync", message])
                     .output()?;
                 #[cfg(target_os="windows")]
-                let result=Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",r#"$ErrorActionPreference='Stop'; [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null; [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null; $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml('<toast><visual><binding template="ToastText02"><text id="1">Ratatoskr Skill Sync</text><text id="2"></text></binding></visual></toast>'); $xml.GetElementsByTagName('text').Item(1).InnerText=$env:RATATOSKR_ALERT_MESSAGE; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Ratatoskr Skill Sync').Show([Windows.UI.Notifications.ToastNotification]::new($xml))"#]).env("RATATOSKR_ALERT_MESSAGE",message).output()?;
+                let result=crate::process::command("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",r#"$ErrorActionPreference='Stop'; [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null; [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null; $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml('<toast><visual><binding template="ToastText02"><text id="1">Ratatoskr Skill Sync</text><text id="2"></text></binding></visual></toast>'); $xml.GetElementsByTagName('text').Item(1).InnerText=$env:RATATOSKR_ALERT_MESSAGE; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Ratatoskr Skill Sync').Show([Windows.UI.Notifications.ToastNotification]::new($xml))"#]).env("RATATOSKR_ALERT_MESSAGE",message).output()?;
                 ensure!(
                     result.status.success(),
                     "System notification failed: {}",

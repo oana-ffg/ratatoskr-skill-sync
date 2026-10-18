@@ -23,7 +23,7 @@ New-Item -ItemType Directory $source | Out-Null
 $settings = "source = $(ConvertTo-Json $source -Compress)`nmachine = 'standard-user-ci'`nstate_dir = $(ConvertTo-Json $state -Compress)`n"
 [IO.File]::WriteAllText($ConfigPath, $settings, [Text.UTF8Encoding]::new($false))
 $configArgument = '\\?\' + $ConfigPath
-$helper = [IO.Path]::GetFullPath((Join-Path $env:SystemRoot 'System32/where.exe'))
+$helper = [IO.Path]::GetFullPath((Join-Path $Root 'ratatoskrw.exe'))
 $helperArgument = '\\?\' + $helper
 $cli = Join-Path $Root 'ratatoskr.exe'
 function Invoke-Ratatoskr([string[]]$Arguments) {
@@ -40,8 +40,8 @@ if ($preview.Task.Actions.Exec.Command -ne $helper -or
     $preview.Task.Actions.Exec.Arguments -ne "--config `"$ConfigPath`" sync") {
     throw 'Preview does not preserve the expected Unicode paths'
 }
-# where.exe only searches for files; a trigger can never execute Ratatoskr or
-# touch any real user configuration. Both CLI inputs deliberately use \\?\ paths.
+# The helper only sees this disposable config. Its source is not a Git checkout,
+# so sync fails before any pull/update/apply. Both inputs use canonical paths.
 Invoke-Ratatoskr -Arguments @('schedule', 'install', '--helper', $helperArgument, '--seconds', '60')
 $recordPath = Join-Path $state 'standard-user-ci/installed-schedule.json'
 $record = Get-Content -Raw $recordPath | ConvertFrom-Json
@@ -90,6 +90,10 @@ if ($registered.Task.Actions.Exec.Command -ne $helper -or
 }
 Write-Host "PASS: real CLI registered $TaskName with this user's SID on trigger and InteractiveToken/LeastPrivilege principal"
 Write-Host 'PASS: canonical helper/config inputs became plain absolute action paths'
+# Re-register the same owned task as part of migration/update, without removing it.
+Invoke-Ratatoskr -Arguments @('schedule', 'install', '--helper', $helperArgument, '--seconds', '120')
+$task = $folder.GetTask($TaskName)
+if ($task.Definition.Actions.Item(1).Path -ne $helper) { throw 'Replacement lost the windowless action' }
 Invoke-Ratatoskr -Arguments @('schedule', 'remove')
 if (@($folder.GetTasks(1) | Where-Object Name -eq $TaskName).Count -ne 0 -or
     (Test-Path $recordPath) -or (Test-Path $record.path)) {

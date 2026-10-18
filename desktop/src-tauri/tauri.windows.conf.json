@@ -2,6 +2,10 @@
   "bundle": {
     "targets": [
       "nsis"
+    ],
+    "externalBin": [
+      "binaries/ratatoskr",
+      "binaries/ratatoskrw"
     ]
   }
 }

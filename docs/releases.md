@@ -4,7 +4,7 @@ The official trust root is compiled into the helper (`crates/ratatoskr-core/src/
 
 `https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json`
 
-`scripts/release-manifest.mjs` publishes that manifest with all six desktop/helper platform entries. Users do not configure signing keys. No public release is created by this change.
+`scripts/release-manifest.mjs` publishes that manifest with all seven desktop/helper platform entries. Users do not configure signing keys. No public release is created by this change.
 
 ## Signing and release operations
 
@@ -17,9 +17,17 @@ Load each value directly from gopass into `gh secret set` over stdin. Never prin
 
 1. Set matching versions in workspace `Cargo.toml`, `desktop/package.json`, and `desktop/src-tauri/tauri.conf.json`; refresh the lockfiles. Version changes require the normal PR, green CI, and approval from an agent on another harness. The author merges after approval unless Oana grants a specific bypass.
 2. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles and standalone helper executables. The bundled helper is prepared from the same source version.
-3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all six platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
+3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all seven platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
 
 The workflow signs artifacts using Tauri/Minisign. Windows uses the signed NSIS installer directly; macOS uses signed `.app.tar.gz` updater bundles. Apple Developer ID signing/notarization and Microsoft publisher signing remain separate, unconfigured integrations. An update signature authenticates the update without establishing an OS publisher identity.
+
+## Windows helper pair
+
+Windows packaging enables Cargo's `windows-helper` feature and builds both the normal console CLI (`ratatoskr.exe`, PE subsystem 3) and the scheduled-sync helper (`ratatoskrw.exe`, PE subsystem 2). `prepare:helper` stages both sidecars, and the Windows-only Tauri configuration bundles both beside the desktop executable. macOS packaging still stages only `ratatoskr`.
+
+The release publishes `ratatoskr-windows-x86_64.exe` and `ratatoskrw-windows-x86_64.exe` with independent signatures. The manifest requires `windows-x86_64-cli` and `windows-x86_64-windowless`. A standalone Windows update downloads, verifies signatures and checks matching versions for both before replacing either. The companion is replaced first, then the running helper uses the existing self-replacement mechanism; a self-replacement failure restores both original paths and returns an update error. A busy companion causes an explicit failure before self-replacement. Desktop updates replace both through the signed installer.
+
+After installing the pair, run `ratatoskr schedule install` to migrate an existing owned task to the windowless command. Existing schedule labels/paths and removal's byte checks remain intact; edited or unowned definitions require manual review. The old v0.2.6 updater cannot acquire a companion it did not know about, so an upgrade initiated by that old standalone CLI must also download the windowless asset beside it (or use the Windows installer).
 
 ## Local update settings
 
