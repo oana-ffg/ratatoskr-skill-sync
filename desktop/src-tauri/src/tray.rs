@@ -1,7 +1,7 @@
 //! Windows owns its sync/update timers in Rust, independent of WebView timers.
 use anyhow::{Context, Result};
 use ratatoskr_core::{
-    self as core,
+    self as core, NotificationKind,
     tray::{LastSuccess, RunGate, TrayPreferences},
 };
 use serde::Serialize;
@@ -30,7 +30,65 @@ pub(crate) struct Status {
     pub error: Option<String>,
     #[serde(skip_serializing)]
     update_error: Option<String>,
+    #[serde(skip_serializing)]
+    notification_error: Option<String>,
+    #[serde(skip_serializing)]
+    login_error: Option<String>,
+    #[serde(skip_serializing)]
+    restart_error: Option<String>,
+    #[serde(skip_serializing)]
+    preferences_error: Option<String>,
+    #[serde(skip_serializing)]
+    preferences_observed: bool,
     pub migration_error: Option<String>,
+}
+impl Status {
+    fn current_error(&self) -> Option<String> {
+        let errors: Vec<_> = [
+            &self.error,
+            &self.update_error,
+            &self.notification_error,
+            &self.login_error,
+            &self.restart_error,
+            &self.preferences_error,
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+        (!errors.is_empty()).then(|| errors.join("; "))
+    }
+    fn notification_outcomes(&self) -> Vec<(NotificationKind, Option<&str>)> {
+        let mut outcomes = vec![
+            (NotificationKind::Sync, self.error.as_deref()),
+            (NotificationKind::Migration, self.migration_error.as_deref()),
+            (
+                NotificationKind::DesktopUpdate,
+                self.update_error.as_deref(),
+            ),
+            (
+                NotificationKind::Notifications,
+                self.notification_error.as_deref(),
+            ),
+            (NotificationKind::Login, self.login_error.as_deref()),
+            (NotificationKind::Restart, self.restart_error.as_deref()),
+        ];
+        if self.preferences_observed {
+            outcomes.push((
+                NotificationKind::Preferences,
+                self.preferences_error.as_deref(),
+            ));
+        }
+        outcomes
+    }
+    fn restore(&mut self, mut saved: Self) {
+        saved.notification_error = self.notification_error.take();
+        saved.login_error = self.login_error.take();
+        saved.restart_error = self.restart_error.take();
+        saved.preferences_error = self.preferences_error.take();
+        saved.preferences_observed = self.preferences_observed;
+        *self = saved;
+    }
 }
 fn restored_status(settings: &core::Settings) -> Result<Status> {
     let preferences = TrayPreferences::load(settings)?;
@@ -63,9 +121,7 @@ impl Runtime {
             .lock()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .clone();
-        if status.error.is_none() {
-            status.error = status.update_error.clone();
-        }
+        status.error = status.current_error();
         Ok(status)
     }
     fn begin_run(&self, manual: bool) -> Result<Option<core::tray::RunPermit<'_>>> {
@@ -106,10 +162,12 @@ pub(crate) fn prepare_restart(app: &tauri::AppHandle) -> Result<()> {
         .get_webview_window("main")
         .context("Main window missing")?
         .is_visible()?;
-    core::tray::save_restart_mode(&launch_mode_path(app)?, hidden)
+    core::tray::save_restart_mode(&launch_mode_path(app)?, hidden)?;
+    app.state::<Runtime>().change(|s| s.restart_error = None)
 }
 pub(crate) fn cancel_restart(app: &tauri::AppHandle) -> Result<()> {
-    core::tray::clear_restart_mode(&launch_mode_path(app)?)
+    core::tray::clear_restart_mode(&launch_mode_path(app)?)?;
+    app.state::<Runtime>().change(|s| s.restart_error = None)
 }
 fn start_hidden(app: &tauri::AppHandle) -> Result<bool> {
     core::tray::consume_restart_mode(
@@ -128,31 +186,62 @@ pub(crate) fn open(app: &tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn set_preferences(
+fn edit_preferences(
     app: &tauri::AppHandle,
-    paused: bool,
-    interval_seconds: u32,
+    edit: impl FnOnce(&mut TrayPreferences),
 ) -> Result<Status> {
     let runtime = app.state::<Runtime>();
-    let _preferences = runtime
-        .preferences
-        .lock()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let settings = core::load(&core::default_config_path()?)?;
-    TrayPreferences {
-        paused,
-        interval_seconds,
-    }
-    .save(&settings)?;
+    let result = (|| -> Result<()> {
+        let _preferences = runtime
+            .preferences
+            .lock()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let settings = core::load(&core::default_config_path()?)?;
+        let mut preferences = TrayPreferences::load(&settings)?;
+        edit(&mut preferences);
+        preferences.save(&settings)?;
+        runtime.change(|s| {
+            s.paused = preferences.paused;
+            s.interval_seconds = preferences.interval_seconds;
+        })?;
+        if !preferences.paused {
+            runtime.sync_requested.store(true, Ordering::Release);
+        }
+        Ok(())
+    })();
     runtime.change(|s| {
-        s.paused = paused;
-        s.interval_seconds = interval_seconds;
+        s.preferences_observed = true;
+        s.preferences_error = result.as_ref().err().map(|error| format!("{error:#}"));
     })?;
-    if !paused {
-        runtime.sync_requested.store(true, Ordering::Release);
-    }
     refresh(app)?;
+    result?;
     runtime.status()
+}
+pub(crate) fn set_preferences(
+    app: &tauri::AppHandle,
+    paused: Option<bool>,
+    interval_seconds: Option<u32>,
+) -> Result<Status> {
+    anyhow::ensure!(
+        paused.is_some() || interval_seconds.is_some(),
+        "Choose a background sync setting to change"
+    );
+    edit_preferences(app, |preferences| {
+        if let Some(paused) = paused {
+            preferences.paused = paused;
+        }
+        if let Some(seconds) = interval_seconds {
+            preferences.interval_seconds = seconds;
+        }
+    })
+}
+pub(crate) fn login_outcome(
+    app: &tauri::AppHandle,
+    result: &std::result::Result<bool, String>,
+) -> Result<()> {
+    app.state::<Runtime>()
+        .change(|s| s.login_error = result.as_ref().err().cloned())?;
+    refresh(app)
 }
 pub(crate) fn request_sync(app: &tauri::AppHandle) {
     app.state::<Runtime>()
@@ -280,8 +369,11 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
                     "open" => open(app)?,
                     "sync" => request_sync(app),
                     "pause" => {
-                        let state = status(app)?;
-                        set_preferences(app, !state.paused, state.interval_seconds)?;
+                        if let Err(error) = edit_preferences(app, |preferences| {
+                            preferences.paused = !preferences.paused
+                        }) {
+                            eprintln!("Ratatoskr sync settings: {error:#}");
+                        }
                     }
                     "quit" => {
                         app.state::<Runtime>()
@@ -339,7 +431,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         let mut saved = restored_status(&settings)?;
         saved.migration_error = result.err().map(|e| format!("{e:#}"));
         let runtime = app.state::<Runtime>();
-        runtime.change(|s| *s = saved)?;
+        runtime.change(|s| s.restore(saved))?;
         core::tray::record_problem(&settings, runtime.status()?.migration_error.as_deref())
     })();
     if let Err(error) = migration {
@@ -353,13 +445,17 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         Ok(())
     })();
     if let Err(error) = autostart {
-        report(app.handle(), error);
+        eprintln!("Ratatoskr open at login: {error:#}");
+        app.state::<Runtime>()
+            .change(|s| s.login_error = Some(format!("{error:#}")))?;
     }
     let hidden = match start_hidden(app.handle()) {
         Ok(hidden) => hidden,
         Err(error) => {
-            report(app.handle(), error);
-            false
+            eprintln!("Ratatoskr restart mode: {error:#}");
+            app.state::<Runtime>()
+                .change(|s| s.restart_error = Some(format!("{error:#}")))?;
+            true
         }
     };
     if !hidden {
@@ -428,8 +524,8 @@ async fn automatic_update(
 
 fn run_loop(app: &tauri::AppHandle) {
     let mut next_sync = Instant::now();
-    let mut next_migration = Instant::now();
     let mut config_seen = None;
+    let mut notifications = core::BackgroundNotifications::default();
     loop {
         let runtime = app.state::<Runtime>();
         if runtime.stopped.load(Ordering::Acquire) {
@@ -452,24 +548,24 @@ fn run_loop(app: &tauri::AppHandle) {
                 }
             };
             if config_seen.as_ref() != Some(&config) {
-                next_migration = Instant::now();
+                runtime.migrate_requested.store(true, Ordering::Release);
                 let _preferences = runtime
                     .preferences
                     .lock()
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let saved = restored_status(&settings)?;
-                runtime.change(|s| *s = saved)?;
+                runtime.change(|s| s.restore(saved))?;
                 config_seen = Some(config.clone());
             }
-            if runtime.migrate_requested.swap(false, Ordering::AcqRel)
-                || Instant::now() >= next_migration
-            {
-                next_migration = Instant::now() + Duration::from_secs(60);
+            if runtime.migrate_requested.swap(false, Ordering::AcqRel) {
                 let _preferences = runtime
                     .preferences
                     .lock()
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let migration = core::migrate_windows_schedule(&settings, &config);
+                if matches!(migration, Ok(true)) {
+                    runtime.sync_requested.store(true, Ordering::Release);
+                }
                 runtime
                     .change(|s| s.migration_error = migration.err().map(|e| format!("{e:#}")))?;
                 let preferences = match TrayPreferences::load(&settings) {
@@ -534,18 +630,35 @@ fn run_loop(app: &tauri::AppHandle) {
             report(app, error);
         }
         let notify = (|| -> Result<()> {
-            let state = runtime.status()?;
-            let error = state.migration_error.as_deref().or(state.error.as_deref());
-            core::notify_background(&core::default_config_path()?, error, |body| {
-                app.notification()
-                    .builder()
-                    .title("Ratatoskr Skill Sync")
-                    .body(body)
-                    .show()?;
-                Ok(())
-            })
+            let state = runtime
+                .status
+                .lock()
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                .clone();
+            notifications.outcome(
+                &core::default_config_path()?,
+                &state.notification_outcomes(),
+                |kind, message, recovered| {
+                    let body = if recovered {
+                        format!("{} recovered", kind.label())
+                    } else {
+                        message.to_owned()
+                    };
+                    app.notification()
+                        .builder()
+                        .title(format!("Ratatoskr Skill Sync · {}", kind.label()))
+                        .body(body)
+                        .show()
+                        .context("Show Windows tray notification")?;
+                    Ok(())
+                },
+            )
         })();
-        if let Err(error) = notify {
+        let notification_error = notify.err().map(|error| format!("{error:#}"));
+        if let Some(error) = &notification_error {
+            eprintln!("Ratatoskr notification: {error}");
+        }
+        if let Err(error) = runtime.change(|s| s.notification_error = notification_error) {
             report(app, error);
         }
         std::thread::sleep(Duration::from_secs(1));
@@ -555,6 +668,70 @@ fn run_loop(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sync_recovery_keeps_independent_notification_failures_active() {
+        let mut state = Status {
+            error: Some("sync failed".into()),
+            notification_error: Some("notification ledger is read-only".into()),
+            ..Default::default()
+        };
+        state.error = None;
+        assert_eq!(
+            state.current_error().as_deref(),
+            Some("notification ledger is read-only")
+        );
+        state.notification_error = None;
+        assert!(state.current_error().is_none());
+    }
+    #[test]
+    fn restoring_sync_state_preserves_app_health_and_independent_notification_identities() {
+        let mut state = Status {
+            error: Some("old sync failure".into()),
+            notification_error: Some("notification ledger is read-only".into()),
+            login_error: Some("Run key is read-only".into()),
+            restart_error: Some("restart marker is invalid".into()),
+            preferences_error: Some("settings are read-only".into()),
+            preferences_observed: true,
+            ..Default::default()
+        };
+        state.restore(Status {
+            paused: true,
+            update_error: Some("update unavailable".into()),
+            ..Default::default()
+        });
+        let outcomes = state.notification_outcomes();
+        assert_eq!(
+            outcomes
+                .iter()
+                .find(|(kind, _)| *kind == NotificationKind::Sync)
+                .unwrap()
+                .1,
+            None
+        );
+        for kind in [
+            NotificationKind::Notifications,
+            NotificationKind::Login,
+            NotificationKind::Restart,
+            NotificationKind::Preferences,
+            NotificationKind::DesktopUpdate,
+        ] {
+            assert!(
+                outcomes
+                    .iter()
+                    .find(|(source, _)| *source == kind)
+                    .unwrap()
+                    .1
+                    .is_some()
+            );
+        }
+        assert!(state.paused);
+        assert!(
+            !Status::default()
+                .notification_outcomes()
+                .iter()
+                .any(|(kind, _)| *kind == NotificationKind::Preferences)
+        );
+    }
     #[test]
     fn paused_restart_preserves_sync_failure_until_a_run_actually_recovers() {
         let temp = tempfile::tempdir().unwrap();

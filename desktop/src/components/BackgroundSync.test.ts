@@ -17,12 +17,17 @@ test("tray status shows last success and skill count; pause and resume persist t
   let status = { ...active };
   const calls = vi.fn((cmd: string, args: unknown) => {
     if (cmd === "background_status") return status;
+    if (cmd === "migrate_background") return null;
     if (cmd === "set_background_preferences") {
-      const preferences = args as { paused: boolean; intervalSeconds: number };
+      const preferences = args as {
+        paused: boolean | null;
+        intervalSeconds: number | null;
+      };
       status = {
         ...status,
-        paused: preferences.paused,
-        interval_seconds: preferences.intervalSeconds,
+        paused: preferences.paused ?? status.paused,
+        interval_seconds:
+          preferences.intervalSeconds ?? status.interval_seconds,
       };
       return null;
     }
@@ -32,7 +37,15 @@ test("tray status shows last success and skill count; pause and resume persist t
   render(BackgroundSync, { onerror: vi.fn() });
   expect(await screen.findByText("Active")).toBeVisible();
   expect(screen.getByText(/Last success:.*29 skills/)).toBeVisible();
+  await fireEvent.input(screen.getByLabelText("Sync interval (seconds)"), {
+    target: { value: "120" },
+  });
   await fireEvent.click(screen.getByRole("button", { name: "Pause sync" }));
+  expect(calls).toHaveBeenCalledWith("set_background_preferences", {
+    paused: true,
+    intervalSeconds: null,
+  });
+  expect(status.interval_seconds).toBe(60);
   expect(await screen.findByText("Paused")).toBeVisible();
   await fireEvent.click(screen.getByRole("button", { name: "Resume sync" }));
   expect(await screen.findByText("Active")).toBeVisible();
@@ -42,7 +55,7 @@ test("tray status shows last success and skill count; pause and resume persist t
   await fireEvent.click(screen.getByRole("button", { name: "Save interval" }));
   await waitFor(() =>
     expect(calls).toHaveBeenCalledWith("set_background_preferences", {
-      paused: false,
+      paused: null,
       intervalSeconds: 120,
     }),
   );
@@ -58,11 +71,19 @@ test("migration refusals are visible and can be retried without a modal", async 
   expect(await screen.findByRole("alert")).toHaveTextContent(error);
   expect(screen.getByText("Blocked")).toBeVisible();
   expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() =>
+    expect(calls).toHaveBeenCalledWith("migrate_background", {}),
+  );
+  const initialRequests = calls.mock.calls.filter(
+    ([cmd]) => cmd === "migrate_background",
+  ).length;
   await fireEvent.click(
     screen.getByRole("button", { name: "Retry task migration" }),
   );
   await waitFor(() =>
-    expect(calls).toHaveBeenCalledWith("migrate_background", {}),
+    expect(
+      calls.mock.calls.filter(([cmd]) => cmd === "migrate_background"),
+    ).toHaveLength(initialRequests + 1),
   );
 });
 test("macOS has no tray settings and command errors are surfaced", async () => {

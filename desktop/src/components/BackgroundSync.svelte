@@ -21,18 +21,22 @@
     }
   }
   onMount(() => {
-    void refresh().catch(onerror);
+    void refresh()
+      .then(async () => {
+        if (status) await api.command("migrate_background");
+      })
+      .catch(onerror);
     const timer = setInterval(() => {
       if (status) void refresh().catch(onerror);
     }, 2000);
     return () => clearInterval(timer);
   });
-  async function save(paused: boolean) {
+  async function save(paused: boolean | null, intervalSeconds: number | null) {
     busy = true;
     try {
       await api.command("set_background_preferences", {
         paused,
-        intervalSeconds: seconds,
+        intervalSeconds,
       });
       await refresh();
     } catch (error) {
@@ -104,9 +108,9 @@
           seconds < 60 ||
           seconds > 86400 ||
           seconds === status.interval_seconds}
-        onclick={() => save(status!.paused)}>Save interval</button
+        onclick={() => save(null, seconds)}>Save interval</button
       >
-      <button disabled={busy} onclick={() => save(!status!.paused)}
+      <button disabled={busy} onclick={() => save(!status!.paused, null)}
         >{status.paused ? "Resume sync" : "Pause sync"}</button
       >
     </div>

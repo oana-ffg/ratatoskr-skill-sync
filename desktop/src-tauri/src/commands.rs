@@ -316,8 +316,8 @@ pub(crate) fn background_status(app: tauri::AppHandle) -> Reply<Option<serde_jso
 #[tauri::command]
 pub(crate) fn set_background_preferences(
     app: tauri::AppHandle,
-    paused: bool,
-    interval_seconds: u32,
+    paused: Option<bool>,
+    interval_seconds: Option<u32>,
 ) -> Reply<()> {
     #[cfg(windows)]
     {
@@ -572,14 +572,19 @@ pub(crate) fn login_enabled(app: tauri::AppHandle) -> Reply<bool> {
 #[tauri::command]
 pub(crate) fn set_login_enabled(app: tauri::AppHandle, enabled: bool) -> Reply<bool> {
     use tauri_plugin_autostart::ManagerExt;
-    let manager = app.autolaunch();
-    if enabled {
-        manager.enable()
-    } else {
-        manager.disable()
-    }
-    .map_err(|e| e.to_string())?;
-    manager.is_enabled().map_err(|e| e.to_string())
+    let result = (|| -> Reply<bool> {
+        let manager = app.autolaunch();
+        if enabled {
+            manager.enable()
+        } else {
+            manager.disable()
+        }
+        .map_err(|e| e.to_string())?;
+        manager.is_enabled().map_err(|e| e.to_string())
+    })();
+    #[cfg(windows)]
+    crate::tray::login_outcome(&app, &result).map_err(|e| format!("{e:#}"))?;
+    result
 }
 
 #[tauri::command]

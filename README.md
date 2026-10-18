@@ -68,7 +68,7 @@ npx playwright install chromium
 npm run test:screenshots
 ```
 
-`cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. Running background jobs requires `npm run prepare:helper -- --debug` from `desktop/`. Native packaging still requires and bundles the real helper; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
+`cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
 ## Content and projects
 

@@ -100,27 +100,6 @@ impl NotificationState {
         self.error = error.map(str::to_owned);
         Ok(())
     }
-    pub fn load(settings: &Settings) -> Result<Self> {
-        let path = settings
-            .state_dir
-            .join(&settings.machine)
-            .join("tray-notification.json");
-        no_symlinks(&path)?;
-        Ok(if path.try_exists()? {
-            serde_json::from_slice(&fs::read(path)?)?
-        } else {
-            Self::default()
-        })
-    }
-    pub fn save(&self, settings: &Settings) -> Result<()> {
-        atomic_write(
-            &settings
-                .state_dir
-                .join(&settings.machine)
-                .join("tray-notification.json"),
-            &serde_json::to_vec(self)?,
-        )
-    }
 }
 
 pub fn record_problem(settings: &Settings, error: Option<&str>) -> Result<()> {

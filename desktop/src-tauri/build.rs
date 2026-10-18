@@ -34,7 +34,7 @@ fn main() {
         }
         println!("cargo:rustc-env=TAURI_CONFIG={config}");
         println!(
-            "cargo:warning=Non-bundling build: helper unavailable. To run background jobs, run npm run prepare:helper -- --debug from desktop/."
+            "cargo:warning=Non-bundling build: bundled CLI unavailable. To include it, run npm run prepare:helper -- --debug from desktop/."
         );
     }
     tauri_build::build();

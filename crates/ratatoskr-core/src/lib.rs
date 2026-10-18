@@ -8,7 +8,9 @@ mod content;
 mod engine;
 mod git;
 mod jobs;
-pub use background::{notify_background, record_background_problem, recorded_sync};
+pub use background::{
+    BackgroundNotifications, NotificationKind, record_background_problem, recorded_sync,
+};
 pub mod tray;
 #[cfg(windows)]
 pub use schedule::migrate_windows_schedule;
