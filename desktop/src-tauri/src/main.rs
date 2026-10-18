@@ -2,11 +2,28 @@
 
 mod commands;
 mod desktop_updates;
+#[cfg(windows)]
+mod tray;
 
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(windows)]
+    let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|arg| arg == "--background")
+                && let Err(error) = tray::open(app)
+            {
+                tray::report(app, error);
+            }
+        }))
+        .plugin(tauri_plugin_notification::init())
+        .setup(|app| tray::setup(app).map_err(Into::into));
+    let autostart = tauri_plugin_autostart::Builder::new();
+    #[cfg(windows)]
+    let autostart = autostart.args(["--background"]);
+    builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(autostart.build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::preview_legacy_resolution,
@@ -59,6 +76,10 @@ fn main() {
             commands::archive_source_skill,
             commands::restore_workspace,
             commands::sync_workspace,
+            commands::set_desktop_busy,
+            commands::background_status,
+            commands::set_background_preferences,
+            commands::migrate_background,
             commands::preview_schedule,
             commands::enable_schedule,
             commands::disable_schedule,

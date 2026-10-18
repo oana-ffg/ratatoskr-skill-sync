@@ -11,15 +11,6 @@ description = "One source for agent skills, adapted per machine, OS and harness"
 name = "ratatoskr"
 path = "src/main.rs"
 
-[features]
-# Only Windows packaging/CI enables this target; macOS keeps its single CLI.
-windows-helper = []
-
-[[bin]]
-name = "ratatoskrw"
-path = "src/windowless.rs"
-required-features = ["windows-helper"]
-
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
@@ -28,7 +19,3 @@ ratatoskr-core = { path = "../ratatoskr-core" }
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-chrono = "0.4"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_EventLog", "Win32_Security"] }

@@ -4,7 +4,7 @@
 
 One Git source for your AI-agent skills and instructions, adapted to each machine, operating system, and harness.
 
-Ratatoskr is a Rust command-line helper with an optional Tauri 2 desktop app. The helper runs with the window closed. Your content lives in a separate repository, which can be private. The tool is MIT licensed.
+Ratatoskr is a Rust command-line helper with an optional Tauri 2 desktop app. Windows sync stays resident in the tray when the window is closed; macOS uses a launchd helper. Your content lives in a separate repository, which can be private. The tool is MIT licensed.
 
 ## Desktop interface
 
@@ -19,7 +19,7 @@ The Svelte 5 desktop uses a CodeMirror 6 Markdown editor with syntax highlightin
 - Create, clone, or connect a content repository. Create, edit, enable, disable and archive source skills. Validate skill drafts as you type, preview the Rust-rendered result for an enabled machine × harness, and detect stale editor versions.
 - Add documented Claude Code, Codex, Gemini CLI, GitHub Copilot CLI and OpenCode presets, or define custom targets through a form. The form writes ordinary source definitions; machine profiles control which tags are enabled. See [verified paths and omissions](docs/agent-presets.md).
 - Render global and registered project skills. Report uncommitted and unpushed project skill-source work.
-- Install or remove a per-user launchd or Windows Task Scheduler job. Each run fast-forwards a clean content checkout, applies it, and exits. System, Pushover, ntfy or command-based failure/recovery alerts are deduplicated. View the last run, current ledger errors and bounded logs in the app; helper paths are detected automatically.
+- Use tray-resident sync on Windows or a per-user launchd job on macOS. Each run fast-forwards a clean content checkout and applies it. System, Pushover, ntfy or command-based failure/recovery alerts are deduplicated. View the last run, current ledger errors and bounded logs in the app; helper paths are detected automatically.
 - Check and install cryptographically signed helper and desktop updates, with nightly automatic updates enabled by default. A release workflow builds signed draft releases for Apple Silicon, Intel Mac, and Windows x64.
 
 **Pre-1.0:** version 0.2.2 fixes structured-editor layout with long frontmatter, groups review work by skill and agent, and adds secret-store references for alerts. Apple/Microsoft publisher signing is not configured. Start in staging and review the [verification record and remaining limits](docs/verification.md).
@@ -36,7 +36,7 @@ npm ci
 npm run tauri dev
 ```
 
-On Windows, use `cargo build --locked --features windows-helper` to build both the console CLI and the windowless scheduled-sync helper. Windows packaging enables this feature automatically.
+Windows uses the desktop app for tray-resident sync. `cargo build --locked` also builds the standalone console CLI.
 
 To package a native app, run `npm run tauri build` inside `desktop`. The build prepares and bundles the independent helper. The browser-only `npm run dev` preview has no filesystem access. The screenshot tests install mocked IPC using disposable public fixtures, never your real configuration.
 
@@ -68,7 +68,7 @@ npx playwright install chromium
 npm run test:screenshots
 ```
 
-`cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. Running background jobs requires `npm run prepare:helper -- --debug` from `desktop/`. Native packaging still requires and bundles the real helper; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
+`cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
 ## Content and projects
 
@@ -88,13 +88,19 @@ ratatoskr project add "$PWD"
 
 Use a dedicated clean deployment checkout with a Git upstream for scheduled syncing. Keep authoring in a separate checkout. Local `deploy_branch` defaults to `main`. Before updating the helper, pulling, or applying, `ratatoskr sync` requires that exact current branch and its `<remote>/<deploy_branch>` upstream. Experimental branches, wrong or missing upstreams, and detached HEADs refuse deployment and alert. It then pulls with `--ff-only`, applies, and exits; dirty or divergent content history is also refused.
 
-`ratatoskr schedule plan` previews an OS job using the detected helper. `--helper` can select a different absolute helper path. On Windows the task always uses `ratatoskrw.exe` beside that helper; `ratatoskr.exe` remains the console CLI. `schedule install` registers it (or re-registers an existing, byte-verified owned Windows task); `schedule remove` removes only the recorded, unchanged job. `--seconds` accepts 60–86400 (default 60). The desktop app exposes the same operations. No resident watcher is installed. Pending project skill commits or pushes also return a sync error and use the configured alert command.
+On Windows, the desktop app syncs directly through the Rust core every 60 seconds while running. Closing the window hides it to the tray. Left-click the tray icon to open it; the menu offers Open, Sync now, Pause/Resume sync, and Quit. Quit stops syncing. Pause stops automatic runs; Sync now still requests one run. **Settings → Background sync** changes the interval (60–86400 seconds) or pauses it. **Open Ratatoskr at login** uses the existing per-user Run key and starts hidden. A second app launch reopens the existing instance.
+
+The tray shows active, paused, or error status, the last successful sync time, and skill count. Windows toasts deduplicate stable problem identities separately from full diagnostics. A persisted, shared limit allows at most one problem toast per hour across all sources; recovery remains allowed. Unchanged failures never repeat, and there are no modal dialogs. Native sync and nightly-update timers continue while the window is hidden. Updates preserve background/foreground launch state and defer installation while the UI has unsaved work.
+
+At startup, Windows migrates an existing task only when its ownership record, configuration identity, and byte-exact definition are verified. Before removing an owned task, migration enables hidden Open Ratatoskr at login to retain the old logon trigger and records the migration in the ledger. A login-start failure leaves the task intact. Enabled and disabled tasks use the same safe removal. An unowned or edited task is preserved; sync is blocked and the problem appears in Settings, Activity, and `job-status`. **Retry task migration** repeats detection after manual resolution. `schedule plan` and `schedule install` now fail with a tray-mode instruction on Windows; `schedule remove` remains available for safely removing an owned legacy task.
+
+On macOS, `ratatoskr schedule plan` previews a launchd job using the detected helper. `--helper` selects an absolute helper path; `schedule install` registers it and `schedule remove` removes only the recorded, unchanged job. `--seconds` accepts 60–86400 (default 60). The desktop exposes these operations in Activity. The launchd plist bytes and scheduling behavior are unchanged. Pending project skill commits or pushes return a sync error.
 
 **Settings → Alerts** provides system notifications, Pushover, ntfy and a custom command. Pushover credentials and optional ntfy bearer tokens are read from named environment variables in the helper’s environment; local settings store those names, not credential values. System delivery uses macOS notifications, Windows toast notifications or Linux `notify-send`. Delivery failures remain visible and retryable.
 
-`alert_command` in local configuration is an argv array. Ratatoskr appends a plain-English message and executes it without a shell. New failures alert immediately, unchanged failures repeat after 24 hours, and recovery alerts once. Failed delivery remains an error. Without an alert command, failures still return nonzero and persist in the error ledger and run history. `ratatoskr job-status` returns the last start/completion/result, sync and updater ledger errors, the last 64 outcomes and the last 64 KiB of each scheduler log. A start without a completion record is shown explicitly.
+`alert_command` in local configuration is an argv array. Ratatoskr appends a plain-English message and executes it without a shell. Configured alert transports retain their existing policy: new failures alert immediately, unchanged failures repeat after 24 hours, and recovery alerts once. Windows tray toasts use stable-identity dedupe and the shared one-hour problem-toast limit instead. Failed delivery remains an error. Without an alert command, failures still return nonzero and persist in the error ledger and run history. `ratatoskr job-status` returns the last start/completion/result, sync and updater ledger errors, the last 64 outcomes and the last 64 KiB of each scheduler log. A start without a completion record is shown explicitly.
 
-Windows scheduled runs call the same Rust sync core without creating a console. Install both `ratatoskr.exe` and `ratatoskrw.exe` in the same directory, then run `ratatoskr schedule install` once to migrate an existing task. The installer includes both. The helper writes its full last-run report to `sync.stdout.log`, errors to `sync.stderr.log`, and keeps the existing job/notification ledgers under the configured state directory. If a broken config cannot safely identify that directory, startup diagnostics go beside the config in a directory named by appending `.diagnostics` to its full filename, under `startup/`. If diagnostics cannot be persisted, the helper attempts both an Error entry in the Windows Application event log (source `Ratatoskr Skill Sync`) and a timestamped append to `%LOCALAPPDATA%\ratatoskr-skill-sync\background-fatal.log`. It exits 2 even if both channels fail, without displaying UI. macOS continues using the console helper and launchd logs.
+Tray runs write reports to `sync.stdout.log`, errors to `sync.stderr.log`, and every started run to the existing job ledger/history. Logs are bounded; lock-busy attempts defer without overwriting another run. A broken configuration uses a safe bootstrap ledger beside the config, under `<config filename>.diagnostics/startup/`. Diagnostic failures appear in the tray status and stderr; no modal is shown. macOS retains launchd logs. The obsolete Windows background helper is no longer built or packaged. See [upgrade compatibility](docs/releases.md#windows-tray-migration).
 
 For existing unmanaged imports, the legacy bulk `ratatoskr adopt` backs up existing matching target directories and global files with corresponding source content before recording ownership. It does not write generated output. Review `plan` before applying: adopted files absent from source are scheduled for removal. `ratatoskr restore` accepts the backup directory printed by adoption, verifies every stored hash, and refuses current hand edits or unmanaged overwrite. Archiving a source skill moves it into `.ratatoskr-archive` on the same volume.
 
@@ -138,7 +144,7 @@ automatic = true
 time = "00:00"
 ```
 
-The desktop **Open at login** toggle uses Tauri autostart and defaults off. Enable it explicitly to reopen the app after login and catch missed nightly desktop updates. This is separate from the helper schedule.
+The desktop **Open at login** toggle uses Tauri autostart and defaults off for a new install. Windows migration from an owned task enables it to preserve logon syncing; otherwise the existing choice is retained. Windows Background sync warns when it is off. On macOS it remains separate from the helper schedule.
 
 The running desktop checks once during the one-hour nightly window. An available update waits for unsaved editors and apply/sync/schedule work to finish, then installs and relaunches the connected workspace. No available update means no restart. If work stays busy until the window closes, it tries the next night or at app launch. Launch catches up on a missed nightly window, installing and relaunching before the workspace becomes interactive. Checks are persisted across launches. The standalone helper records its last attempt and checks at most once per local day, at or after the chosen time, before that run's sync. Its next run uses the new binary. Update failures have separate deduplicated alerts and never prevent content syncing. Bundled helpers update with the desktop.
 

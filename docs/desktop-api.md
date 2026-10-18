@@ -75,3 +75,11 @@ Plans include `install_targets` with the renderer's harness, skill root, instruc
 ### Updates without a workspace
 
 `read_update_settings` returns the effective `endpoint`, `override_active`, `automatic`, and `time`. `startup_update`, `nightly_update`, and `update_desktop` work before a workspace is connected, using compiled official defaults. Existing configurations retain their update overrides. `read_local_settings`, `save_local_settings`, and `save_update_schedule` remain workspace operations; onboarding Settings displays the default schedule and exposes manual check/install/restart without invoking those operations.
+
+## Windows tray sync
+
+`background_status()` returns null on macOS and a Windows status with `paused`, `interval_seconds`, `running`, `last_success`, `skills`, `login_enabled`, `error` and `migration_error`. Pause suppresses automatic runs; an explicit Sync now can still run once. `set_background_preferences({paused, intervalSeconds})` changes only non-null fields, preserving the other stored preference; `migrate_background()` requests another safe legacy-task migration. Owned-task migration enables hidden login startup before removal; failure to enable it preserves the task. `login_enabled` reflects the actual saved setting, and tray settings warn when it is off. On Windows `sync_workspace()` requests the same resident controller used by the tray menu; the response is a current snapshot, not a claim that the asynchronous run already finished.
+
+`set_desktop_busy({busy})` communicates unsaved/busy UI state to the native Windows nightly updater. Windows owns sync and update timers in Rust; macOS retains the frontend update policy. `job-status` adds `background_error` for migration/runtime diagnostics. The in-process sync path skips standalone-helper self-update and delegates native system toasts to the tray controller, while retaining configured remote/custom alert transports.
+
+Tray notification ledgers store stable problem identities separately from full messages. The shared, persisted problem-toast limit is one per 3600 seconds; repeated identities do not repeat after that interval. Recovery is delivered once for each notified problem that clears.

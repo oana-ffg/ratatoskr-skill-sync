@@ -112,6 +112,7 @@ export interface Jobs {
   current_error: string | null;
   helper_update_error: string | null;
   desktop_update_error: string | null;
+  background_error: string | null;
   log: string;
 }
 export interface Legacy {
@@ -146,6 +147,16 @@ export type AlertSettings =
   | { kind: "system" }
   | { kind: "pushover"; token: SecretReference; user: SecretReference }
   | { kind: "ntfy"; url: string; token?: SecretReference };
+export interface BackgroundStatus {
+  login_enabled: boolean;
+  paused: boolean;
+  interval_seconds: number;
+  running: boolean;
+  last_success: number | null;
+  skills: number;
+  error: string | null;
+  migration_error: string | null;
+}
 export interface LocalSettings {
   source: string;
   machine: string;

@@ -279,6 +279,20 @@ pub(crate) fn operation_lock(settings: &Settings, name: &str) -> Result<Operatio
     })
 }
 
+pub(crate) fn try_operation_lock(settings: &Settings, name: &str) -> Result<Option<OperationLock>> {
+    let file = state_lock(settings, name)?;
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(Some(OperationLock {
+            file,
+            name: name.into(),
+        })),
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Ok(None)
+        }
+        Err(error) => Err(error).with_context(|| format!("Acquire {name}")),
+    }
+}
+
 #[cfg(test)]
 mod lock_tests {
     #[test]

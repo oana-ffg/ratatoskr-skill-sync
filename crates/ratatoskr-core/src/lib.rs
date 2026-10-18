@@ -2,15 +2,18 @@ mod legacy;
 pub use legacy::*;
 mod editor;
 pub use editor::*;
-#[cfg(windows)]
 mod background;
 mod config;
 mod content;
 mod engine;
 mod git;
 mod jobs;
+pub use background::{
+    BackgroundNotifications, NotificationKind, record_background_problem, recorded_sync,
+};
+pub mod tray;
 #[cfg(windows)]
-pub use background::{RecordedSyncError, scheduled_sync};
+pub use schedule::migrate_windows_schedule;
 mod notifications;
 mod process;
 mod secrets;

@@ -28,13 +28,10 @@ run("cargo", [
   "ratatoskr-skill-sync",
   "--target",
   triple,
-  ...(triple.includes("windows") ? ["--features", "windows-helper"] : []),
   ...(release ? ["--release"] : []),
 ]);
 const extension = triple.includes("windows") ? ".exe" : "";
-for (const name of triple.includes("windows")
-  ? ["ratatoskr", "ratatoskrw"]
-  : ["ratatoskr"]) {
+for (const name of ["ratatoskr"]) {
   const source = resolve(
     process.env.CARGO_TARGET_DIR || resolve(root, "target"),
     triple,

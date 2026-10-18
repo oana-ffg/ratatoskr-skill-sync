@@ -332,16 +332,6 @@ pub fn install(settings: &UpdateSettings, release: &Release) -> Result<()> {
         .get(&platform())
         .context("Release has no helper binary for this platform")?;
     let file = download_helper(settings, asset, &release.version, "ratatoskr")?;
-    #[cfg(windows)]
-    {
-        let asset = release
-            .platforms
-            .get(&format!("windows-{}-windowless", std::env::consts::ARCH))
-            .context("Release has no windowless helper; refusing to update only one binary")?;
-        let windowless = download_helper(settings, asset, &release.version, "ratatoskrw")?;
-        install_windows_pair(&file, &windowless)?;
-    }
-    #[cfg(not(windows))]
     self_replace::self_replace(&file)?;
     Ok(())
 }
@@ -388,94 +378,9 @@ fn download_helper(
     Ok(file)
 }
 
-#[cfg(windows)]
-fn install_windows_pair(cli: &std::path::Path, windowless: &std::path::Path) -> Result<()> {
-    install_windows_pair_at(&std::env::current_exe()?, cli, windowless, |file| {
-        self_replace::self_replace(file).map_err(Into::into)
-    })
-}
-
-#[cfg(windows)]
-fn install_windows_pair_at(
-    executable: &std::path::Path,
-    cli: &std::path::Path,
-    windowless: &std::path::Path,
-    replace_current: impl FnOnce(&std::path::Path) -> Result<()>,
-) -> Result<()> {
-    use crate::config::{atomic_write, no_symlinks};
-    let directory = executable
-        .parent()
-        .context("Helper has no parent directory")?;
-    let lock_path = directory.join(".ratatoskr-update.lock");
-    no_symlinks(&lock_path)?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("Another helper update is in progress")?;
-    let running_windowless = executable
-        .file_stem()
-        .is_some_and(|name| name == "ratatoskrw");
-    let (current, companion, companion_name) = if running_windowless {
-        (windowless, cli, "ratatoskr.exe")
-    } else {
-        (cli, windowless, "ratatoskrw.exe")
-    };
-    let destination = directory.join(companion_name);
-    no_symlinks(&destination)?;
-    no_symlinks(executable)?;
-    let previous_current = std::fs::read(executable)?;
-    let previous = if destination.try_exists()? {
-        Some(std::fs::read(&destination)?)
-    } else {
-        None
-    };
-    // Stage/verify both downloads first. A busy companion fails here, before
-    // changing the running executable, and the caller records the update error.
-    atomic_write(&destination, &std::fs::read(companion)?).context(
-        "Replace companion helper (close other Ratatoskr CLI processes and retry if busy)",
-    )?;
-    if let Err(error) = replace_current(current) {
-        // self_replace can fail after relocating the running image. Restore
-        // both paths, and attempt both restorations even if one fails.
-        let current_restore = restore_helper(executable, Some(&previous_current));
-        let companion_restore = restore_helper(&destination, previous.as_deref());
-        if current_restore.is_err() || companion_restore.is_err() {
-            anyhow::bail!(
-                "Self-update failed: {error:#}; current rollback: {current_restore:?}; companion rollback: {companion_restore:?}"
-            );
-        }
-        return Err(error);
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn restore_helper(path: &std::path::Path, previous: Option<&[u8]>) -> Result<()> {
-    crate::config::no_symlinks(path)?;
-    let existing = if path.try_exists()? {
-        Some(std::fs::read(path)?)
-    } else {
-        None
-    };
-    if existing.as_deref() == previous {
-        return Ok(());
-    }
-    if let Some(previous) = previous {
-        crate::config::atomic_write(path, previous)?;
-    } else {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
 pub fn standalone_helper() -> Result<bool> {
     let path = std::env::current_exe()?;
-    Ok(path
-        .file_stem()
-        .is_some_and(|x| x == "ratatoskr" || (cfg!(windows) && x == "ratatoskrw"))
+    Ok(path.file_stem().is_some_and(|x| x == "ratatoskr")
         && !path
             .ancestors()
             .any(|p| p.extension().is_some_and(|x| x == "app"))
@@ -838,39 +743,5 @@ mod tests {
             helper_update_with(&settings, now, || panic!("invalid state must fail closed"))
                 .is_err()
         );
-    }
-}
-
-#[cfg(all(test, windows))]
-mod windows_pair_tests {
-    use super::*;
-    #[test]
-    fn either_helper_updates_both_and_failed_self_replacement_restores_both() -> Result<()> {
-        for running_name in ["ratatoskr.exe", "ratatoskrw.exe"] {
-            let temp = tempfile::tempdir()?;
-            let root = temp.path().canonicalize()?;
-            let cli = root.join("new-cli.exe");
-            let windowless = root.join("new-windowless.exe");
-            std::fs::write(&cli, b"new console")?;
-            std::fs::write(&windowless, b"new GUI")?;
-            let installed_cli = root.join("ratatoskr.exe");
-            let installed_windowless = root.join("ratatoskrw.exe");
-            std::fs::write(&installed_cli, b"old console")?;
-            std::fs::write(&installed_windowless, b"old GUI")?;
-            let current = root.join(running_name);
-            let error = install_windows_pair_at(&current, &cli, &windowless, |_| {
-                std::fs::remove_file(&current)?;
-                anyhow::bail!("simulated self-replace failure")
-            });
-            assert!(format!("{:#}", error.unwrap_err()).contains("simulated self-replace failure"));
-            assert_eq!(std::fs::read(&installed_cli)?, b"old console");
-            assert_eq!(std::fs::read(&installed_windowless)?, b"old GUI");
-            install_windows_pair_at(&current, &cli, &windowless, |staged| {
-                crate::config::atomic_write(&current, &std::fs::read(staged)?)
-            })?;
-            assert_eq!(std::fs::read(&installed_cli)?, b"new console");
-            assert_eq!(std::fs::read(&installed_windowless)?, b"new GUI");
-        }
-        Ok(())
     }
 }

@@ -11,6 +11,7 @@
     reviewSummary,
     type Snapshot,
     type Skill,
+    type BackgroundStatus,
   } from "./api";
   import { runNightlyUpdate, runStartupUpdate } from "./update-policy";
   import Library from "./views/Library.svelte";
@@ -38,6 +39,7 @@
     | "Settings";
   let workspace = $state<Snapshot | null>(null);
   let ready = $state(false);
+  let trayMode = $state(false);
   let screen = $state<Screen>("Skills");
   let skill = $state<Skill | null>(null);
   let scope = $state("all");
@@ -113,11 +115,23 @@
       busy = false;
     }
   }
+  $effect(() => {
+    if (trayMode && ready)
+      void api
+        .command("set_desktop_busy", { busy: dirty || busy || !!pending })
+        .catch(fail);
+  });
   onMount(() => {
     let cleanup: (() => void) | undefined;
     void runStartupUpdate(
       async () => {
-        if (isTauri()) await api.command("startup_update");
+        if (isTauri()) {
+          trayMode =
+            (await api.command<BackgroundStatus | null>(
+              "background_status",
+            )) !== null;
+          if (!trayMode) await api.command("startup_update");
+        }
       },
       async () => {
         try {
@@ -128,7 +142,7 @@
       },
     ).catch(fail);
     const interval = setInterval(() => {
-      if (!isTauri() || busy || !ready) return;
+      if (!isTauri() || trayMode || busy || !ready) return;
       void runNightlyUpdate(
         () => api.command<boolean>("nightly_update", { install: false }),
         () => !dirty && !busy && !pending,
@@ -145,6 +159,7 @@
     if (isTauri())
       void getCurrentWindow()
         .onCloseRequested((event) => {
+          if (trayMode) return;
           if (dirty) {
             event.preventDefault();
             closeAfterDiscard = true;
@@ -156,7 +171,7 @@
         .then((fn) => (cleanup = fn))
         .catch(fail);
     function beforeUnload(e: BeforeUnloadEvent) {
-      if (dirty) {
+      if (!trayMode && dirty) {
         e.preventDefault();
         e.returnValue = "";
       }

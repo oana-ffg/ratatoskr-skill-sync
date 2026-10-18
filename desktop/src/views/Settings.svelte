@@ -1,4 +1,5 @@
 <script lang="ts">
+  import BackgroundSync from "../components/BackgroundSync.svelte";
   import { onMount } from "svelte";
   import {
     api,
@@ -19,6 +20,7 @@
     ondirty: (v: boolean) => void;
     onunsaved?: (v: boolean) => void;
   } = $props();
+  let trayMode = $state(false);
   let updates = $state<Snapshot["updates"] | null>(null);
   let settings = $state<LocalSettings | null>(null);
   let original = $state("");
@@ -219,7 +221,18 @@
       </div>
       {#if message}<p role="status" class="success-message">{message}</p>{/if}
     </article>{/if}
-  {#if settings}<article class="panel">
+  {#if settings}<BackgroundSync
+      {onerror}
+      onstatus={(status) => {
+        trayMode = status !== null;
+        if (status && !dirty) {
+          login = status.login_enabled;
+          savedLogin = login;
+          original = serialized;
+        }
+      }}
+    />
+    <article class="panel">
       <div class="section-heading">
         <div>
           <h2>Startup</h2>
@@ -230,15 +243,21 @@
       >
     </article>
     <article class="panel">
-      <h2>Alerts</h2>
-      <p class="muted">Get a message when background work fails or recovers.</p>
+      <h2>{trayMode ? "Additional alerts" : "Alerts"}</h2>
+      <p class="muted">
+        {trayMode
+          ? "Tray notifications report errors and recovery. Remote and custom alerts are optional."
+          : "Get a message when background work fails or recovers."}
+      </p>
       <label
         >Delivery<select bind:value={alertKind} onchange={changeDelivery}
-          ><option value="none">No notifications</option><option value="system"
-            >System notification</option
-          ><option value="pushover">Pushover</option><option value="ntfy"
-            >ntfy</option
-          ><option value="custom">Custom command</option></select
+          ><option value="none"
+            >{trayMode ? "No additional alerts" : "No notifications"}</option
+          ><option value="system">System notification</option><option
+            value="pushover">Pushover</option
+          ><option value="ntfy">ntfy</option><option value="custom"
+            >Custom command</option
+          ></select
         ></label
       >
       {#if alertKind === "pushover"}

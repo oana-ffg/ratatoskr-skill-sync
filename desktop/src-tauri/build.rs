@@ -7,14 +7,10 @@ fn main() {
     } else {
         ""
     };
-    let helpers: Vec<_> = if target.contains("windows") {
-        vec!["ratatoskr", "ratatoskrw"]
-    } else {
-        vec!["ratatoskr"]
-    }
-    .into_iter()
-    .map(|name| format!("binaries/{name}-{target}{extension}"))
-    .collect();
+    let helpers: Vec<_> = vec!["ratatoskr"]
+        .into_iter()
+        .map(|name| format!("binaries/{name}-{target}{extension}"))
+        .collect();
     for helper in &helpers {
         println!("cargo:rerun-if-changed={helper}");
     }
@@ -38,7 +34,7 @@ fn main() {
         }
         println!("cargo:rustc-env=TAURI_CONFIG={config}");
         println!(
-            "cargo:warning=Non-bundling build: helper unavailable. To run background jobs, run npm run prepare:helper -- --debug from desktop/."
+            "cargo:warning=Non-bundling build: bundled CLI unavailable. To include it, run npm run prepare:helper -- --debug from desktop/."
         );
     }
     tauri_build::build();

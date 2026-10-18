@@ -48,6 +48,10 @@ export function fixtureIPC(
   args: Record<string, unknown> = {},
 ): unknown {
   switch (cmd) {
+    case "migrate_background":
+      return null;
+    case "background_status":
+      return null;
     case "read_update_settings":
       return fixture.workspace.updates;
     case "read_workspace":

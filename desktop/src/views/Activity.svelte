@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { api, relativeTime, type Snapshot } from "../api";
+  import { onMount } from "svelte";
+  import BackgroundSync from "../components/BackgroundSync.svelte";
+  import {
+    api,
+    relativeTime,
+    type Snapshot,
+    type BackgroundStatus,
+    type Jobs,
+  } from "../api";
   import Dialog from "../components/Dialog.svelte";
   let {
     workspace,
@@ -12,6 +20,18 @@
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
   } = $props();
+  let latestJobs = $state<Jobs | null>(null);
+  const jobs = $derived(latestJobs ?? workspace.jobs);
+  async function refreshJobs() {
+    latestJobs = await api.command<Jobs>("read_job_status");
+  }
+  let trayMode = $state<boolean | null>(null);
+  onMount(() => {
+    void api
+      .command<BackgroundStatus | null>("background_status")
+      .then((status) => (trayMode = status !== null))
+      .catch(onerror);
+  });
   let seconds = $state(300);
   let schedule = $state<unknown>(null);
   let message = $state("");
@@ -53,26 +73,26 @@
   <div class="stats-grid">
     <article class="panel">
       <p class="eyebrow">LAST RUN</p>
-      <h2>{relativeTime(workspace.jobs.last_run?.finished_at)}</h2>
+      <h2>{relativeTime(jobs.last_run?.finished_at)}</h2>
       <p class="muted">
-        {workspace.jobs.last_run?.finished_at
+        {jobs.last_run?.finished_at
           ? "Completed"
-          : workspace.jobs.last_run
+          : jobs.last_run
             ? "Completion not recorded"
             : "No runs recorded"}
       </p>
     </article>
     <article class="panel">
       <p class="eyebrow">RESULT</p>
-      <h2 class:warning-text={!!workspace.jobs.last_run?.error}>
-        {workspace.jobs.last_run?.error
+      <h2 class:warning-text={!!jobs.last_run?.error}>
+        {jobs.last_run?.error
           ? "Failed"
-          : workspace.jobs.last_run?.finished_at
+          : jobs.last_run?.finished_at
             ? "✓ Successful"
             : "Waiting"}
       </h2>
       <p class="muted">
-        {workspace.jobs.last_run?.error ?? "Background sync status"}
+        {jobs.last_run?.error ?? "Background sync status"}
       </p>
     </article>
     <article class="panel">
@@ -84,50 +104,56 @@
       </details>
     </article>
   </div>
-  {#each [workspace.jobs.current_error, workspace.jobs.helper_update_error, workspace.jobs.desktop_update_error].filter(Boolean) as error}<p
+  {#each [jobs.current_error, jobs.helper_update_error, jobs.desktop_update_error, jobs.background_error].filter(Boolean) as error}<p
       role="alert"
       class="error-message"
     >
       {error}
     </p>{/each}
-  <article class="panel">
-    <div class="section-heading">
-      <div>
-        <h2>Background schedule</h2>
-        <p class="muted">
-          Uses the detected helper. Review the job before installing it.
-        </p>
+  {#if trayMode}<BackgroundSync
+      {onerror}
+      onstatus={() => {
+        void refreshJobs().catch(onerror);
+      }}
+    />{:else if trayMode === false}<article class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Background schedule</h2>
+          <p class="muted">
+            Uses the detected helper. Review the job before installing it.
+          </p>
+        </div>
       </div>
-    </div>
-    <div class="form-row">
-      <label
-        >Run every<select bind:value={seconds}
-          ><option value={60}>1 minute</option><option value={300}
-            >5 minutes</option
-          ><option value={900}>15 minutes</option><option value={3600}
-            >1 hour</option
-          ></select
-        ></label
-      ><button
-        disabled={!workspace.helper || busy}
-        onclick={async () => {
-          try {
-            schedule = await api.command("preview_schedule", { seconds });
-          } catch (e) {
-            onerror(e);
-          }
-        }}>Review schedule…</button
-      ><button disabled={busy} onclick={() => action("disable_schedule")}
-        >Remove schedule</button
-      >
-    </div>
-    {#if message}<p role="status" class="success-message">{message}</p>{/if}
-  </article>
+      <div class="form-row">
+        <label
+          >Run every<select bind:value={seconds}
+            ><option value={60}>1 minute</option><option value={300}
+              >5 minutes</option
+            ><option value={900}>15 minutes</option><option value={3600}
+              >1 hour</option
+            ></select
+          ></label
+        ><button
+          disabled={!workspace.helper || busy}
+          onclick={async () => {
+            try {
+              schedule = await api.command("preview_schedule", { seconds });
+            } catch (e) {
+              onerror(e);
+            }
+          }}>Review schedule…</button
+        ><button disabled={busy} onclick={() => action("disable_schedule")}
+          >Remove schedule</button
+        >
+      </div>
+      {#if message}<p role="status" class="success-message">{message}</p>{/if}
+    </article>
+  {/if}
   <article class="panel log-panel">
     <div class="section-heading">
       <h2>Recent log</h2>
     </div>
-    <pre>{workspace.jobs.log || "No log entries yet."}</pre>
+    <pre>{jobs.log || "No log entries yet."}</pre>
   </article>
 </section>
 {#if schedule}<Dialog

@@ -73,3 +73,85 @@ test("ntfy explains subscriptions and all stores are selectable without reading 
     ),
   );
 });
+
+test("Windows settings expose tray sync and preserve the existing login preference", async () => {
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "background_status")
+      return {
+        login_enabled: true,
+        paused: false,
+        interval_seconds: 60,
+        running: false,
+        last_success: null,
+        skills: 29,
+        error: null,
+        migration_error: null,
+      };
+    if (cmd === "login_enabled") return true;
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  render(Settings, {
+    workspace: fixture.workspace,
+    onupdate: vi.fn(),
+    onerror: vi.fn(),
+    ondirty: vi.fn(),
+  });
+  expect(
+    await screen.findByText("Tray mode · Recommended on Windows"),
+  ).toBeVisible();
+  expect(await screen.findByLabelText("Open Ratatoskr at login")).toBeChecked();
+  expect(screen.queryByRole("button", { name: "Review schedule…" })).toBeNull();
+  expect(
+    screen.getByRole("heading", { name: "Additional alerts" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("option", { name: "No additional alerts" }),
+  ).toBeInTheDocument();
+  expect(calls).not.toHaveBeenCalledWith(
+    "set_login_enabled",
+    expect.anything(),
+  );
+});
+
+test("an owned task migration refreshes the login checkbox without making a new preference edit", async () => {
+  let migrated = false;
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "login_enabled") return migrated;
+    if (cmd === "save_local_settings") return fixture.workspace;
+    if (cmd === "background_status") {
+      migrated = true;
+      return {
+        login_enabled: true,
+        paused: false,
+        interval_seconds: 60,
+        running: false,
+        last_success: null,
+        skills: 6,
+        error: null,
+        migration_error: null,
+      };
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  const view = render(Settings, {
+    workspace: fixture.workspace,
+    onupdate: vi.fn(),
+    onerror: vi.fn(),
+    ondirty: vi.fn(),
+  });
+  await waitFor(() =>
+    expect(screen.getByLabelText("Open Ratatoskr at login")).toBeChecked(),
+  );
+  expect(
+    screen.queryByText(
+      "Sync stops after restart unless Ratatoskr opens at login.",
+    ),
+  ).toBeNull();
+  await view.component.save();
+  expect(calls).not.toHaveBeenCalledWith(
+    "set_login_enabled",
+    expect.anything(),
+  );
+});

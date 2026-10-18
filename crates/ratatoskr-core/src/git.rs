@@ -32,6 +32,18 @@ struct Marker {
     source: String,
 }
 
+#[derive(Debug)]
+pub(crate) struct GitFailure {
+    pub operation: String,
+    message: String,
+}
+impl std::fmt::Display for GitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Git: {}", self.message)
+    }
+}
+impl std::error::Error for GitFailure {}
+
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = crate::process::command("git")
         .arg("-C")
@@ -39,11 +51,13 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .args(args)
         .output()
         .context("Run Git")?;
-    ensure!(
-        output.status.success(),
-        "Git: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(GitFailure {
+            operation: args.first().copied().unwrap_or("inspect").into(),
+            message: String::from_utf8_lossy(&output.stderr).trim().into(),
+        }
+        .into());
+    }
     Ok(output.stdout)
 }
 
@@ -184,13 +198,62 @@ fn sync_with_update(settings: &Settings, update: impl FnOnce() -> Result<()>) ->
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
     let _lock = crate::config::operation_lock(settings, "sync.lock")?;
-    let run = crate::jobs::start(settings)?;
+    sync_locked(settings, update, false)
+}
+
+/// The desktop owns helper updates and native notifications itself.
+pub(crate) fn sync_in_process(settings: &Settings) -> Result<Option<Plan>> {
+    settings.validate()?;
+    let Some(_lock) = crate::config::try_operation_lock(settings, "sync.lock")? else {
+        return Ok(None);
+    };
+    sync_locked(settings, || Ok(()), true).map(Some)
+}
+
+fn sync_locked(
+    settings: &Settings,
+    update: impl FnOnce() -> Result<()>,
+    desktop: bool,
+) -> Result<Plan> {
+    let mut run = crate::jobs::start(settings)?;
     // Updating and syncing have separate outcomes and notification ledgers.
-    let deployment = validate_deploy_branch(settings);
+    let deployment = validate_deploy_branch(settings).map_err(|error| {
+        if desktop {
+            crate::tray::Problem::from_error("Deploy branch", &error).into()
+        } else {
+            error
+        }
+    });
     let update_result = if deployment.is_ok() { update() } else { Ok(()) };
-    let result = deployment.and_then(|_| sync_inner(settings));
+    let result = deployment.and_then(|_| {
+        let plan = sync_inner(settings).map_err(|error| {
+            if desktop {
+                crate::tray::Problem::from_error("Sync outputs", &error).into()
+            } else {
+                error
+            }
+        })?;
+        if desktop && !plan.conflicts.is_empty() {
+            return Err(crate::tray::Problem::message(
+                "Sync conflicts",
+                format!(
+                    "Sync completed with conflicts: {}",
+                    plan.conflicts.join("; ")
+                ),
+            )
+            .into());
+        }
+        Ok(plan)
+    });
     let sync_error = result.as_ref().err().map(|e| format!("{e:#}"));
-    let notification = crate::notifications::outcome(settings, sync_error.as_deref());
+    let notification = if desktop && matches!(settings.alert, Some(crate::AlertSettings::System)) {
+        let mut alerts = settings.clone();
+        alerts.alert = None;
+        alerts.alert_command.clear();
+        crate::notifications::outcome(&alerts, sync_error.as_deref())
+    } else {
+        crate::notifications::outcome(settings, sync_error.as_deref())
+    };
     let mut errors = Vec::new();
     if let Err(error) = update_result {
         errors.push(format!("Helper update failed: {error:#}"));
@@ -198,11 +261,32 @@ fn sync_with_update(settings: &Settings, update: impl FnOnce() -> Result<()>) ->
     if let Some(error) = sync_error {
         errors.push(format!("Sync failed: {error}"));
     }
-    if let Err(error) = notification {
+    if let Err(error) = &notification {
         errors.push(format!("Sync alert delivery failed: {error:#}"));
     }
     let summary = (!errors.is_empty()).then(|| errors.join("; "));
+    let problem = if desktop {
+        summary.as_ref().map(|summary| {
+            let mut problem = if let Some(error) = result
+                .as_ref()
+                .err()
+                .or_else(|| notification.as_ref().err())
+            {
+                crate::tray::Problem::from_error("Sync", error)
+            } else {
+                crate::tray::Problem::message("Sync", summary)
+            };
+            problem.message = summary.clone();
+            problem
+        })
+    } else {
+        None
+    };
+    run.problem_identity = problem.as_ref().map(|problem| problem.identity.clone());
     crate::jobs::finish(settings, run, summary.as_deref())?;
+    if let Some(problem) = problem {
+        return Err(problem.into());
+    }
     ensure!(errors.is_empty(), "{}", errors.join("; "));
     result
 }
@@ -212,10 +296,13 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
         &settings.source,
         &["status", "--porcelain=v1", "--untracked-files=all"],
     )?;
-    ensure!(
-        status.is_empty(),
-        "Source checkout has uncommitted files; refusing to pull"
-    );
+    if !status.is_empty() {
+        return Err(crate::tray::Problem::message(
+            "Source checkout dirty",
+            "Source checkout has uncommitted files; refusing to pull",
+        )
+        .into());
+    }
     git(&settings.source, &["rev-parse", "--verify", "@{upstream}"])?;
     git(&settings.source, &["pull", "--ff-only", "--no-rebase"])?;
     let plan = apply(settings)?;
@@ -234,11 +321,16 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
             )
         })
         .collect();
-    ensure!(
-        pending.is_empty(),
-        "Outputs synced; project skill work needs attention: {}",
-        pending.join("; ")
-    );
+    if !pending.is_empty() {
+        return Err(crate::tray::Problem::message(
+            "Project work pending",
+            format!(
+                "Outputs synced; project skill work needs attention: {}",
+                pending.join("; ")
+            ),
+        )
+        .into());
+    }
     Ok(plan)
 }
 
