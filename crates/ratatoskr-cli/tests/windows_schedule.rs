@@ -85,8 +85,8 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
         ..Default::default()
     };
     save(&config, &settings)?;
-    // Derive the same label through an absent ownership error, without adding
-    // a task-creation API to the product. SHA256 matches historical labels.
+    // Compute the historical label in the fixture, without adding a production
+    // task-creation API. Verify the outer harness can clean up this exact task.
     let label_output = checked(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command",
         "$hash=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($env:RATATOSKR_TEST_PATH)); 'io.github.oana-ffg.ratatoskr.'+([BitConverter]::ToString($hash).Replace('-','').ToLowerInvariant()).Substring(0,12); [Security.Principal.WindowsIdentity]::GetCurrent().User.Value"])
         .env("RATATOSKR_TEST_PATH", &config))?;
@@ -97,6 +97,12 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
         .context("Task label missing")?
         .trim()
         .to_owned();
+    if let Some(expected) = std::env::var_os("RATATOSKR_TEST_TASK") {
+        ensure!(
+            expected == label.as_str(),
+            "Fixture task differs from cleanup ownership"
+        );
+    }
     let sid = lines.next().context("Current user SID missing")?.trim();
     ensure!(
         sid.starts_with("S-1-")

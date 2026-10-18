@@ -19,6 +19,7 @@ Write-Host "PASS: genuine standard-user token, SID $ExpectedSid; no Administrato
 
 $env:RATATOSKR_TEST_CLI = Join-Path $Root 'ratatoskr.exe'
 $env:RATATOSKR_TEST_CONFIG = $ConfigPath
+$env:RATATOSKR_TEST_TASK = $TaskName
 & (Join-Path $Root 'windows_schedule.exe') --nocapture
 if ($LASTEXITCODE -ne 0) { throw "Standard-user migration tests failed: $LASTEXITCODE" }
 Write-Host 'PASS: real-registration migration, ownership preservation and disabled-task coverage as a standard user'
