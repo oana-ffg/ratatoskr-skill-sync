@@ -30,4 +30,5 @@ ratatoskr-core = { path = "../ratatoskr-core" }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+chrono = "0.4"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_EventLog", "Win32_Security"] }

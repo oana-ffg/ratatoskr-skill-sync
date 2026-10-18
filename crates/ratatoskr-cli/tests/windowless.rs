@@ -79,6 +79,80 @@ fn windowless_bad_config_is_a_recorded_failure_without_a_console() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn fatal_diagnostics_never_show_ui_and_append_durable_timestamped_errors() -> Result<()> {
+    // Guard the windowless entry point and its fatal reporter against restoring
+    // a modal fallback. A dialog would otherwise block the executable test.
+    for source in [
+        include_str!("../src/windowless.rs"),
+        include_str!("../src/windowless/fatal.rs"),
+    ] {
+        ensure!(
+            !source.contains("MessageBoxW"),
+            "Fatal reporting must never show a dialog"
+        );
+        ensure!(
+            !source.contains("WindowsAndMessaging"),
+            "Fatal reporting must not import UI APIs"
+        );
+    }
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let source = root.join("source");
+    fs::create_dir(&source)?;
+    let state = root.join("blocked-state");
+    // A file in place of a directory fails log creation reliably, regardless
+    // of whether CI's current account is elevated. No ACL changes are needed.
+    fs::write(&state, "Cannot create logs beneath this file")?;
+    let settings = ratatoskr_core::Settings {
+        source,
+        machine: "test".into(),
+        state_dir: state,
+        ..Default::default()
+    };
+    let config = root.join("config.toml");
+    ratatoskr_core::save(&config, &settings)?;
+    let local = root.join("local-app-data");
+    let fallback = local.join("ratatoskr-skill-sync/background-fatal.log");
+    let mut previous = String::new();
+    for expected_lines in 1..=2 {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ratatoskrw"))
+            .arg("--config")
+            .arg(&config)
+            .arg("sync")
+            .env("LOCALAPPDATA", &local)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill()?;
+                child.wait()?;
+                anyhow::bail!("Fatal helper blocked instead of returning without UI");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        ensure!(status.code() == Some(2), "Fatal helper must exit 2");
+        let contents = fs::read_to_string(&fallback)?;
+        ensure!(contents.starts_with(&previous), "Fatal log was overwritten");
+        ensure!(contents.lines().count() == expected_lines);
+        let line = contents.lines().last().unwrap();
+        let (timestamp, json) = line.split_once(' ').unwrap();
+        chrono::DateTime::parse_from_rfc3339(timestamp)?;
+        let message: String = serde_json::from_str(json)?;
+        ensure!(
+            message.starts_with("Ratatoskr background sync: Open background sync logs:"),
+            "Missing full fatal error chain: {message}"
+        );
+        previous = contents;
+    }
+    Ok(())
+}
+
 fn git(root: &Path, arguments: &[&str]) -> Result<()> {
     let output = Command::new("git")
         .arg("-C")
