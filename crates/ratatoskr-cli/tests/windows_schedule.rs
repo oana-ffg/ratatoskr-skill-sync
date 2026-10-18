@@ -58,7 +58,8 @@ fn windows_schedule_cli_registers_queries_and_removes_real_task() -> Result<()> 
     // where.exe only searches for files. Even if the immediate time trigger
     // fires, it cannot run Ratatoskr or sync a real configuration.
     let helper = PathBuf::from(std::env::var_os("SystemRoot").context("Missing SystemRoot")?)
-        .join("System32/where.exe");
+        .join("System32/where.exe")
+        .canonicalize()?;
     let planned = schedule_plan(&settings, &config, &helper, 60)?;
     let mut needs_cleanup = false;
     let result = (|| -> Result<()> {
@@ -92,6 +93,13 @@ fn windows_schedule_cli_registers_queries_and_removes_real_task() -> Result<()> 
             "Installed bytes differ from recorded XML"
         );
         ensure!(definition.contains("config Æ 🦀 &amp; test.toml"));
+        ensure!(
+            !definition.contains(r"\\?\"),
+            "Verbatim paths leaked into task actions"
+        );
+        ensure!(definition.contains("<LogonType>InteractiveToken</LogonType>"));
+        ensure!(definition.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        ensure!(definition.contains("<Actions Context=\"Author\">"));
         ensure!(
             without_start_boundary(preview.trim_end())? == without_start_boundary(&definition)?,
             "CLI preview differs from installed XML"
