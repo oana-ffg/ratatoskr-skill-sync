@@ -32,6 +32,20 @@ pub(crate) struct Status {
     update_error: Option<String>,
     pub migration_error: Option<String>,
 }
+fn restored_status(settings: &core::Settings) -> Result<Status> {
+    let preferences = TrayPreferences::load(settings)?;
+    let last = LastSuccess::load(settings)?;
+    let jobs = core::job_status(settings)?;
+    Ok(Status {
+        paused: preferences.paused,
+        interval_seconds: preferences.interval_seconds,
+        last_success: last.time,
+        skills: last.skills,
+        error: jobs.last_run.and_then(|run| run.error),
+        update_error: jobs.desktop_update_error,
+        ..Default::default()
+    })
+}
 pub(crate) struct Runtime {
     status: Mutex<Status>,
     preferences: Mutex<()>,
@@ -54,12 +68,12 @@ impl Runtime {
         }
         Ok(status)
     }
-    fn begin_run(&self) -> Result<Option<core::tray::RunPermit<'_>>> {
+    fn begin_run(&self, manual: bool) -> Result<Option<core::tray::RunPermit<'_>>> {
         let mut state = self
             .status
             .lock()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        if state.paused || state.migration_error.is_some() {
+        if (state.paused && !manual) || state.migration_error.is_some() {
             return Ok(None);
         }
         let permit = self.gate.enter(false);
@@ -246,7 +260,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         }),
         preferences: Mutex::new(()),
         gate: RunGate::default(),
-        sync_requested: AtomicBool::new(true),
+        sync_requested: AtomicBool::new(false),
         migrate_requested: AtomicBool::new(true),
         stopped: AtomicBool::new(false),
         desktop_busy: AtomicBool::new(false),
@@ -322,16 +336,10 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         }
         let settings = core::load(&config)?;
         let result = core::migrate_windows_schedule(&settings, &config);
+        let mut saved = restored_status(&settings)?;
+        saved.migration_error = result.err().map(|e| format!("{e:#}"));
         let runtime = app.state::<Runtime>();
-        runtime.change(|s| s.migration_error = result.err().map(|e| format!("{e:#}")))?;
-        let preferences = TrayPreferences::load(&settings)?;
-        let last = LastSuccess::load(&settings)?;
-        runtime.change(|s| {
-            s.paused = preferences.paused;
-            s.interval_seconds = preferences.interval_seconds;
-            s.last_success = last.time;
-            s.skills = last.skills;
-        })?;
+        runtime.change(|s| *s = saved)?;
         core::tray::record_problem(&settings, runtime.status()?.migration_error.as_deref())
     })();
     if let Err(error) = migration {
@@ -446,11 +454,12 @@ fn run_loop(app: &tauri::AppHandle) {
             if config_seen.as_ref() != Some(&config) {
                 config_seen = Some(config.clone());
                 next_migration = Instant::now();
-                let last = LastSuccess::load(&settings)?;
-                runtime.change(|s| {
-                    s.last_success = last.time;
-                    s.skills = last.skills;
-                })?;
+                let _preferences = runtime
+                    .preferences
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                let saved = restored_status(&settings)?;
+                runtime.change(|s| *s = saved)?;
             }
             if runtime.migrate_requested.swap(false, Ordering::AcqRel)
                 || Instant::now() >= next_migration
@@ -472,10 +481,9 @@ fn run_loop(app: &tauri::AppHandle) {
             let state = runtime.status()?;
             let manual = runtime.sync_requested.swap(false, Ordering::AcqRel);
             if state.migration_error.is_none()
-                && !state.paused
-                && (manual || Instant::now() >= next_sync)
+                && (manual || (!state.paused && Instant::now() >= next_sync))
             {
-                let Some(_permit) = runtime.begin_run()? else {
+                let Some(_permit) = runtime.begin_run(manual)? else {
                     return Ok(());
                 };
                 let outcome = core::recorded_sync(&config);
@@ -498,7 +506,13 @@ fn run_loop(app: &tauri::AppHandle) {
                             s.error = None;
                         })?;
                     }
-                    Ok(None) => (), // Existing operation holds sync.lock; no run was started.
+                    Ok(None) => {
+                        // A manual request remains pending while another operation
+                        // owns sync.lock, including when automatic sync is paused.
+                        if manual {
+                            runtime.sync_requested.store(true, Ordering::Release);
+                        }
+                    }
                     Err(error) => runtime.change(|s| s.error = Some(format!("{error:#}")))?,
                 }
             }
@@ -526,5 +540,43 @@ fn run_loop(app: &tauri::AppHandle) {
             report(app, error);
         }
         std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn paused_restart_preserves_sync_failure_until_a_run_actually_recovers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let settings = core::Settings {
+            source: root.join("source"),
+            machine: "test".into(),
+            state_dir: root.join("state"),
+            ..Default::default()
+        };
+        std::fs::create_dir(&settings.source).unwrap();
+        let config = root.join("config.toml");
+        core::save(&config, &settings).unwrap();
+        assert!(core::recorded_sync(&config).is_err());
+        TrayPreferences {
+            paused: true,
+            interval_seconds: 60,
+        }
+        .save(&settings)
+        .unwrap();
+        let state = restored_status(&settings).unwrap();
+        assert!(state.paused && state.error.is_some());
+        let mut notifications = core::tray::NotificationState::default();
+        notifications
+            .deliver(state.error.as_deref(), |_| Ok(()))
+            .unwrap();
+        let reopened = restored_status(&settings).unwrap();
+        notifications
+            .deliver(reopened.error.as_deref(), |_| {
+                panic!("A paused restart must not announce recovery")
+            })
+            .unwrap();
     }
 }
