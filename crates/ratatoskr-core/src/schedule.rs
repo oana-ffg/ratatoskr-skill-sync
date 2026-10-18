@@ -11,6 +11,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(windows)]
+mod windows;
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Schedule {
     pub label: String,
@@ -75,6 +78,11 @@ pub fn schedule_plan(
     let id = format!("{:x}", Sha256::digest(config.to_string_lossy().as_bytes()));
     let label = format!("io.github.oana-ffg.ratatoskr.{}", &id[..12]);
     let state = settings.state_dir.join(&settings.machine);
+    // Keep ownership/label paths unchanged. Only simplify paths handed to the
+    // scheduler, where canonicalize's verbatim prefix is unnecessary for normal paths.
+    #[cfg(windows)]
+    let (config, helper) = (dunce::simplified(config), dunce::simplified(helper));
+    #[cfg(windows)]
     let arguments = xml(&format!("--config \"{}\" sync", config.to_string_lossy()));
     let config = xml(&config.to_string_lossy());
     let helper = xml(&helper.to_string_lossy());
@@ -98,12 +106,14 @@ pub fn schedule_plan(
                 ),
             )
         }
+        #[cfg(windows)]
         "windows" => {
+            let sid = xml(&windows::current_user_sid()?);
             let start = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
             (
                 state.join("schedule.xml"),
                 format!(
-                    "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><URI>\\{label}</URI><Description>Ratatoskr Skill Sync</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT{seconds}S</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>{start}</StartBoundary><Enabled>true</Enabled></TimeTrigger><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT30M</ExecutionTimeLimit></Settings><Actions><Exec><Command>{helper}</Command><Arguments>{arguments}</Arguments></Exec></Actions></Task>"
+                    "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><URI>\\{label}</URI><Description>Ratatoskr Skill Sync</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT{seconds}S</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>{start}</StartBoundary><Enabled>true</Enabled></TimeTrigger><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Author\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT30M</ExecutionTimeLimit></Settings><Actions Context=\"Author\"><Exec><Command>{helper}</Command><Arguments>{arguments}</Arguments></Exec></Actions></Task>"
                 ),
             )
         }
