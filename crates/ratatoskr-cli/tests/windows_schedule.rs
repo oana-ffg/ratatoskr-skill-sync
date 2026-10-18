@@ -54,10 +54,22 @@ fn cli(config: &Path, action: &str) -> Command {
 #[test]
 fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_owned_tasks()
 -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let config = std::env::var_os("RATATOSKR_TEST_CONFIG")
-        .map(std::path::PathBuf::from)
-        .unwrap_or(temp.path().join("config Æ 🦀 & test.toml"));
+    let external = std::env::var_os("RATATOSKR_TEST_CONFIG").map(std::path::PathBuf::from);
+    // The standard-user child intentionally inherits no access to the runner's
+    // TEMP. Its externally supplied fixture already belongs to that user.
+    let temp = if external.is_none() {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let config = match external {
+        Some(config) => config,
+        None => temp
+            .as_ref()
+            .context("Fixture directory missing")?
+            .path()
+            .join("config Æ 🦀 & test.toml"),
+    };
     let config = config
         .parent()
         .context("Config parent missing")?
