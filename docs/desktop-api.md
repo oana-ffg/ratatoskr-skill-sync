@@ -75,3 +75,9 @@ Plans include `install_targets` with the renderer's harness, skill root, instruc
 ### Updates without a workspace
 
 `read_update_settings` returns the effective `endpoint`, `override_active`, `automatic`, and `time`. `startup_update`, `nightly_update`, and `update_desktop` work before a workspace is connected, using compiled official defaults. Existing configurations retain their update overrides. `read_local_settings`, `save_local_settings`, and `save_update_schedule` remain workspace operations; onboarding Settings displays the default schedule and exposes manual check/install/restart without invoking those operations.
+
+## Windows tray sync
+
+`background_status()` returns null on macOS and a Windows status with `paused`, `interval_seconds`, `running`, `last_success`, `skills`, `error` and `migration_error`. `set_background_preferences({paused, intervalSeconds})` persists the pause/interval state; `migrate_background()` requests another safe legacy-task migration. On Windows `sync_workspace()` requests the same resident controller used by the tray menu; the response is a current snapshot, not a claim that the asynchronous run already finished.
+
+`set_desktop_busy({busy})` communicates unsaved/busy UI state to the native Windows nightly updater. Windows owns sync and update timers in Rust; macOS retains the frontend update policy. `job-status` adds `background_error` for migration/runtime diagnostics. The in-process sync path skips standalone-helper self-update and delegates native system toasts to the tray controller, while retaining configured remote/custom alert transports.

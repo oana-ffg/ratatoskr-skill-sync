@@ -549,7 +549,6 @@ fn schedule_preview_escapes_paths_and_does_not_install_anything() {
             .unwrap();
         assert!(format!("{error:#}").contains("tray sync"));
         assert!(!f.settings.state_dir.exists());
-        return;
     }
     #[cfg(not(windows))]
     {
@@ -1468,4 +1467,60 @@ fn legacy_alert_settings_save_as_references_without_duplicate_keys() {
     let local = ratatoskr_core::local_configuration(&config).unwrap();
     ratatoskr_core::save_local_configuration(&config, &local.settings, &local.hash).unwrap();
     assert_eq!(fs::read_to_string(config).unwrap(), stored);
+}
+
+#[test]
+fn tray_runs_record_success_conflicts_and_configuration_errors_in_existing_ledgers_and_logs() {
+    let f = Fixture::new();
+    let source = &f.settings.source;
+    let remote = f.root.join("remote.git");
+    fs::create_dir(&remote).unwrap();
+    git(&remote, &["init", "--bare", "-b", "main"]);
+    git(source, &["init", "-b", "main"]);
+    git(source, &["config", "user.name", "Ratatoskr tests"]);
+    git(source, &["config", "user.email", "tests@localhost"]);
+    git(source, &["config", "commit.gpgsign", "false"]);
+    git(source, &["add", "."]);
+    git(source, &["commit", "-m", "Content"]);
+    git(source, &["remote", "add", "origin", "../remote.git"]);
+    git(source, &["push", "-u", "origin", "main"]);
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    let report = ratatoskr_core::recorded_sync(&config).unwrap().unwrap();
+    assert_eq!(report.skills, 1);
+    let status = ratatoskr_core::job_status(&f.settings).unwrap();
+    assert!(status.last_run.as_ref().unwrap().finished_at.is_some());
+    assert!(status.last_run.as_ref().unwrap().error.is_none());
+    assert!(status.log.contains("sync.stdout.log"));
+    fs::write(f.output().join("SKILL.md"), "Hand edit").unwrap();
+    assert!(ratatoskr_core::recorded_sync(&config).is_err());
+    let status = ratatoskr_core::job_status(&f.settings).unwrap();
+    assert!(
+        status
+            .last_run
+            .as_ref()
+            .unwrap()
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("conflicts")
+    );
+    assert!(status.log.contains("sync.stderr.log"));
+    assert_eq!(
+        fs::read_to_string(f.output().join("SKILL.md")).unwrap(),
+        "Hand edit"
+    );
+    fs::write(&config, "malformed = [").unwrap();
+    assert!(ratatoskr_core::recorded_sync(&config).is_err());
+    let bootstrap = config
+        .with_file_name("config.toml.diagnostics")
+        .join("startup");
+    let run: ratatoskr_core::JobRun =
+        serde_json::from_slice(&fs::read(bootstrap.join("last-sync.json")).unwrap()).unwrap();
+    assert!(run.error.is_some() && run.finished_at.is_some());
+    assert!(
+        !fs::read_to_string(bootstrap.join("sync.stderr.log"))
+            .unwrap()
+            .is_empty()
+    );
 }

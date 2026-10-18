@@ -285,3 +285,50 @@ mod tests {
         );
     }
 }
+
+/// Carry visibility across the installer's own relaunch, which can retain stale
+/// command-line arguments from an earlier login launch.
+pub fn save_restart_mode(path: &std::path::Path, hidden: bool) -> Result<()> {
+    atomic_write(path, &serde_json::to_vec(&hidden)?)
+}
+pub fn clear_restart_mode(path: &std::path::Path) -> Result<()> {
+    no_symlinks(path)?;
+    if path.try_exists()? {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+pub fn consume_restart_mode(path: &std::path::Path, background_argument: bool) -> Result<bool> {
+    no_symlinks(path)?;
+    if !path.try_exists()? {
+        return Ok(background_argument);
+    }
+    let hidden = serde_json::from_slice(&fs::read(path)?)?;
+    fs::remove_file(path)?;
+    Ok(hidden)
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+    #[test]
+    fn hidden_restart_and_foreground_reopen_override_old_arguments_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().canonicalize().unwrap().join("app/restart.json");
+        assert!(!consume_restart_mode(&path, false).unwrap());
+        assert!(consume_restart_mode(&path, true).unwrap());
+        save_restart_mode(&path, true).unwrap();
+        assert!(consume_restart_mode(&path, false).unwrap());
+        assert!(!path.exists());
+        save_restart_mode(&path, false).unwrap();
+        assert!(!consume_restart_mode(&path, true).unwrap());
+        assert!(consume_restart_mode(&path, true).unwrap());
+        save_restart_mode(&path, true).unwrap();
+        clear_restart_mode(&path).unwrap();
+        assert!(!consume_restart_mode(&path, false).unwrap());
+        save_restart_mode(&path, true).unwrap();
+        fs::write(&path, "invalid").unwrap();
+        assert!(consume_restart_mode(&path, false).is_err());
+        assert!(path.exists(), "Invalid intent must remain inspectable");
+    }
+}

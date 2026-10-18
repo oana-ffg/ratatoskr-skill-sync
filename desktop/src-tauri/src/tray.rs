@@ -71,27 +71,18 @@ pub(crate) fn prepare_restart(app: &tauri::AppHandle) -> Result<()> {
         .get_webview_window("main")
         .context("Main window missing")?
         .is_visible()?;
-    let path = launch_mode_path(app)?;
-    std::fs::create_dir_all(path.parent().context("App data parent missing")?)?;
-    std::fs::write(path, serde_json::to_vec(&hidden)?)?;
-    Ok(())
+    core::tray::save_restart_mode(&launch_mode_path(app)?, hidden)
 }
 pub(crate) fn cancel_restart(app: &tauri::AppHandle) -> Result<()> {
-    let path = launch_mode_path(app)?;
-    if path.try_exists()? {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
+    core::tray::clear_restart_mode(&launch_mode_path(app)?)
 }
 fn start_hidden(app: &tauri::AppHandle) -> Result<bool> {
-    let path = launch_mode_path(app)?;
-    if path.try_exists()? {
-        let hidden = serde_json::from_slice(&std::fs::read(&path)?)?;
-        std::fs::remove_file(path)?;
-        return Ok(hidden);
-    }
-    Ok(std::env::args_os().any(|arg| arg == "--background"))
+    core::tray::consume_restart_mode(
+        &launch_mode_path(app)?,
+        std::env::args_os().any(|arg| arg == "--background"),
+    )
 }
+
 pub(crate) fn open(app: &tauri::AppHandle) -> Result<()> {
     let window = app
         .get_webview_window("main")

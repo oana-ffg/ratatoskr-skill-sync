@@ -231,7 +231,7 @@ pub(crate) async fn sync_workspace(app: tauri::AppHandle) -> Reply<Snapshot> {
     #[cfg(windows)]
     {
         crate::tray::request_sync(&app);
-        return snapshot();
+        snapshot()
     }
     #[cfg(not(windows))]
     let _ = app;
@@ -265,12 +265,24 @@ pub(crate) fn disable_schedule() -> Reply<String> {
 fn install_desktop_update(
     app: &tauri::AppHandle,
     update: tauri_plugin_updater::Update,
+    automatic: bool,
 ) -> anyhow::Result<()> {
     #[cfg(not(windows))]
-    let _ = app;
+    let _ = (app, automatic);
+    // Verify the download first, then recheck edits made during the request.
+    let bytes = tauri::async_runtime::block_on(update.download(|_, _| (), || ()))?;
+    #[cfg(windows)]
+    if automatic {
+        anyhow::ensure!(
+            !app.state::<crate::tray::Runtime>()
+                .desktop_busy
+                .load(std::sync::atomic::Ordering::Acquire),
+            "Desktop update postponed: the app has unsaved or busy work. Retry from Settings or wait for the next update window."
+        );
+    }
     #[cfg(windows)]
     crate::tray::prepare_restart(app)?;
-    let result = tauri::async_runtime::block_on(update.download_and_install(|_, _| (), || ()));
+    let result = update.install(bytes);
     #[cfg(windows)]
     if result.is_err() {
         crate::tray::cancel_restart(app)?;
@@ -290,9 +302,11 @@ pub(crate) fn set_desktop_busy(app: tauri::AppHandle, busy: bool) {
 #[tauri::command]
 pub(crate) fn background_status(app: tauri::AppHandle) -> Reply<Option<serde_json::Value>> {
     #[cfg(windows)]
-    return crate::tray::status(&app)
-        .and_then(|s| serde_json::to_value(s).map(Some).map_err(Into::into))
-        .map_err(|e| format!("{e:#}"));
+    {
+        crate::tray::status(&app)
+            .and_then(|s| serde_json::to_value(s).map(Some).map_err(Into::into))
+            .map_err(|e| format!("{e:#}"))
+    }
     #[cfg(not(windows))]
     {
         let _ = app;
@@ -404,7 +418,7 @@ pub(crate) async fn automatic_update(
                         .map_err(Into::into)
                 },
                 |update| {
-                    install_desktop_update(&app, update)?;
+                    install_desktop_update(&app, update, true)?;
                     installed = true;
                     Ok(())
                 },
@@ -473,7 +487,7 @@ pub(crate) async fn update_desktop(
             },
             |update| update.version.clone(),
             |update| {
-                install_desktop_update(&app, update)?;
+                install_desktop_update(&app, update, false)?;
                 Ok(())
             },
         );

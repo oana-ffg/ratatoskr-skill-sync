@@ -31,11 +31,10 @@ try {
     }
     & icacls.exe $root /grant "*${sid}:(OI)(CI)M"
     if ($LASTEXITCODE -ne 0) { throw "Grant fixture permissions failed: $LASTEXITCODE" }
-    foreach ($binary in @('ratatoskr.exe')) {
-        Copy-Item (Join-Path $PSScriptRoot "../target/debug/$binary") (Join-Path $root $binary)
-    }
+    Copy-Item (Join-Path $PSScriptRoot '../target/debug/ratatoskr.exe') (Join-Path $root 'ratatoskr.exe')
     $tests = @(Get-ChildItem (Join-Path $PSScriptRoot '../target/debug/deps/windows_schedule-*.exe'))
-    if ($tests.Count -ne 1) { throw "Expected one Windows migration test executable, found $($tests.Count)" }
+    if ($tests.Count -eq 0) { throw "Windows migration test executable missing" }
+    $tests = @($tests | Sort-Object LastWriteTimeUtc -Descending)
     Copy-Item $tests[0].FullName (Join-Path $root 'windows_schedule.exe')
     $child = Join-Path $root 'standard-user-check.ps1'
     Copy-Item (Join-Path $PSScriptRoot 'windows-standard-user-check.ps1') $child

@@ -16,7 +16,7 @@
   onMount(() => {
     void refresh().catch(onerror);
     const timer = setInterval(() => {
-      void refresh().catch(onerror);
+      if (status) void refresh().catch(onerror);
     }, 2000);
     return () => clearInterval(timer);
   });
@@ -58,11 +58,13 @@
       >
         {status.migration_error
           ? "Blocked"
-          : status.paused
-            ? "Paused"
-            : status.running
-              ? "Syncing"
-              : "Active"}
+          : status.error
+            ? "Error"
+            : status.paused
+              ? "Paused"
+              : status.running
+                ? "Syncing"
+                : "Active"}
       </span>
     </div>
     <p>Tray mode · Recommended on Windows</p>

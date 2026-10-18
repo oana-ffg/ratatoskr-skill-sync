@@ -76,14 +76,28 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
     // Derive the same label through an absent ownership error, without adding
     // a task-creation API to the product. SHA256 matches historical labels.
     let label_output = checked(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command",
-        "$hash=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($env:RATATOSKR_TEST_PATH)); 'io.github.oana-ffg.ratatoskr.'+([BitConverter]::ToString($hash).Replace('-','').ToLowerInvariant()).Substring(0,12)"])
+        "$hash=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($env:RATATOSKR_TEST_PATH)); 'io.github.oana-ffg.ratatoskr.'+([BitConverter]::ToString($hash).Replace('-','').ToLowerInvariant()).Substring(0,12); [Security.Principal.WindowsIdentity]::GetCurrent().User.Value"])
         .env("RATATOSKR_TEST_PATH", &config))?;
-    let label = String::from_utf8(label_output.stdout)?.trim().to_owned();
+    let identity = String::from_utf8(label_output.stdout)?;
+    let mut lines = identity.lines();
+    let label = lines
+        .next()
+        .context("Task label missing")?
+        .trim()
+        .to_owned();
+    let sid = lines.next().context("Current user SID missing")?.trim();
+    ensure!(
+        sid.starts_with("S-1-")
+            && sid
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == 'S' || c == '-'),
+        "Invalid user SID"
+    );
     let directory = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&directory)?;
     let record = directory.join("installed-schedule.json");
     let definition = format!(
-        r#"<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>Ratatoskr CI harmless legacy fixture</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT120S</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>2099-01-01T00:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><ExecutionTimeLimit>PT1M</ExecutionTimeLimit></Settings><Actions><Exec><Command>cmd.exe</Command><Arguments>/c exit 0</Arguments></Exec></Actions></Task>"#
+        r#"<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>Ratatoskr CI harmless legacy fixture</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT120S</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>2099-01-01T00:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Principals><Principal id="Author"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><ExecutionTimeLimit>PT1M</ExecutionTimeLimit></Settings><Actions Context="Author"><Exec><Command>cmd.exe</Command><Arguments>/c exit 0</Arguments></Exec></Actions></Task>"#
     );
     let mut schedule = Schedule {
         label: label.clone(),

@@ -105,9 +105,6 @@ pub fn schedule_plan(
                 ),
             )
         }
-        "windows" => bail!(
-            "Windows uses tray sync. Open Ratatoskr Skill Sync and enable Open at login in Settings. Scheduled tasks are no longer supported."
-        ),
         _ => bail!("Scheduler installation is supported on macOS and Windows"),
     };
     no_symlinks(&path)?;

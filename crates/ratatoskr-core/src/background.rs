@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn diagnostics(config: &Path) -> Result<(Settings, bool)> {
+fn diagnostics(config: &Path) -> Result<Settings> {
     no_symlinks(config)?;
     // Parsing separately lets a missing checkout/invalid update setting still
     // reach the existing job ledger. Never use an unvalidated path or machine ID.
@@ -29,20 +29,17 @@ fn diagnostics(config: &Path) -> Result<(Settings, bool)> {
         Ok(settings)
     })();
     if let Ok(settings) = parsed {
-        return Ok((settings, false));
+        return Ok(settings);
     }
     // Malformed/unreadable configuration cannot tell us its state directory.
     // Keep a separate bootstrap ledger beside that exact config, never in CWD.
     let mut directory = config.as_os_str().to_owned();
     directory.push(".diagnostics");
-    Ok((
-        Settings {
-            state_dir: PathBuf::from(directory),
-            machine: "startup".into(),
-            ..Settings::default()
-        },
-        true,
-    ))
+    Ok(Settings {
+        state_dir: PathBuf::from(directory),
+        machine: "startup".into(),
+        ..Settings::default()
+    })
 }
 
 /// Direct core entry point for tray runs. Logs use owned file handles, never
@@ -53,7 +50,7 @@ pub fn recorded_sync(config: &Path) -> Result<Option<crate::Plan>> {
         config.is_absolute(),
         "Background config path must be absolute"
     );
-    let (diagnostics, _) = diagnostics(config)?;
+    let diagnostics = diagnostics(config)?;
     let directory = diagnostics.state_dir.join(&diagnostics.machine);
     no_symlinks(&directory)?;
     fs::create_dir_all(&directory)?;
@@ -98,7 +95,7 @@ pub fn recorded_sync(config: &Path) -> Result<Option<crate::Plan>> {
 
 /// Configuration errors still have a safe bootstrap ledger beside the config.
 pub fn record_background_problem(config: &Path, error: Option<&str>) -> Result<()> {
-    let (diagnostics, _) = diagnostics(config)?;
+    let diagnostics = diagnostics(config)?;
     crate::tray::record_problem(&diagnostics, error)
 }
 pub fn notify_background(
@@ -106,7 +103,7 @@ pub fn notify_background(
     error: Option<&str>,
     send: impl FnOnce(&str) -> Result<()>,
 ) -> Result<()> {
-    let (diagnostics, _) = diagnostics(config)?;
+    let diagnostics = diagnostics(config)?;
     let mut state = crate::tray::NotificationState::load(&diagnostics)?;
     let previous = state.clone();
     state.deliver(error, send)?;

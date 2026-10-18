@@ -286,7 +286,9 @@ pub(crate) fn try_operation_lock(settings: &Settings, name: &str) -> Result<Opti
             file,
             name: name.into(),
         })),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Ok(None)
+        }
         Err(error) => Err(error).with_context(|| format!("Acquire {name}")),
     }
 }
