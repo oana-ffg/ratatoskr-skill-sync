@@ -52,6 +52,13 @@ test("Windows tray settings in dark mode", async ({ page }) => {
       .locator("body")
       .evaluate((body) => getComputedStyle(body).backgroundColor),
   ).toBe("rgb(16, 21, 16)");
+  await page.setViewportSize({
+    width: 1380,
+    height: Math.max(
+      960,
+      await page.locator("main").evaluate((main) => main.scrollHeight + 72),
+    ),
+  });
   mkdirSync("../docs/screenshots", { recursive: true });
   await page.screenshot({
     path: "../docs/screenshots/windows-tray-settings-dark.png",

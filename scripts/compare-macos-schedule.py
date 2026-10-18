@@ -7,7 +7,7 @@ import tempfile
 
 root = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="ratatoskr-plist-") as directory:
-    temporary = Path(directory)
+    temporary = Path(directory).resolve()
     baseline = temporary / "baseline"
     subprocess.run(["git", "worktree", "add", "--detach", str(baseline), os.environ["BASE_SHA"]], cwd=root, check=True)
     try:
