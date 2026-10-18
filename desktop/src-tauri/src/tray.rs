@@ -28,6 +28,8 @@ pub(crate) struct Status {
     pub last_success: Option<u64>,
     pub skills: usize,
     pub error: Option<String>,
+    #[serde(skip_serializing)]
+    update_error: Option<String>,
     pub migration_error: Option<String>,
 }
 pub(crate) struct Runtime {
@@ -42,11 +44,15 @@ pub(crate) struct Runtime {
 }
 impl Runtime {
     fn status(&self) -> Result<Status> {
-        Ok(self
+        let mut status = self
             .status
             .lock()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?
-            .clone())
+            .clone();
+        if status.error.is_none() {
+            status.error = status.update_error.clone();
+        }
+        Ok(status)
     }
     fn begin_run(&self) -> Result<Option<core::tray::RunPermit<'_>>> {
         let mut state = self
@@ -355,8 +361,8 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         // Updates precede the first sync, as on macOS. Hidden windows need no JS.
-        if let Err(error) = crate::commands::automatic_update(handle.clone(), true, true).await {
-            report(&handle, anyhow::anyhow!(error));
+        if let Err(error) = automatic_update(handle.clone(), true, true).await {
+            eprintln!("Ratatoskr update: {error}");
         }
         let worker = handle.clone();
         tauri::async_runtime::spawn_blocking(move || run_loop(&worker));
@@ -368,26 +374,48 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
             }
             if Instant::now() >= next_update {
                 next_update = Instant::now() + Duration::from_secs(60);
-                match crate::commands::automatic_update(handle.clone(), false, false).await {
+                match automatic_update(handle.clone(), false, false).await {
                     Ok(true)
                         if !handle
                             .state::<Runtime>()
                             .desktop_busy
                             .load(Ordering::Acquire) =>
                     {
-                        if let Err(error) =
-                            crate::commands::automatic_update(handle.clone(), true, false).await
-                        {
-                            report(&handle, anyhow::anyhow!(error));
+                        if let Err(error) = automatic_update(handle.clone(), true, false).await {
+                            eprintln!("Ratatoskr update: {error}");
                         }
                     }
                     Ok(_) => (),
-                    Err(error) => report(&handle, anyhow::anyhow!(error)),
+                    Err(error) => eprintln!("Ratatoskr update: {error}"),
                 }
             }
         }
     });
     Ok(())
+}
+
+async fn automatic_update(
+    app: tauri::AppHandle,
+    install: bool,
+    launch: bool,
+) -> Result<bool, String> {
+    let result = crate::commands::automatic_update(app.clone(), install, launch).await;
+    let diagnostic = (|| -> Result<()> {
+        let config = core::default_config_path()?;
+        let error = if config.try_exists()? {
+            core::job_status(&core::load(&config)?)?
+                .desktop_update_error
+                .or_else(|| result.as_ref().err().cloned())
+        } else {
+            result.as_ref().err().cloned()
+        };
+        app.state::<Runtime>().change(|s| s.update_error = error)?;
+        refresh(&app)
+    })();
+    if let Err(error) = diagnostic {
+        report(&app, error);
+    }
+    result
 }
 
 fn run_loop(app: &tauri::AppHandle) {

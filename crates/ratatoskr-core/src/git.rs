@@ -220,6 +220,7 @@ fn sync_locked(
     let notification = if desktop && matches!(settings.alert, Some(crate::AlertSettings::System)) {
         let mut alerts = settings.clone();
         alerts.alert = None;
+        alerts.alert_command.clear();
         crate::notifications::outcome(&alerts, sync_error.as_deref())
     } else {
         crate::notifications::outcome(settings, sync_error.as_deref())

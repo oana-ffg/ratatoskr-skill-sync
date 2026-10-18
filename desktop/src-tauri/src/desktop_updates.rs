@@ -71,6 +71,17 @@ impl UpdateContext {
 
     pub(crate) fn report_outcome(&self, error: Option<&str>) -> Result<()> {
         if let Some(settings) = &self.workspace {
+            // The resident Windows controller owns native transition toasts.
+            // Keep the updater ledger and optional remote/custom transports.
+            #[cfg(windows)]
+            let settings = &{
+                let mut alerts = settings.clone();
+                if matches!(alerts.alert, Some(core::AlertSettings::System)) {
+                    alerts.alert = None;
+                    alerts.alert_command.clear();
+                }
+                alerts
+            };
             core::updates::report_outcome(settings, error, core::updates::UpdateKind::Desktop)?;
         }
         // Without a workspace there is no configured alert transport; the command returns
