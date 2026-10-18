@@ -51,7 +51,15 @@ jobs:
           mkdir -p artifacts
           extension=''
           if [[ '${{ matrix.platform }}' == windows-* ]]; then extension='.exe'; fi
-          cp "target/${{ matrix.target }}/release/ratatoskr${extension}" "artifacts/ratatoskr-${{ matrix.platform }}${extension}"
+          helper_source="target/${{ matrix.target }}/release/ratatoskr${extension}"
+          helper_artifact="artifacts/ratatoskr-${{ matrix.platform }}${extension}"
+          if [[ '${{ matrix.platform }}' == darwin-* ]]; then
+            helper_source="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app/Contents/MacOS/ratatoskr"
+          fi
+          cp "$helper_source" "$helper_artifact"
+          if [[ '${{ matrix.platform }}' == darwin-* ]]; then
+            codesign --verify --strict --verbose=2 "$helper_artifact"
+          fi
           cd desktop
           npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" "../artifacts/ratatoskr-${{ matrix.platform }}${extension}"
       - name: Collect desktop artifacts
