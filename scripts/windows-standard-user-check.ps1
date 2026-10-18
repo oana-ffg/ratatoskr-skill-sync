@@ -6,6 +6,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if ($identity.User.Value -ne $ExpectedSid) { throw 'Child process is not the disposable user' }
@@ -33,6 +35,10 @@ function Invoke-Ratatoskr([string[]]$Arguments) {
 if ($preview.Task.Triggers.LogonTrigger.UserId -ne $ExpectedSid -or
     $preview.Task.Principals.Principal.UserId -ne $ExpectedSid) {
     throw 'Preview does not bind trigger and principal to the token SID'
+}
+if ($preview.Task.Actions.Exec.Command -ne $helper -or
+    $preview.Task.Actions.Exec.Arguments -ne "--config `"$ConfigPath`" sync") {
+    throw 'Preview does not preserve the expected Unicode paths'
 }
 # where.exe only searches for files; a trigger can never execute Ratatoskr or
 # touch any real user configuration. Both CLI inputs deliberately use \\?\ paths.
