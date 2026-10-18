@@ -7,9 +7,21 @@ fn main() {
     } else {
         ""
     };
-    let helper = format!("binaries/ratatoskr-{target}{extension}");
-    println!("cargo:rerun-if-changed={helper}");
-    if !std::path::Path::new(&helper).is_file() {
+    let helpers: Vec<_> = if target.contains("windows") {
+        vec!["ratatoskr", "ratatoskrw"]
+    } else {
+        vec!["ratatoskr"]
+    }
+    .into_iter()
+    .map(|name| format!("binaries/{name}-{target}{extension}"))
+    .collect();
+    for helper in &helpers {
+        println!("cargo:rerun-if-changed={helper}");
+    }
+    if helpers
+        .iter()
+        .any(|helper| !std::path::Path::new(helper).is_file())
+    {
         if std::env::var_os("TAURI_ENV_TARGET_TRIPLE").is_some() {
             panic!(
                 "Bundled helper missing. From desktop/, run: npm run prepare:helper (or npm run prepare:helper -- --debug for development)"

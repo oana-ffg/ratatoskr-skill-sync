@@ -2902,10 +2902,12 @@ name = "ratatoskr-skill-sync"
 version = "0.2.6"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "ratatoskr-core",
  "serde_json",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

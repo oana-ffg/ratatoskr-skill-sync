@@ -2,12 +2,17 @@ mod legacy;
 pub use legacy::*;
 mod editor;
 pub use editor::*;
+#[cfg(windows)]
+mod background;
 mod config;
 mod content;
 mod engine;
 mod git;
 mod jobs;
+#[cfg(windows)]
+pub use background::{RecordedSyncError, scheduled_sync};
 mod notifications;
+mod process;
 mod secrets;
 pub use notifications::AlertSettings;
 pub use secrets::SecretReference;

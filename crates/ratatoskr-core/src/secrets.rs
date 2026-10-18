@@ -87,7 +87,7 @@ fn gopass_command() -> Result<Command> {
         let mut paths: Vec<_> = std::env::split_paths(&path).collect();
         paths.extend(["/opt/homebrew/bin".into(), "/usr/local/bin".into()]);
         if let Some(program) = paths.iter().map(|p| p.join("gopass")).find(|p| p.is_file()) {
-            let mut command = Command::new(program);
+            let mut command = crate::process::command(program);
             command.env(
                 "PATH",
                 std::env::join_paths(paths).context("Prepare gopass search path")?,
@@ -95,7 +95,7 @@ fn gopass_command() -> Result<Command> {
             return Ok(command);
         }
     }
-    Ok(Command::new("gopass"))
+    Ok(crate::process::command("gopass"))
 }
 
 fn command_secret(mut command: Command, reference: &str) -> Result<String> {
@@ -116,7 +116,7 @@ fn command_secret(mut command: Command, reference: &str) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 fn keychain(service: &str, account: &str) -> Result<String> {
-    let mut command = Command::new("/usr/bin/security");
+    let mut command = crate::process::command("/usr/bin/security");
     command.args(["find-generic-password", "-s", service, "-a", account, "-w"]);
     command_secret(
         command,

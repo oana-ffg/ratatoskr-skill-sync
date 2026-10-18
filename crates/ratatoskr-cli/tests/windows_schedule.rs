@@ -1,10 +1,10 @@
-#![cfg(windows)]
+#![cfg(all(windows, feature = "windows-helper"))]
 
 use anyhow::{Context, Result, bail, ensure};
 use ratatoskr_core::{Schedule, Settings, save, schedule_plan};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Output},
 };
 
@@ -20,6 +20,30 @@ fn checked(command: &mut Command) -> Result<Output> {
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(output)
+}
+
+fn query_definition(label: &str) -> Result<String> {
+    let output = checked(Command::new("schtasks").args(["/Query", "/TN", label, "/XML"]))?;
+    let bytes = output.stdout;
+    if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[b'<', 0]) {
+        let start = if bytes.starts_with(&[0xff, 0xfe]) {
+            2
+        } else {
+            0
+        };
+        let (pairs, remainder) = bytes[start..].as_chunks::<2>();
+        ensure!(remainder.is_empty(), "Truncated scheduler XML output");
+        Ok(String::from_utf16(
+            &pairs
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
+                .collect::<Vec<_>>(),
+        )?)
+    } else {
+        // schtasks can also use the active console code page. Action executable
+        // names are ASCII, independent of the encoding of the Unicode fixture.
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
 }
 
 fn cli(config: &Path, action: &str) -> Command {
@@ -55,11 +79,12 @@ fn windows_schedule_cli_registers_queries_and_removes_real_task() -> Result<()> 
     };
     let config = root.join("config Æ 🦀 & test.toml");
     save(&config, &settings)?;
-    // where.exe only searches for files. Even if the immediate time trigger
-    // fires, it cannot run Ratatoskr or sync a real configuration.
-    let helper = PathBuf::from(std::env::var_os("SystemRoot").context("Missing SystemRoot")?)
-        .join("System32/where.exe")
-        .canonicalize()?;
+    // Both binaries run against this disposable non-Git checkout only. No
+    // update/pull/apply can happen, even if the immediate trigger fires.
+    let helper = root.join("ratatoskr.exe");
+    let windowless = root.join("ratatoskrw.exe");
+    fs::copy(env!("CARGO_BIN_EXE_ratatoskr"), &helper)?;
+    fs::copy(env!("CARGO_BIN_EXE_ratatoskrw"), &windowless)?;
     let planned = schedule_plan(&settings, &config, &helper, 60)?;
     let mut needs_cleanup = false;
     let result = (|| -> Result<()> {
@@ -93,6 +118,8 @@ fn windows_schedule_cli_registers_queries_and_removes_real_task() -> Result<()> 
             "Installed bytes differ from recorded XML"
         );
         ensure!(definition.contains("config Æ 🦀 &amp; test.toml"));
+        ensure!(definition.contains("ratatoskrw.exe</Command>"));
+        ensure!(query_definition(&installed.label)?.contains("ratatoskrw.exe"));
         ensure!(
             !definition.contains(r"\\?\"),
             "Verbatim paths leaked into task actions"
@@ -117,12 +144,54 @@ fn windows_schedule_cli_registers_queries_and_removes_real_task() -> Result<()> 
 
         let mut edited = bytes.clone();
         edited.extend_from_slice(&[b' ', 0]);
-        fs::write(&installed.path, edited)?;
+        fs::write(&installed.path, &edited)?;
+        let refused_install = cli(&config, "install")
+            .arg("--helper")
+            .arg(&helper)
+            .output()?;
+        ensure!(
+            !refused_install.status.success(),
+            "Replacement accepted edited XML"
+        );
+        ensure!(
+            fs::read(&installed.path)? == edited,
+            "Refusal changed user-edited bytes"
+        );
         let refused = cli(&config, "remove").output()?;
         ensure!(!refused.status.success(), "Removal accepted edited XML");
         ensure!(String::from_utf8_lossy(&refused.stderr).contains("Schedule definition changed"));
         checked(Command::new("schtasks").args(["/Query", "/TN", &installed.label]))?;
         fs::write(&installed.path, bytes)?;
+
+        // Seed a real legacy task/ownership record using the console action.
+        // Test migration from both old UTF-8 and current UTF-16 definitions.
+        for legacy_utf8 in [false, true] {
+            let mut legacy = installed.clone();
+            legacy.definition = legacy.definition.replace("ratatoskrw.exe", "ratatoskr.exe");
+            let utf16: Vec<u8> = std::iter::once(0xfeff)
+                .chain(legacy.definition.encode_utf16())
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            fs::write(&legacy.path, &utf16)?;
+            checked(
+                Command::new("schtasks")
+                    .args(["/Create", "/XML"])
+                    .arg(&legacy.path)
+                    .args(["/TN", &legacy.label, "/F"]),
+            )?;
+            if legacy_utf8 {
+                legacy.definition = legacy
+                    .definition
+                    .replace("encoding=\"UTF-16\"", "encoding=\"UTF-8\"");
+                fs::write(&legacy.path, legacy.definition.as_bytes())?;
+            }
+            fs::write(&record, serde_json::to_vec(&legacy)?)?;
+            checked(cli(&config, "install").arg("--helper").arg(&helper))?;
+            let replaced: Schedule = serde_json::from_slice(&fs::read(&record)?)?;
+            ensure!(replaced.label == legacy.label && replaced.path == legacy.path);
+            ensure!(replaced.definition.contains("ratatoskrw.exe</Command>"));
+            ensure!(query_definition(&legacy.label)?.contains("ratatoskrw.exe"));
+        }
 
         // The real remove path must read the UTF-16 file, check ownership and
         // successfully invoke schtasks /Delete /TN <name> /F.

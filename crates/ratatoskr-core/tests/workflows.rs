@@ -540,6 +540,12 @@ fn schedule_preview_escapes_paths_and_does_not_install_anything() {
     let f = Fixture::new();
     let helper = f.root.join("Ratatoskr & helper");
     fs::write(&helper, "Test helper").unwrap();
+    #[cfg(windows)]
+    fs::write(
+        helper.with_file_name("ratatoskrw.exe"),
+        "Test background helper",
+    )
+    .unwrap();
     let config = f.root.join("configuration & data.toml");
     save(&config, &f.settings).unwrap();
     let schedule = ratatoskr_core::schedule_plan(&f.settings, &config, &helper, 60).unwrap();

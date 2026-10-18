@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -34,7 +33,7 @@ struct Marker {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = crate::process::command("git")
         .arg("-C")
         .arg(root)
         .args(args)
