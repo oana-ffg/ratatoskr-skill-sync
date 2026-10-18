@@ -41,6 +41,12 @@ $recordPath = Join-Path $state 'standard-user-ci/installed-schedule.json'
 $record = Get-Content -Raw $recordPath | ConvertFrom-Json
 if ($record.label -ne $TaskName) { throw 'Unexpected task name; cleanup ownership would be ambiguous' }
 [xml]$written = Get-Content -Raw $record.path
+if ($written.Task.Principals.Principal.id -ne 'Author' -or
+    $written.Task.Principals.Principal.LogonType -ne 'InteractiveToken' -or
+    $written.Task.Principals.Principal.RunLevel -ne 'LeastPrivilege' -or
+    $written.Task.Actions.Context -ne 'Author') {
+    throw 'Written XML does not contain the explicit Author principal and action context'
+}
 if ($written.Task.Actions.Exec.Command -ne $helper -or
     $written.Task.Actions.Exec.Arguments -ne "--config `"$ConfigPath`" sync") {
     throw 'Written XML does not contain the expected simplified absolute paths'
@@ -49,8 +55,12 @@ if ($written.Task.Actions.Exec.Command -ne $helper -or
 $scheduler = New-Object -ComObject Schedule.Service
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\')
-[xml]$registered = $folder.GetTask($TaskName).Xml
+$task = $folder.GetTask($TaskName)
+[xml]$registered = $task.Xml
+$definition = $task.Definition
 $registeredPrincipal = $registered.Task.Principals.Principal
+Write-Host "Registered COM principal: UserId=$($definition.Principal.UserId); Id=$($definition.Principal.Id); LogonType=$($definition.Principal.LogonType); RunLevel=$($definition.Principal.RunLevel); Context=$($definition.Actions.Context)"
+Write-Host "Registered XML: $($registered.OuterXml)"
 function Resolve-Sid([string]$Value) {
     if ($Value.StartsWith('S-1-')) { return $Value }
     return [Security.Principal.NTAccount]::new($Value).Translate([Security.Principal.SecurityIdentifier]).Value
@@ -59,9 +69,13 @@ if ((Resolve-Sid $registeredPrincipal.UserId) -ne $ExpectedSid -or
     (Resolve-Sid $registered.Task.Triggers.LogonTrigger.UserId) -ne $ExpectedSid) {
     throw 'Registered task is not bound to the standard user'
 }
-if ($registeredPrincipal.LogonType -ne 'InteractiveToken' -or
-    $registeredPrincipal.RunLevel -ne 'LeastPrivilege' -or
-    $registered.Task.Actions.Context -ne $registeredPrincipal.id) {
+# Query effective settings through COM rather than relying on the export's
+# serialization of optional/default XML elements. TASK_LOGON_INTERACTIVE_TOKEN=3;
+# TASK_RUNLEVEL_LUA=0. The written XML above must still set both explicitly.
+if ($definition.Principal.LogonType -ne 3 -or
+    $definition.Principal.RunLevel -ne 0 -or
+    $definition.Principal.Id -ne 'Author' -or
+    $definition.Actions.Context -ne 'Author') {
     throw 'Registered task does not use the explicit interactive least-privilege principal'
 }
 if ($registered.Task.Actions.Exec.Command -ne $helper -or

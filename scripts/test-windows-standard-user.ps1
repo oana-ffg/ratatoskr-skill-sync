@@ -8,10 +8,11 @@ $configArgument = '\\?\' + $config
 $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($configArgument))).ToLowerInvariant()
 $taskName = 'io.github.oana-ffg.ratatoskr.' + $hash.Substring(0, 12)
 $user = $null
+$process = $null
 $rootCreated = $false
 
 function Invoke-Cleanup([string]$Label, [scriptblock]$Action) {
-    try { & $Action }
+    try { & $Action; Write-Host "PASS: cleanup $Label" }
     catch { $failures.Add("Cleanup $Label failed: $_"); Write-Warning $failures[-1] }
 }
 
@@ -44,10 +45,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Standard-user test timed out; process cleanup failed: $LASTEXITCODE" }
         throw 'Standard-user test timed out after 120 seconds'
     }
+    $process.WaitForExit()
     if ($process.ExitCode -ne 0) { throw "Standard-user test failed with exit code $($process.ExitCode)" }
 }
 catch { $failures.Add("Standard-user scheduler test failed: $_") }
 finally {
+    if ($null -ne $process) { Invoke-Cleanup 'child process handles' { $process.Dispose() } }
     foreach ($log in @('stdout.txt', 'stderr.txt')) {
         if (Test-Path (Join-Path $root $log)) { Get-Content (Join-Path $root $log) }
     }
