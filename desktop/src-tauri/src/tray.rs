@@ -452,7 +452,6 @@ fn run_loop(app: &tauri::AppHandle) {
                 }
             };
             if config_seen.as_ref() != Some(&config) {
-                config_seen = Some(config.clone());
                 next_migration = Instant::now();
                 let _preferences = runtime
                     .preferences
@@ -460,6 +459,7 @@ fn run_loop(app: &tauri::AppHandle) {
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let saved = restored_status(&settings)?;
                 runtime.change(|s| *s = saved)?;
+                config_seen = Some(config.clone());
             }
             if runtime.migrate_requested.swap(false, Ordering::AcqRel)
                 || Instant::now() >= next_migration
@@ -472,7 +472,16 @@ fn run_loop(app: &tauri::AppHandle) {
                 let migration = core::migrate_windows_schedule(&settings, &config);
                 runtime
                     .change(|s| s.migration_error = migration.err().map(|e| format!("{e:#}")))?;
-                let preferences = TrayPreferences::load(&settings)?;
+                let preferences = match TrayPreferences::load(&settings) {
+                    Ok(preferences) => preferences,
+                    Err(error) => {
+                        runtime.change(|s| {
+                            s.migration_error =
+                                Some(format!("Cannot read background sync settings: {error:#}"))
+                        })?;
+                        return Err(error);
+                    }
+                };
                 runtime.change(|s| {
                     s.paused = preferences.paused;
                     s.interval_seconds = preferences.interval_seconds;
@@ -578,5 +587,14 @@ mod tests {
                 panic!("A paused restart must not announce recovery")
             })
             .unwrap();
+        std::fs::write(
+            settings.state_dir.join("test/tray-preferences.json"),
+            "invalid",
+        )
+        .unwrap();
+        assert!(
+            restored_status(&settings).is_err(),
+            "Unreadable preferences must not select active defaults"
+        );
     }
 }
