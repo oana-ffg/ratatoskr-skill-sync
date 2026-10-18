@@ -57,9 +57,16 @@ fn main() {
         {
             // Useful when launched with inherited/redirected stderr. The
             // exit code still records failure when no channel is writable.
-            eprintln!(
+            use std::io::Write;
+            if writeln!(
+                std::io::stderr(),
                 "Ratatoskr background sync: {error:#}; fatal reporting failed: {reporting:#}"
-            );
+            )
+            .is_err()
+            {
+                // Even an invalid inherited stderr must preserve exit code 2.
+                std::process::exit(2);
+            }
         }
         std::process::exit(2);
     }
