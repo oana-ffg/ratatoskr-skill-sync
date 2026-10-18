@@ -101,6 +101,12 @@ test("Windows settings expose tray sync and preserve the existing login preferen
   ).toBeVisible();
   expect(await screen.findByLabelText("Open Ratatoskr at login")).toBeChecked();
   expect(screen.queryByRole("button", { name: "Review schedule…" })).toBeNull();
+  expect(
+    screen.getByRole("heading", { name: "Additional alerts" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("option", { name: "No additional alerts" }),
+  ).toBeInTheDocument();
   expect(calls).not.toHaveBeenCalledWith(
     "set_login_enabled",
     expect.anything(),

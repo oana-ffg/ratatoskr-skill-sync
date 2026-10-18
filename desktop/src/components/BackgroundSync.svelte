@@ -1,13 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, relativeTime, type BackgroundStatus } from "../api";
-  let { onerror }: { onerror: (error: unknown) => void } = $props();
+  let {
+    onerror,
+    onstatus,
+  }: {
+    onerror: (error: unknown) => void;
+    onstatus?: (status: BackgroundStatus | null) => void;
+  } = $props();
   let status = $state<BackgroundStatus | null>(null);
   let seconds = $state(60);
   let busy = $state(false);
   let loaded = false;
   async function refresh() {
     status = await api.command<BackgroundStatus | null>("background_status");
+    onstatus?.(status);
     if (status && !loaded) {
       seconds = status.interval_seconds;
       loaded = true;
