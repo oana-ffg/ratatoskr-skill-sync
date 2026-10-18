@@ -148,6 +148,7 @@ export type AlertSettings =
   | { kind: "pushover"; token: SecretReference; user: SecretReference }
   | { kind: "ntfy"; url: string; token?: SecretReference };
 export interface BackgroundStatus {
+  login_enabled: boolean;
   paused: boolean;
   interval_seconds: number;
   running: boolean;

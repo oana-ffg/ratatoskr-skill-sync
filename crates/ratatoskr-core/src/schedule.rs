@@ -216,7 +216,11 @@ pub fn remove_schedule(settings: &Settings) -> Result<()> {
 /// Migrate only a recorded, byte-exact definition for this exact configuration.
 /// Disabled and enabled tasks share the same safe deletion path.
 #[cfg(windows)]
-pub fn migrate_windows_schedule(settings: &Settings, config: &Path) -> Result<bool> {
+pub fn migrate_windows_schedule(
+    settings: &Settings,
+    config: &Path,
+    enable_login: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
     settings.validate()?;
     let record = record_path(settings);
     no_symlinks(&record)?;
@@ -257,13 +261,17 @@ pub fn migrate_windows_schedule(settings: &Settings, config: &Path) -> Result<bo
         .captures(&owned.definition)
         .map(|c| c[1].parse::<u32>())
         .transpose()?;
-    remove_schedule(settings)?;
     let mut preferences = crate::tray::TrayPreferences::load(settings)?;
     preferences.paused = false;
     if let Some(seconds) = interval {
         preferences.interval_seconds = seconds;
     }
+    // Establish replacement logon persistence before deleting the owned task.
+    // A Run-key failure must leave its old logon trigger available for retry.
+    enable_login().context("Enable hidden Open Ratatoskr at login before task migration")?;
     preferences.save(settings)?;
+    remove_schedule(settings)?;
+    crate::tray::record_migration(settings)?;
     Ok(true)
 }
 

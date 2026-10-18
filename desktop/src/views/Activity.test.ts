@@ -8,6 +8,7 @@ test("Windows activity refreshes the run ledger and replaces scheduled-task cont
   mockIPC((cmd, args) => {
     if (cmd === "background_status")
       return {
+        login_enabled: true,
         paused: false,
         interval_seconds: 60,
         running: false,

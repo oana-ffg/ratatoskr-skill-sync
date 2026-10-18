@@ -4,6 +4,7 @@ import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import BackgroundSync from "./BackgroundSync.svelte";
 import type { BackgroundStatus } from "../api";
 const active: BackgroundStatus = {
+  login_enabled: true,
   paused: false,
   interval_seconds: 60,
   running: false,
@@ -97,4 +98,17 @@ test("macOS has no tray settings and command errors are surfaced", async () => {
   await waitFor(() =>
     expect(onerror).toHaveBeenCalledWith("Cannot read tray status"),
   );
+});
+
+test("tray mode warns when login startup is off and clears the warning when it is enabled", async () => {
+  let status = { ...active, login_enabled: false };
+  mockIPC((cmd) => (cmd === "background_status" ? status : null));
+  const view = render(BackgroundSync, { onerror: vi.fn() });
+  const warning = "Sync stops after restart unless Ratatoskr opens at login.";
+  expect(await screen.findByText(warning)).toBeVisible();
+  view.unmount();
+  status = { ...status, login_enabled: true };
+  render(BackgroundSync, { onerror: vi.fn() });
+  expect(await screen.findByText("Active")).toBeVisible();
+  expect(screen.queryByText(warning)).toBeNull();
 });

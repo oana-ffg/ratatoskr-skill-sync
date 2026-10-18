@@ -140,10 +140,19 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
                 .arg(&schedule.path),
         )?;
         task_exists = true;
-        let unowned = migrate_windows_schedule(&settings, &config).unwrap_err();
+        let unowned = migrate_windows_schedule(&settings, &config, || {
+            panic!("unowned/edited/no task must not change login startup")
+        })
+        .unwrap_err();
         ensure!(format!("{unowned:#}").contains("no ownership record"));
         ensure!(registered(&label)?, "Unowned task was removed");
-        ratatoskr_core::tray::record_problem(&settings, Some(&format!("{unowned:#}")))?;
+        ratatoskr_core::tray::record_problem(
+            &settings,
+            Some(&ratatoskr_core::tray::Problem::from_error(
+                "Task migration",
+                &unowned,
+            )),
+        )?;
         ensure!(
             ratatoskr_core::job_status(&settings)?
                 .background_error
@@ -182,13 +191,46 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
             let mut changed = original.clone();
             changed.push(b' ');
             fs::write(&schedule.path, &changed)?;
-            ensure!(migrate_windows_schedule(&settings, &config).is_err());
+            ensure!(
+                migrate_windows_schedule(&settings, &config, || panic!(
+                    "unowned/edited/no task must not change login startup"
+                ))
+                .is_err()
+            );
             ensure!(
                 registered(&label)? && fs::read(&schedule.path)? == changed,
                 "Edited task was changed"
             );
             fs::write(&schedule.path, original)?;
-            ensure!(migrate_windows_schedule(&settings, &config)?);
+            ensure!(
+                migrate_windows_schedule(&settings, &config, || anyhow::bail!(
+                    "Run key write denied"
+                ))
+                .is_err()
+            );
+            ensure!(
+                registered(&label)? && record.exists(),
+                "Login failure must preserve the old logon task"
+            );
+            let mut login_enabled = false;
+            ensure!(migrate_windows_schedule(&settings, &config, || {
+                ensure!(
+                    registered(&label)?,
+                    "Enable replacement startup before removing the logon task"
+                );
+                login_enabled = true;
+                Ok(())
+            })?);
+            ensure!(
+                login_enabled,
+                "Owned task migration must enable hidden login startup"
+            );
+            ensure!(
+                ratatoskr_core::job_status(&settings)?
+                    .log
+                    .contains("Open Ratatoskr at login enabled (--background)"),
+                "Login migration must be recorded in the ledger"
+            );
             task_exists = false;
             ensure!(!registered(&label)? && !schedule.path.exists() && !record.exists());
             let preferences = TrayPreferences::load(&settings)?;
@@ -197,11 +239,13 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
                 "Migration did not enable tray sync with existing interval"
             );
             println!(
-                "PASS: owned task removed; disabled={disabled}, legacy_utf8={utf8}; tray sync enabled"
+                "PASS: owned task removed; disabled={disabled}, legacy_utf8={utf8}; tray sync and hidden login startup enabled"
             );
         }
         ensure!(
-            !migrate_windows_schedule(&settings, &config)?,
+            !migrate_windows_schedule(&settings, &config, || panic!(
+                "unowned/edited/no task must not change login startup"
+            ))?,
             "Migration must be idempotent"
         );
         Ok(())

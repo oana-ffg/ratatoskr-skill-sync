@@ -223,7 +223,14 @@
     </article>{/if}
   {#if settings}<BackgroundSync
       {onerror}
-      onstatus={(status) => (trayMode = status !== null)}
+      onstatus={(status) => {
+        trayMode = status !== null;
+        if (status && !dirty) {
+          login = status.login_enabled;
+          savedLogin = login;
+          original = serialized;
+        }
+      }}
     />
     <article class="panel">
       <div class="section-heading">

@@ -76,9 +76,11 @@ pub fn recorded_sync(config: &Path) -> Result<Option<crate::Plan>> {
                 else {
                     return Ok(None);
                 };
-                let run = jobs::start(&diagnostics)?;
-                jobs::finish(&diagnostics, run, Some(&format!("{error:#}")))?;
-                return Err(error);
+                let mut run = jobs::start(&diagnostics)?;
+                let problem = crate::tray::Problem::from_error("Sync", &error);
+                run.problem_identity = Some(problem.identity.clone());
+                jobs::finish(&diagnostics, run, Some(&problem.message))?;
+                return Err(problem.into());
             }
         };
         crate::git::sync_in_process(&settings)
@@ -94,7 +96,10 @@ pub fn recorded_sync(config: &Path) -> Result<Option<crate::Plan>> {
 }
 
 /// Configuration errors still have a safe bootstrap ledger beside the config.
-pub fn record_background_problem(config: &Path, error: Option<&str>) -> Result<()> {
+pub fn record_background_problem(
+    config: &Path,
+    error: Option<&crate::tray::Problem>,
+) -> Result<()> {
     let diagnostics = diagnostics(config)?;
     crate::tray::record_problem(&diagnostics, error)
 }
@@ -125,8 +130,11 @@ impl NotificationKind {
         }
     }
 }
-type NotificationLedger =
-    std::collections::BTreeMap<NotificationKind, crate::tray::NotificationState>;
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct NotificationLedger {
+    problems: std::collections::BTreeMap<NotificationKind, crate::tray::NotificationState>,
+    last_problem_toast: Option<u64>,
+}
 fn notification_path(settings: &Settings) -> PathBuf {
     settings
         .state_dir
@@ -157,25 +165,29 @@ impl BackgroundNotifications {
     pub fn outcome(
         &mut self,
         config: &Path,
-        outcomes: &[(NotificationKind, Option<&str>)],
+        outcomes: &[(NotificationKind, Option<&crate::tray::Problem>)],
         send: impl FnMut(NotificationKind, &str, bool) -> Result<()>,
     ) -> Result<()> {
         let settings = diagnostics(config)?;
-        self.outcome_with(&settings, outcomes, send, |state| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        self.outcome_with(&settings, now, outcomes, send, |state| {
             store_notifications(&settings, state).context("Persist tray notification ledger")
         })
     }
     fn outcome_with(
         &mut self,
         settings: &Settings,
-        outcomes: &[(NotificationKind, Option<&str>)],
+        now: u64,
+        outcomes: &[(NotificationKind, Option<&crate::tray::Problem>)],
         mut send: impl FnMut(NotificationKind, &str, bool) -> Result<()>,
         persist: impl FnOnce(&NotificationLedger) -> Result<()>,
     ) -> Result<()> {
         let context = settings.state_dir.join(&settings.machine);
         if self.context.as_ref() != Some(&context) {
             self.context = Some(context);
-            self.state.clear();
+            self.state = NotificationLedger::default();
             self.dirty = false;
             // Return the read error, then keep a memory ledger so that error can
             // still be notified once even if the persistent ledger is broken.
@@ -183,15 +195,24 @@ impl BackgroundNotifications {
         }
         let mut errors = Vec::new();
         for (kind, error) in outcomes {
-            let previous = self.state.get(kind).cloned().unwrap_or_default();
+            let previous = self.state.problems.get(kind).cloned().unwrap_or_default();
             let mut next = previous.clone();
-            if let Err(error) =
-                next.deliver(*error, |message| send(*kind, message, error.is_none()))
-            {
-                errors.push(format!("{} toast failed: {error:#}", kind.label()));
+            let allow_problem = self
+                .state
+                .last_problem_toast
+                .is_none_or(|last| now.saturating_sub(last) >= 3600);
+            match next.deliver(*error, allow_problem, |message| {
+                send(*kind, message, error.is_none())
+            }) {
+                Ok(true) => {
+                    self.state.last_problem_toast = Some(now);
+                    self.dirty = true;
+                }
+                Ok(false) => (),
+                Err(error) => errors.push(format!("{} toast failed: {error:#}", kind.label())),
             }
             if next != previous {
-                self.state.insert(*kind, next);
+                self.state.problems.insert(*kind, next);
                 self.dirty = true;
             }
         }
@@ -210,29 +231,155 @@ impl BackgroundNotifications {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn failed_ledger_writes_retry_without_repeating_error_or_recovery_toasts() {
-        let temp = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            state_dir: temp.path().canonicalize().unwrap(),
+    use crate::tray::Problem;
+    fn settings(root: &Path) -> Settings {
+        Settings {
+            state_dir: root.canonicalize().unwrap(),
             machine: "test".into(),
             ..Default::default()
-        };
+        }
+    }
+    #[test]
+    fn ten_distinct_failures_in_an_hour_send_one_problem_toast_and_one_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
         let mut controller = BackgroundNotifications::default();
         let mut messages = vec![];
-        for error in [
-            Some("offline"),
-            Some("offline"),
-            Some("offline"),
-            None,
-            None,
-            None,
+        for (index, context) in [
+            "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let problem = Problem::message(context, format!("failure {index}"));
+            controller
+                .outcome_with(
+                    &settings,
+                    1000 + index as u64 * 60,
+                    &[(NotificationKind::Sync, Some(&problem))],
+                    |_, message, recovered| {
+                        messages.push((message.to_owned(), recovered));
+                        Ok(())
+                    },
+                    |state| store_notifications(&settings, state),
+                )
+                .unwrap();
+        }
+        assert_eq!(messages.len(), 1);
+        // Restart cannot reset the shared one-hour cap, even for another source.
+        let problem = Problem::message("Update", "new problem after restart");
+        let mut controller = BackgroundNotifications::default();
+        controller
+            .outcome_with(
+                &settings,
+                2000,
+                &[(NotificationKind::DesktopUpdate, Some(&problem))],
+                |_, _, _| panic!("global cap survives restart"),
+                |state| store_notifications(&settings, state),
+            )
+            .unwrap();
+        controller
+            .outcome_with(
+                &settings,
+                2001,
+                &[(NotificationKind::Sync, None)],
+                |_, message, recovered| {
+                    messages.push((message.to_owned(), recovered));
+                    Ok(())
+                },
+                |state| store_notifications(&settings, state),
+            )
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[1].1);
+        controller
+            .outcome_with(
+                &settings,
+                2002,
+                &[(NotificationKind::Sync, None)],
+                |_, _, _| panic!("one recovery"),
+                |state| store_notifications(&settings, state),
+            )
+            .unwrap();
+        controller
+            .outcome_with(
+                &settings,
+                4599,
+                &[(NotificationKind::DesktopUpdate, Some(&problem))],
+                |_, _, _| panic!("not one hour yet"),
+                |state| store_notifications(&settings, state),
+            )
+            .unwrap();
+        controller
+            .outcome_with(
+                &settings,
+                4600,
+                &[(NotificationKind::DesktopUpdate, Some(&problem))],
+                |_, _, recovered| {
+                    assert!(!recovered);
+                    Ok(())
+                },
+                |state| store_notifications(&settings, state),
+            )
+            .unwrap();
+        controller
+            .outcome_with(
+                &settings,
+                9000,
+                &[(NotificationKind::DesktopUpdate, Some(&problem))],
+                |_, _, _| panic!("persistent same problem never repeats"),
+                |state| store_notifications(&settings, state),
+            )
+            .unwrap();
+    }
+    #[test]
+    fn volatile_pids_and_timings_do_not_produce_new_notifications_after_the_cap_expires() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
+        let mut controller = BackgroundNotifications::default();
+        let mut messages = vec![];
+        for (now, pid, timing) in [(1, 123, 12), (61, 456, 30), (7201, 987, 999)] {
+            let error = anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("lock held by PID {pid} for {timing}ms at /tmp/{pid}"),
+            ));
+            let problem = Problem::from_error("Sync", &error);
+            controller
+                .outcome_with(
+                    &settings,
+                    now,
+                    &[(NotificationKind::Sync, Some(&problem))],
+                    |_, message, _| {
+                        messages.push(message.to_owned());
+                        Ok(())
+                    },
+                    |state| store_notifications(&settings, state),
+                )
+                .unwrap();
+        }
+        assert_eq!(messages.len(), 1);
+    }
+    #[test]
+    fn failed_ledger_writes_keep_the_cap_and_dedupe_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
+        let mut controller = BackgroundNotifications::default();
+        let first = Problem::message("Sync", "offline");
+        let second = Problem::message("Update", "update unavailable");
+        let mut messages = vec![];
+        for (kind, problem) in [
+            (NotificationKind::Sync, Some(&first)),
+            (NotificationKind::Sync, Some(&first)),
+            (NotificationKind::DesktopUpdate, Some(&second)),
+            (NotificationKind::Sync, None),
+            (NotificationKind::Sync, None),
         ] {
             assert!(
                 controller
                     .outcome_with(
                         &settings,
-                        &[(NotificationKind::Sync, error)],
+                        1000,
+                        &[(kind, problem)],
                         |_, message, _| {
                             messages.push(message.to_owned());
                             Ok(())
@@ -243,44 +390,50 @@ mod tests {
             );
         }
         assert_eq!(messages, ["offline", "Sync recovered"]);
-        let mut retried = false;
         controller
             .outcome_with(
                 &settings,
+                1001,
                 &[(NotificationKind::Sync, None)],
                 |_, _, _| panic!("already delivered"),
-                |state| {
-                    retried = true;
-                    store_notifications(&settings, state)
-                },
+                |state| store_notifications(&settings, state),
             )
             .unwrap();
-        assert!(retried);
         BackgroundNotifications::default()
             .outcome_with(
                 &settings,
-                &[(NotificationKind::Sync, None)],
-                |_, _, _| panic!("saved recovery must survive restart"),
-                |_| panic!("no pending save"),
+                1002,
+                &[(NotificationKind::DesktopUpdate, Some(&second))],
+                |_, _, _| panic!("persisted cap"),
+                |state| store_notifications(&settings, state),
             )
             .unwrap();
     }
     #[test]
-    fn pending_delivery_record_is_saved_even_if_the_next_toast_fails() {
+    fn failed_delivery_does_not_consume_the_cap_or_block_saving_a_prior_delivery() {
         let temp = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            state_dir: temp.path().canonicalize().unwrap(),
-            machine: "test".into(),
-            ..Default::default()
-        };
+        let settings = settings(temp.path());
         let mut controller = BackgroundNotifications::default();
+        let problem = Problem::message("Sync", "offline");
         assert!(
             controller
                 .outcome_with(
                     &settings,
-                    &[(NotificationKind::Sync, Some("offline"))],
+                    1000,
+                    &[(NotificationKind::Sync, Some(&problem))],
+                    |_, _, _| anyhow::bail!("toast unavailable"),
+                    |_| panic!("nothing delivered")
+                )
+                .is_err()
+        );
+        assert!(
+            controller
+                .outcome_with(
+                    &settings,
+                    1001,
+                    &[(NotificationKind::Sync, Some(&problem))],
                     |_, _, _| Ok(()),
-                    |_| anyhow::bail!("read-only ledger")
+                    |_| anyhow::bail!("ledger unavailable")
                 )
                 .is_err()
         );
@@ -289,8 +442,9 @@ mod tests {
             controller
                 .outcome_with(
                     &settings,
-                    &[(NotificationKind::Sync, Some("conflict"))],
-                    |_, _, _| anyhow::bail!("toast unavailable"),
+                    1002,
+                    &[(NotificationKind::Sync, None)],
+                    |_, _, _| anyhow::bail!("recovery unavailable"),
                     |state| {
                         stored = true;
                         store_notifications(&settings, state)
@@ -302,49 +456,11 @@ mod tests {
         BackgroundNotifications::default()
             .outcome_with(
                 &settings,
-                &[(NotificationKind::Sync, Some("offline"))],
-                |_, _, _| panic!("earlier delivered toast must be persisted"),
-                |_| panic!("nothing to save"),
+                1003,
+                &[(NotificationKind::Sync, Some(&problem))],
+                |_, _, _| panic!("delivered error persisted"),
+                |_| panic!("nothing changed"),
             )
             .unwrap();
-    }
-    #[test]
-    fn sync_recovery_does_not_repeat_or_clear_an_existing_update_error() {
-        let temp = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            state_dir: temp.path().canonicalize().unwrap(),
-            machine: "test".into(),
-            ..Default::default()
-        };
-        let mut controller = BackgroundNotifications::default();
-        let mut messages = vec![];
-        for sync in [Some("offline"), Some("offline"), None, None] {
-            controller
-                .outcome_with(
-                    &settings,
-                    &[
-                        (NotificationKind::Sync, sync),
-                        (NotificationKind::DesktopUpdate, Some("update unavailable")),
-                    ],
-                    |kind, message, recovered| {
-                        messages.push((kind, message.to_owned(), recovered));
-                        Ok(())
-                    },
-                    |state| store_notifications(&settings, state),
-                )
-                .unwrap();
-        }
-        assert_eq!(
-            messages,
-            [
-                (NotificationKind::Sync, "offline".into(), false),
-                (
-                    NotificationKind::DesktopUpdate,
-                    "update unavailable".into(),
-                    false
-                ),
-                (NotificationKind::Sync, "Sync recovered".into(), true),
-            ]
-        );
     }
 }

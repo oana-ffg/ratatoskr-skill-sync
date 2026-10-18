@@ -82,28 +82,111 @@ impl Drop for RunPermit<'_> {
     }
 }
 
+/// Stable classification is separate from diagnostics; remote output, paths,
+/// process IDs and timings are never parsed or used as notification identities.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ProblemIdentity {
+    context: String,
+    kind: ProblemKind,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ProblemKind {
+    Io(String),
+    Git(String),
+    Http(u16),
+    Timeout,
+    Network,
+    Configuration,
+    InvalidData,
+    Other,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Problem {
+    pub identity: ProblemIdentity,
+    pub message: String,
+}
+impl Problem {
+    /// Use only a static operation label as context, never an error's Display.
+    pub fn from_error(context: &'static str, error: &anyhow::Error) -> Self {
+        if let Some(problem) = error.downcast_ref::<Self>() {
+            return problem.clone();
+        }
+        let kind = if let Some(error) = error.downcast_ref::<crate::git::GitFailure>() {
+            ProblemKind::Git(error.operation.clone())
+        } else if let Some(error) = error.downcast_ref::<reqwest::Error>() {
+            if error.is_timeout() {
+                ProblemKind::Timeout
+            } else if let Some(status) = error.status() {
+                ProblemKind::Http(status.as_u16())
+            } else {
+                ProblemKind::Network
+            }
+        } else if let Some(error) = error.downcast_ref::<std::io::Error>() {
+            ProblemKind::Io(format!("{:?}", error.kind()))
+        } else if error.is::<toml::de::Error>() {
+            ProblemKind::Configuration
+        } else if error.is::<serde_json::Error>() || error.is::<std::string::FromUtf8Error>() {
+            ProblemKind::InvalidData
+        } else {
+            ProblemKind::Other
+        };
+        Self {
+            identity: ProblemIdentity {
+                context: context.into(),
+                kind,
+            },
+            message: format!("{error:#}"),
+        }
+    }
+    /// String-only upstream ledgers retain a stable operation category.
+    pub fn message(context: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            identity: ProblemIdentity {
+                context: context.into(),
+                kind: ProblemKind::Other,
+            },
+            message: message.into(),
+        }
+    }
+}
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for Problem {}
+impl std::ops::Deref for Problem {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.message
+    }
+}
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct NotificationState {
-    error: Option<String>,
+    identity: Option<ProblemIdentity>,
 }
 impl NotificationState {
-    /// Commit only after successful delivery, so failed toasts stay retryable.
+    /// Suppressed new problems stay pending; a successful delivery commits the
+    /// identity. Recovery is sent only for a problem that was actually notified.
     pub fn deliver(
         &mut self,
-        error: Option<&str>,
+        problem: Option<&Problem>,
+        allow_problem: bool,
         send: impl FnOnce(&str) -> Result<()>,
-    ) -> Result<()> {
-        if self.error.as_deref() == error {
-            return Ok(());
+    ) -> Result<bool> {
+        let identity = problem.map(|problem| &problem.identity);
+        if self.identity.as_ref() == identity || (problem.is_some() && !allow_problem) {
+            return Ok(false);
         }
-        send(error.unwrap_or("Sync recovered"))?;
-        self.error = error.map(str::to_owned);
-        Ok(())
+        send(problem.map_or("Sync recovered", |problem| &problem.message))?;
+        self.identity = identity.cloned();
+        Ok(problem.is_some())
     }
 }
 
-pub fn record_problem(settings: &Settings, error: Option<&str>) -> Result<()> {
-    if problem(settings)?.as_deref() == error {
+pub fn record_problem(settings: &Settings, error: Option<&Problem>) -> Result<()> {
+    if problem(settings)?.as_ref() == error {
         return Ok(());
     }
     atomic_write(
@@ -114,17 +197,69 @@ pub fn record_problem(settings: &Settings, error: Option<&str>) -> Result<()> {
         &serde_json::to_vec(&error)?,
     )
 }
-pub(crate) fn problem(settings: &Settings) -> Result<Option<String>> {
+pub(crate) fn problem(settings: &Settings) -> Result<Option<Problem>> {
     let path = settings
         .state_dir
         .join(&settings.machine)
         .join("tray-problem.json");
     no_symlinks(&path)?;
     Ok(if path.try_exists()? {
-        serde_json::from_slice(&fs::read(path)?)?
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StoredProblem {
+            Structured(Problem),
+            Legacy(String),
+        }
+        let stored: Option<StoredProblem> = serde_json::from_slice(&fs::read(path)?)?;
+        stored.map(|problem| match problem {
+            StoredProblem::Structured(problem) => problem,
+            StoredProblem::Legacy(message) => Problem::message("Tray status", message),
+        })
     } else {
         None
     })
+}
+
+#[derive(Deserialize, Serialize)]
+struct MigrationRecord {
+    completed_at: u64,
+    open_at_login: bool,
+}
+#[cfg(windows)]
+pub(crate) fn record_migration(settings: &Settings) -> Result<()> {
+    let record = MigrationRecord {
+        completed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+        open_at_login: true,
+    };
+    atomic_write(
+        &settings
+            .state_dir
+            .join(&settings.machine)
+            .join("tray-migration.json"),
+        &serde_json::to_vec(&record)?,
+    )
+}
+pub(crate) fn migration_log(settings: &Settings) -> Result<Option<String>> {
+    let path = settings
+        .state_dir
+        .join(&settings.machine)
+        .join("tray-migration.json");
+    no_symlinks(&path)?;
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let record: MigrationRecord = serde_json::from_slice(&fs::read(path)?)?;
+    Ok(Some(format!(
+        "{}: Legacy task migrated; Open Ratatoskr at login {} (--background); tray sync enabled\n",
+        record.completed_at,
+        if record.open_at_login {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    )))
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -160,40 +295,69 @@ impl LastSuccess {
 mod tests {
     use super::*;
     #[test]
-    fn notification_transitions_are_deduplicated_without_a_time_limit() {
+    fn notification_identity_ignores_volatile_diagnostics_and_survives_restart() {
+        let first = Problem::from_error(
+            "Acquire sync lock",
+            &anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "PID 123 on host A after 12 ms",
+            )),
+        );
+        let second = Problem::from_error(
+            "Acquire sync lock",
+            &anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "PID 987 on host B after 89 ms",
+            )),
+        );
+        assert_eq!(first.identity, second.identity);
+        assert_ne!(first.message, second.message);
         let mut state = NotificationState::default();
         let mut messages = vec![];
-        for error in [
-            Some("network"),
-            Some("network"),
-            None,
-            None,
-            Some("network"),
-            Some("conflict"),
-            Some("conflict"),
-        ] {
-            state
-                .deliver(error, |message| {
-                    messages.push(message.to_owned());
-                    Ok(())
-                })
-                .unwrap();
-        }
-        assert_eq!(
-            messages,
-            ["network", "Sync recovered", "network", "conflict"]
-        );
-        let mut persisted: NotificationState =
+        state
+            .deliver(Some(&first), true, |message| {
+                messages.push(message.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        let mut state: NotificationState =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
-        persisted
-            .deliver(Some("conflict"), |_| panic!("must survive restart"))
+        state
+            .deliver(Some(&second), true, |_| {
+                panic!("same problem must stay deduplicated")
+            })
             .unwrap();
         assert!(
-            persisted
-                .deliver(None, |_| anyhow::bail!("toast unavailable"))
+            state
+                .deliver(None, true, |_| anyhow::bail!("toast unavailable"))
                 .is_err()
         );
-        persisted.deliver(None, |_| Ok(())).unwrap();
+        state
+            .deliver(None, true, |message| {
+                messages.push(message.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        state
+            .deliver(None, true, |_| panic!("only one recovery"))
+            .unwrap();
+        assert_eq!(messages, [first.message, "Sync recovered".into()]);
+    }
+    #[test]
+    fn diagnostic_ledger_updates_details_without_changing_problem_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let first = Problem::message("Sync", "PID 1 timed out after 10 ms");
+        let second = Problem::message("Sync", "PID 2 timed out after 50 ms");
+        record_problem(&settings, Some(&first)).unwrap();
+        record_problem(&settings, Some(&second)).unwrap();
+        let saved = problem(&settings).unwrap().unwrap();
+        assert_eq!(saved.identity, first.identity);
+        assert_eq!(saved.message, second.message);
     }
     #[test]
     fn pause_resume_and_interval_survive_restart() {

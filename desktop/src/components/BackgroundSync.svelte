@@ -82,6 +82,9 @@
     <p class="muted">
       Closing the window keeps sync running. Quit from the tray to stop.
     </p>
+    {#if !status.login_enabled}<p class="warning-text">
+        Sync stops after restart unless Ratatoskr opens at login.
+      </p>{/if}
     <p class="muted">
       Last success: {relativeTime(status.last_success)} · {status.skills} skills
     </p>

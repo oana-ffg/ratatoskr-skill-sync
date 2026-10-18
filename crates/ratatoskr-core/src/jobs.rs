@@ -15,6 +15,8 @@ pub struct JobRun {
     pub started_at: u64,
     pub finished_at: Option<u64>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_identity: Option<crate::tray::ProblemIdentity>,
 }
 
 #[derive(Serialize)]
@@ -112,6 +114,9 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
     } else {
         String::new()
     };
+    if let Some(migration) = crate::tray::migration_log(settings)? {
+        log.push_str(&migration);
+    }
     for filename in ["sync.stdout.log", "sync.stderr.log"] {
         let tail = read_tail(&state.join(filename))?;
         if !tail.is_empty() {
@@ -119,7 +124,7 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
         }
     }
     Ok(JobStatus {
-        background_error: crate::tray::problem(settings)?,
+        background_error: crate::tray::problem(settings)?.map(|problem| problem.message),
         last_run,
         current_error: crate::notifications::current_error(settings, "notification.json")?,
         helper_update_error: crate::notifications::current_error(
