@@ -17,7 +17,8 @@ pub struct ValidationContext {
 
 #[derive(Debug, Serialize)]
 pub struct ValidationProblem {
-    pub path: PathBuf,
+    /// Source-relative repository path with forward slashes on every OS.
+    pub path: String,
     pub message: String,
     pub contexts: Vec<ValidationContext>,
 }
@@ -145,8 +146,17 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
             harnesses: diagnostics.harnesses,
             problem_occurrences: diagnostics.problems.values().map(BTreeSet::len).sum(),
         });
-        for (key, contexts) in diagnostics.problems {
-            problems.entry(key).or_default().extend(contexts);
+        for ((path, message), contexts) in diagnostics.problems {
+            let path = path
+                .strip_prefix(&source)?
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            problems
+                .entry((path, message))
+                .or_default()
+                .extend(contexts);
         }
     }
     Ok(ValidationReport {

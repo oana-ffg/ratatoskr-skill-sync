@@ -1601,13 +1601,13 @@ fn source_validation_collects_remote_templates_files_skills_globals_and_profiles
             .iter()
             .any(|c| c.harness.as_deref() == Some("codex")
                 && c.skill.as_deref() == Some("review-code"))
-            && p.path.ends_with("SKILL.md")
+            && p.path == "skills/review-code/SKILL.md"
             && p.message.contains("missing_remote"))
     );
     assert!(
         remote
             .iter()
-            .any(|p| p.path.ends_with("extra.txt") && p.message.contains("missing_file"))
+            .any(|p| p.path == "skills/review-code/extra.txt" && p.message.contains("missing_file"))
     );
     assert!(remote.iter().any(|p| {
         p.contexts
@@ -1619,7 +1619,7 @@ fn source_validation_collects_remote_templates_files_skills_globals_and_profiles
         remote
             .iter()
             .any(|p| p.contexts.iter().any(|c| c.skill.is_none())
-                && p.path.ends_with("global/AGENTS.md")
+                && p.path == "global/AGENTS.md"
                 && p.message.contains("missing_global"))
     );
     assert!(remote.iter().any(|p| {
@@ -1631,7 +1631,8 @@ fn source_validation_collects_remote_templates_files_skills_globals_and_profiles
         report
             .problems
             .iter()
-            .any(|p| p.contexts.iter().any(|c| c.machine == "broken"))
+            .any(|p| p.path == "machines/broken.toml"
+                && p.contexts.iter().any(|c| c.machine == "broken"))
     );
     assert_eq!(
         report
@@ -1716,6 +1717,7 @@ fn source_validation_reports_each_invalid_harness_and_continues_valid_targets() 
     f.write("harnesses.toml", &harnesses);
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+    assert!(report.problems.iter().all(|p| p.path == "harnesses.toml"));
     assert!(report.problems.iter().any(|p| {
         p.contexts
             .iter()
@@ -1751,6 +1753,14 @@ fn source_validation_groups_shared_problems_with_every_context() {
     f.write("skills/malformed/skill.toml", "target = [");
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
+    assert_eq!(
+        report
+            .problems
+            .iter()
+            .map(|p| p.path.as_str())
+            .collect::<Vec<_>>(),
+        ["skills/malformed", "skills/missing", "skills/review-code"]
+    );
     for problem in &report.problems {
         let expected = ["first", "second", "test"]
             .into_iter()
@@ -1810,6 +1820,7 @@ fn source_validation_keeps_distinct_messages_at_the_same_path() {
     f.write("skills/review-code/SKILL.md", "---\nname: review-code\ndescription: Review code\n---\n<!-- only machine=remote -->{{af:missing_remote}}<!-- /only -->\n<!-- only machine=test -->{{af:missing_test}}<!-- /only -->\n");
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 2);
+    assert_eq!(report.problems[0].path, "skills/review-code/SKILL.md");
     assert_eq!(report.problems[0].path, report.problems[1].path);
     assert_ne!(report.problems[0].message, report.problems[1].message);
 }
@@ -1863,7 +1874,7 @@ fn source_validation_labels_non_string_harnesses_with_the_profile_and_value() {
     assert_eq!(problem.contexts[0].machine, "test");
     assert!(problem.contexts[0].harness.is_none());
     assert!(problem.contexts[0].skill.is_none());
-    assert_eq!(problem.path, f.settings.source.join("machines/test.toml"));
+    assert_eq!(problem.path, "machines/test.toml");
     assert_eq!(problem.message, "Harness name must be a string: 42");
     assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
     assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);

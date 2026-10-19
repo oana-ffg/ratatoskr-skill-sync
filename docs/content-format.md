@@ -13,6 +13,8 @@ The initial reader uses machine `repo` and `alert_command` fields only as availa
 
 Run `ratatoskr validate <source-path>` (optionally `--json`) to render all machine profiles and their enabled harnesses without configuration or writes. Selection and disabled skills behave exactly as sync: excluded skills are counted as skipped; selected skills, matching variants and global instructions use the shared renderer. Live root templates are checked for the profile's OS without accessing foreign destinations. Every independent render failure is reported with its source path and machine/harness/skill context. Invalid configuration for one profile does not prevent the others from being checked. Fix blocking profile/skill metadata errors and rerun to inspect content that depends on those definitions.
 
+Problem paths in human output and JSON `path` fields are relative to the source checkout and use forward slashes on every OS. Problems with the same path and message are grouped with all affected contexts.
+
 The command does not register projects or inspect Git, local ownership, host permissions, or language-specific syntax. No profiles is an inspection error rather than a successful empty validation. Use `plan` on the actual target before deployment.
 
 ## Selection and templates

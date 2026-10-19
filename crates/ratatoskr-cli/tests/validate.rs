@@ -120,11 +120,16 @@ fn groups_shared_problems_with_all_contexts_and_consistent_occurrence_counts() {
     let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(report["problem_occurrences"], 8);
     assert_eq!(report["problems"].as_array().unwrap().len(), 2);
+    assert_eq!(report["problems"][0]["path"], "global/AGENTS.md");
+    assert_eq!(
+        report["problems"][1]["path"],
+        "skills/review-code/extra.txt"
+    );
     for profile in report["profiles"].as_array().unwrap() {
         assert_eq!(profile["problem_occurrences"], 4);
     }
     for problem in report["problems"].as_array().unwrap() {
-        let skill = if problem["path"].as_str().unwrap().ends_with("extra.txt") {
+        let skill = if problem["path"] == "skills/review-code/extra.txt" {
             serde_json::json!("review-code")
         } else {
             serde_json::Value::Null
@@ -142,6 +147,11 @@ fn groups_shared_problems_with_all_contexts_and_consistent_occurrence_counts() {
     let human = validate(&root, false);
     assert_eq!(human.status.code(), Some(1));
     let output = String::from_utf8(human.stdout).unwrap();
+    assert!(output.contains("ERROR global/AGENTS.md:"), "{output}");
+    assert!(
+        output.contains("ERROR skills/review-code/extra.txt:"),
+        "{output}"
+    );
     for machine in ["local", "remote"] {
         assert!(output.contains(&format!("{machine}: 0 skill installations across 2 harnesses rendered; 4 problem occurrences")), "{output}");
     }
@@ -183,6 +193,10 @@ fn undefined_path_reports_only_affected_machines_and_uses_singular_labels() {
     assert_eq!(report["profiles"][1]["machine"], "remote");
     assert_eq!(report["profiles"][1]["problem_occurrences"], 1);
     assert_eq!(report["problems"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report["problems"][0]["path"],
+        "skills/review-code/extra.txt"
+    );
     assert_eq!(
         report["problems"][0]["contexts"],
         serde_json::json!([

@@ -295,12 +295,7 @@ fn run() -> Result<i32> {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                println!(
-                    "ERROR {}: {} [{}]",
-                    problem.path.strip_prefix(&report.source)?.display(),
-                    problem.message,
-                    contexts
-                );
+                println!("ERROR {}: {} [{}]", problem.path, problem.message, contexts);
             }
             println!(
                 "{}; {}; {}",
