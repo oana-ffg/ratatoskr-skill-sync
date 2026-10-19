@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "ratatoskr-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "ratatoskr-desktop"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3228,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "ratatoskr-skill-sync"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "clap",
