@@ -92,7 +92,6 @@ fn main() {
             commands::disable_schedule,
             commands::read_update_settings,
             commands::update_desktop,
-            commands::nightly_update,
             commands::startup_update,
             commands::save_update_schedule,
             commands::restart_desktop

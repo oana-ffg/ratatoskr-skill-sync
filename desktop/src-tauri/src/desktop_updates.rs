@@ -78,6 +78,20 @@ impl UpdateContext {
         }
     }
 
+    fn report_overdue(&self) -> Result<()> {
+        const OVERDUE: &str =
+            "Desktop update overdue: two nightly windows passed without a successful check";
+        if let Some(settings) = &self.workspace
+            && core::job_status(settings)?
+                .desktop_update_error
+                .is_some_and(|error| !error.starts_with(OVERDUE))
+        {
+            // Preserve the specific failure and its delivery/deduplication history.
+            return Ok(());
+        }
+        self.report_outcome(Some(OVERDUE))
+    }
+
     pub(crate) fn report_outcome(&self, error: Option<&str>) -> Result<()> {
         if let Some(settings) = &self.workspace {
             // The resident Windows controller owns native transition toasts.
@@ -130,17 +144,7 @@ pub(crate) fn automatic_update_with<U>(
     if pending.as_ref().is_some_and(|(saved, _)| saved != settings) {
         *pending = None;
     }
-    // Alert delivery must never prevent the overdue check or installation.
-    let alert_error = if state.overdue(settings, now)? {
-        context
-            .report_outcome(Some(
-                "Desktop update overdue: two nightly windows passed without a successful check",
-            ))
-            .err()
-    } else {
-        None
-    };
-    let result = (|| -> Result<AutomaticOutcome> {
+    let outcome = (|| -> Result<AutomaticOutcome> {
         if (launch || !install) && state.due(settings, now, launch)? {
             state.record_attempt(&context.state_path, settings, now)?;
             *pending = None;
@@ -172,12 +176,13 @@ pub(crate) fn automatic_update_with<U>(
         }
         outcome.available = pending.is_some();
         Ok(outcome)
-    })();
-    match (result, alert_error) {
-        (result, None) => result,
-        (Ok(_), Some(alert)) => Err(alert.context("Desktop update overdue alert failed")),
-        (Err(error), Some(alert)) => anyhow::bail!("{error:#}; overdue alert failed: {alert:#}"),
+    })()?;
+    // A failed check is reported by the command layer with its specific cause.
+    // Successful work recovers there too; only an idle, overdue tick needs a watchdog alert.
+    if !outcome.checked && !outcome.installed && state.overdue(settings, now)? {
+        context.report_overdue()?;
     }
+    Ok(outcome)
 }
 
 #[derive(Serialize)]
@@ -189,17 +194,21 @@ pub(crate) struct DesktopUpdateResult {
 
 pub(crate) fn manual_update_with<U>(
     context: &UpdateContext,
+    now: chrono::DateTime<chrono::FixedOffset>,
     install: bool,
     check: impl FnOnce(&UpdateSettings) -> Result<Option<U>>,
     version: impl FnOnce(&U) -> String,
     install_update: impl FnOnce(U) -> Result<()>,
 ) -> Result<DesktopUpdateResult> {
     let update = check(context.settings())?;
-    let now = chrono::Local::now().fixed_offset();
     let mut state = context.state()?;
     state.observe(&context.state_path, context.settings(), now, false)?;
-    state.record_attempt(&context.state_path, context.settings(), now)?;
-    state.record_success(&context.state_path, now, update.is_some())?;
+    // A manual check contributes to health without consuming an automatic slot
+    // or queuing installation. Explicit installs retain attempt/recovery state.
+    if install {
+        state.record_attempt(&context.state_path, context.settings(), now)?;
+    }
+    state.record_success(&context.state_path, now, install && update.is_some())?;
     match update {
         Some(update) if install => {
             let _idle = context.idle_guard(false)?.ok_or_else(|| {
@@ -337,6 +346,7 @@ mod tests {
             let installed = Cell::new(false);
             let result = manual_update_with(
                 &context,
+                clock("2026-10-16T09:00:00+02:00"),
                 install,
                 |settings| {
                     assert_eq!(settings, &UpdateSettings::default());
@@ -352,6 +362,16 @@ mod tests {
             assert_eq!(result.available, !install);
             assert_eq!(result.installed, install);
             assert_eq!(installed.get(), install);
+            if install {
+                assert!(
+                    !context
+                        .state()
+                        .unwrap()
+                        .due(context.settings(), clock("2026-10-16T09:00:00+02:00"), true)
+                        .unwrap(),
+                    "a completed manual install must not be repeated on launch"
+                );
+            }
         }
     }
 
@@ -384,6 +404,7 @@ mod tests {
         assert_eq!(context.settings(), &settings.updates);
         manual_update_with::<()>(
             &context,
+            clock("2026-10-16T09:00:00+02:00"),
             false,
             |updates| {
                 assert_eq!(updates, &settings.updates);
@@ -468,6 +489,7 @@ mod tests {
         assert!(
             manual_update_with::<()>(
                 &context,
+                clock("2026-10-16T09:00:00+02:00"),
                 false,
                 |_| anyhow::bail!("offline"),
                 |_| unreachable!(),
@@ -478,6 +500,7 @@ mod tests {
         assert!(
             manual_update_with(
                 &context,
+                clock("2026-10-16T09:00:00+02:00"),
                 true,
                 |_| Ok(Some(())),
                 |_| "0.2.1".into(),
@@ -547,6 +570,7 @@ mod tests {
         assert!(
             manual_update_with(
                 &context,
+                now,
                 true,
                 |_| Ok(Some(())),
                 |_| "0.2.1".into(),
@@ -715,6 +739,185 @@ mod tests {
     }
 
     #[test]
+    fn manual_check_does_not_queue_automatic_installation_or_open_catch_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = unconfigured(&temp);
+        let mut pending = None;
+        automatic_update_with(
+            &context,
+            &mut pending,
+            clock("2026-10-19T00:01:00+02:00"),
+            false,
+            false,
+            |_| Ok(Some(())),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        // The manual command clears any old in-memory automatic update first.
+        pending = None;
+        let now = clock("2026-10-19T13:38:00+02:00");
+        let result = manual_update_with(
+            &context,
+            now,
+            false,
+            |_| Ok(Some(())),
+            |_| "0.2.9".into(),
+            |_| panic!("manual check must not install"),
+        )
+        .unwrap();
+        assert!(result.available && !result.installed);
+        let state = context.state().unwrap();
+        assert!(
+            !state
+                .installation_allowed(context.settings(), now, false)
+                .unwrap()
+        );
+        assert!(!state.due(context.settings(), now, true).unwrap());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&context.state_path).unwrap()).unwrap();
+        assert!(saved["catch_up_started"].is_null());
+        assert_eq!(saved["pending"], false);
+        assert_eq!(saved["last_success"], now.to_rfc3339());
+        for (install, launch) in [(false, false), (true, false), (true, true)] {
+            let reopened = unconfigured(&temp);
+            let outcome = automatic_update_with::<()>(
+                &reopened,
+                &mut pending,
+                now,
+                install,
+                launch,
+                |_| panic!("manual check must not queue a launch recheck"),
+                |_| panic!("manual check must not queue an automatic install"),
+            )
+            .unwrap();
+            assert!(!outcome.checked && !outcome.available && !outcome.installed);
+        }
+        assert!(
+            context
+                .state()
+                .unwrap()
+                .due(
+                    context.settings(),
+                    clock("2026-10-20T00:01:00+02:00"),
+                    false
+                )
+                .unwrap(),
+            "the next automatic window remains due"
+        );
+    }
+
+    #[test]
+    fn overdue_failing_checks_keep_specific_error_and_one_alert_per_24_hours() {
+        let temp = tempfile::tempdir().unwrap();
+        let (config, mut settings) = configured(&temp);
+        settings.updates.automatic = true;
+        settings.updates.time = "00:00".into();
+        let alerts = temp.path().canonicalize().unwrap().join("alerts.gitconfig");
+        // Git's argv-only config writer is a cross-platform, local alert recorder.
+        settings.alert_command = vec![
+            "git".into(),
+            "config".into(),
+            "--file".into(),
+            alerts.display().to_string(),
+            "--add".into(),
+            "alerts.message".into(),
+        ];
+        core::save(&config, &settings).unwrap();
+        let context =
+            UpdateContext::load(&config, &temp.path().canonicalize().unwrap().join("app")).unwrap();
+        let first = clock("2026-10-18T00:01:00+02:00");
+        automatic_update_with::<()>(
+            &context,
+            &mut None,
+            first,
+            false,
+            false,
+            |_| Ok(None),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let now = clock("2026-10-20T13:38:00+02:00");
+        assert!(
+            context
+                .state()
+                .unwrap()
+                .overdue(&settings.updates, now)
+                .unwrap()
+        );
+        let fail_check = |time| {
+            let result = automatic_update_with::<()>(
+                &context,
+                &mut None,
+                time,
+                false,
+                false,
+                |_| anyhow::bail!("release endpoint offline"),
+                |_| unreachable!(),
+            );
+            let error = format!("Desktop update: {:#}", result.err().expect("check fails"));
+            // The command layer reports the specific check result after policy returns.
+            context.report_outcome(Some(&error)).unwrap();
+            error
+        };
+        let error = fail_check(now);
+        let read_alerts = || {
+            let output = std::process::Command::new("git")
+                .args(["config", "--file"])
+                .arg(&alerts)
+                .args(["--get-all", "alerts.message"])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let assert_idle = |time| {
+            automatic_update_with::<()>(
+                &context,
+                &mut None,
+                time,
+                false,
+                false,
+                |_| panic!("one check per slot"),
+                |_| unreachable!(),
+            )
+            .unwrap();
+            assert_eq!(
+                core::job_status(&settings)
+                    .unwrap()
+                    .desktop_update_error
+                    .as_deref(),
+                Some(error.as_str())
+            );
+        };
+        for minute in 1..=60 {
+            assert_idle(now + chrono::Duration::minutes(minute));
+        }
+        assert_eq!(read_alerts(), [format!("Ratatoskr test: {error}")]);
+        // The transport clock has not advanced 24 hours, even though a new slot is due.
+        let tomorrow = now + chrono::Duration::days(1);
+        assert_eq!(fail_check(tomorrow), error);
+        assert_idle(tomorrow + chrono::Duration::minutes(1));
+        assert_eq!(read_alerts().len(), 1);
+        // Age the real transport ledger to the reminder boundary without sleeping a day.
+        let notification = settings
+            .state_dir
+            .join("test/desktop-update-notification.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&notification).unwrap()).unwrap();
+        let sent_at = ledger["sent_at"].as_u64().unwrap();
+        ledger["sent_at"] = (sent_at - 86400).into();
+        std::fs::write(&notification, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        let next_day = tomorrow + chrono::Duration::days(1);
+        assert_eq!(fail_check(next_day), error);
+        assert_idle(next_day + chrono::Duration::minutes(1));
+        assert_eq!(read_alerts(), vec![format!("Ratatoskr test: {error}"); 2]);
+    }
+
+    #[test]
     fn overdue_is_visible_in_job_status_uses_alert_dedup_and_recovers_only_on_success() {
         let temp = tempfile::tempdir().unwrap();
         let (config, mut settings) = configured(&temp);
@@ -822,26 +1025,20 @@ mod tests {
                 .is_some()
         );
         let checked_despite_alert = Cell::new(false);
-        assert!(
-            automatic_update_with::<()>(
-                &alerting,
-                &mut None,
-                clock("2026-10-21T00:01:00+02:00"),
-                false,
-                false,
-                |_| {
-                    checked_despite_alert.set(true);
-                    Ok(None)
-                },
-                |_| unreachable!()
-            )
-            .is_err(),
-            "delivery failure still reaches the caller"
-        );
-        assert!(
-            checked_despite_alert.get(),
-            "failed overdue alerts must not block catch-up"
-        );
+        let recovered = automatic_update_with::<()>(
+            &alerting,
+            &mut None,
+            clock("2026-10-21T00:01:00+02:00"),
+            false,
+            false,
+            |_| {
+                checked_despite_alert.set(true);
+                Ok(None)
+            },
+            |_| unreachable!(),
+        )
+        .expect("successful catch-up does not send a stale overdue alert");
+        assert!(recovered.checked && checked_despite_alert.get());
         // Production's command layer reports actual successful checks as recovery.
         let recovered = automatic_update_with::<()>(
             &context,

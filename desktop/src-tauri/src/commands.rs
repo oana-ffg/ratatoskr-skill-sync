@@ -372,11 +372,6 @@ fn update_result<T>(context: &UpdateContext, result: anyhow::Result<T>) -> Reply
 }
 
 #[tauri::command]
-pub(crate) async fn nightly_update(app: tauri::AppHandle, install: bool) -> Reply<bool> {
-    automatic_update(app, install, false).await
-}
-
-#[tauri::command]
 pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
     crate::update_scheduler::startup(app).await
 }
@@ -487,6 +482,7 @@ pub(crate) async fn update_desktop(
         nightly.pending = None;
         let result = manual_update_with(
             &context,
+            chrono::Local::now().fixed_offset(),
             install,
             |settings| {
                 tauri::async_runtime::block_on(desktop_updater(&app, settings)?.check())

@@ -151,10 +151,9 @@ test("native startup gates readiness and unsaved editors notify the native sched
     await waitFor(() =>
       expect(calls).toHaveBeenCalledWith("set_desktop_busy", { busy: true }),
     );
+    calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);
-    expect(calls.mock.calls.some(([cmd]) => cmd === "nightly_update")).toBe(
-      false,
-    );
+    expect(calls).not.toHaveBeenCalled();
     unmount();
     calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);
