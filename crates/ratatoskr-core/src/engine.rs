@@ -1,4 +1,5 @@
 mod conflicts;
+mod validation;
 use crate::{
     Settings,
     config::{atomic_write, identifier, no_symlinks, overlaps, relative},
@@ -17,6 +18,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+};
+use validation::RenderDiagnostics;
+pub use validation::{
+    HarnessValidation, ProfileValidation, ValidationContext, ValidationProblem, ValidationReport,
+    validate_source,
 };
 use walkdir::WalkDir;
 
@@ -223,6 +229,129 @@ fn skill_markdown(
     ))
 }
 
+struct SkillSources {
+    metadata: toml::Table,
+    files: BTreeMap<PathBuf, PathBuf>,
+}
+
+fn skill_sources(
+    skill: &Path,
+    skill_name: &str,
+    context: &toml::Table,
+) -> Result<Option<SkillSources>> {
+    let metadata = read_toml(&skill.join("skill.toml"))?;
+    ensure!(
+        metadata
+            .keys()
+            .all(|k| matches!(k.as_str(), "target" | "frontmatter" | "enabled")),
+        "Unknown skill.toml fields in {skill_name}"
+    );
+    if let Some(enabled) = metadata.get("enabled") {
+        ensure!(enabled.is_bool(), "enabled must be a boolean");
+        if !enabled.as_bool().unwrap_or(false) {
+            return Ok(None);
+        }
+    }
+    if let Some(target) = metadata.get("target")
+        && !selectors_match(
+            target.as_table().context("Target must be a table")?,
+            context,
+        )?
+    {
+        return Ok(None);
+    }
+    let mut sources = file_paths(skill)?;
+    sources.retain(|p, _| p != Path::new("skill.toml") && !p.starts_with("variants"));
+    let variants = skill.join("variants");
+    let mut replacements = BTreeSet::new();
+    if variants.try_exists()? {
+        no_symlinks(&variants)?;
+        for variant in fs::read_dir(&variants)? {
+            let variant = variant?;
+            ensure!(
+                variant.file_type()?.is_dir(),
+                "Variants must be directories"
+            );
+            let variant_name = variant
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("Non-UTF8 variant"))?;
+            let (key, value) = variant_name
+                .split_once('=')
+                .context("Variant requires key=value")?;
+            ensure!(
+                matches!(key, "harness" | "machine" | "os"),
+                "Unknown variant key"
+            );
+            identifier(value)?;
+            let variant_files = file_paths(&variant.path())?;
+            if context.get(key).and_then(|v| v.as_str()) == Some(value) {
+                for (path, source) in variant_files {
+                    ensure!(
+                        replacements.insert(path.clone()),
+                        "Two matching variants replace {}",
+                        path.display()
+                    );
+                    ensure!(
+                        path != Path::new("skill.toml"),
+                        "Variants cannot replace skill metadata"
+                    );
+                    sources.insert(path, source);
+                }
+            }
+        }
+    }
+    ensure!(
+        sources.contains_key(Path::new("SKILL.md")),
+        "Skill {skill_name} lacks SKILL.md"
+    );
+    Ok(Some(SkillSources {
+        metadata,
+        files: sources,
+    }))
+}
+
+fn render_skill_file(
+    path: &Path,
+    source: &Path,
+    skill_name: &str,
+    harness: &str,
+    context: &toml::Table,
+    metadata: &toml::Table,
+) -> Result<Rendered> {
+    let original = fs::read(source)?;
+    let reversible = std::str::from_utf8(&original).is_ok_and(|text| {
+        !text.contains("{{af:")
+            && !text.contains("<!--")
+            && !(path == Path::new("SKILL.md") && metadata.contains_key("frontmatter"))
+    });
+    let bytes = original;
+    let required_text = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("md" | "toml" | "py" | "txt")
+    );
+    let bytes = match std::str::from_utf8(&bytes) {
+        Ok(text) if path == Path::new("SKILL.md") => {
+            skill_markdown(text, skill_name, context, metadata)?.into_bytes()
+        }
+        Ok(text) => {
+            render(text, context, path.extension().is_some_and(|e| e == "md"))?.into_bytes()
+        }
+        Err(error) if required_text => {
+            return Err(error).context("Required text file is not UTF-8");
+        }
+        Err(_) => bytes,
+    };
+    Ok(Rendered {
+        harness: harness.into(),
+        skill: Some(skill_name.into()),
+        source: source.into(),
+        reversible,
+        bytes,
+        executable: executable(source)?,
+    })
+}
+
 fn render_scope(
     settings: &Settings,
     content: &Path,
@@ -230,17 +359,49 @@ fn render_scope(
     preview: bool,
 ) -> Result<Desired> {
     settings.validate()?;
-    no_symlinks(&settings.source)?;
-    no_symlinks(&settings.state_dir)?;
-    identifier(&settings.machine)?;
-    let machine = read_toml(
-        &settings
-            .source
-            .join("machines")
-            .join(format!("{}.toml", settings.machine)),
-    )?;
+    render_scope_inner(
+        &RenderScope {
+            source: &settings.source,
+            machine: &settings.machine,
+            content,
+            project,
+            output: Output::Workspace { settings, preview },
+        },
+        &mut RenderDiagnostics::default(),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum Output<'a> {
+    Workspace {
+        settings: &'a Settings,
+        preview: bool,
+    },
+    Validation,
+}
+
+struct RenderScope<'a> {
+    source: &'a Path,
+    machine: &'a str,
+    content: &'a Path,
+    project: Option<&'a Path>,
+    output: Output<'a>,
+}
+
+fn render_scope_inner(
+    scope: &RenderScope<'_>,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<Desired> {
+    let RenderScope {
+        source,
+        machine: machine_name,
+        ..
+    } = *scope;
+    no_symlinks(source)?;
+    identifier(machine_name)?;
+    let machine = read_toml(&source.join("machines").join(format!("{machine_name}.toml")))?;
     let harnesses: BTreeMap<String, Harness> =
-        read_toml(&settings.source.join("harnesses.toml"))?.try_into()?;
+        read_toml(&source.join("harnesses.toml"))?.try_into()?;
     let os = string(&machine, "os")?;
     ensure!(
         matches!(os, "macos" | "windows" | "linux"),
@@ -273,18 +434,73 @@ fn render_scope(
         project_roots: BTreeMap::new(),
     };
     let mut base_roots = Vec::new();
+    let profile_path = source.join("machines").join(format!("{machine_name}.toml"));
     for harness_name in enabled {
-        let name = harness_name
+        let name_result = harness_name
             .as_str()
-            .context("Harness name must be a string")?;
-        identifier(name)?;
-        let harness = harnesses
-            .get(name)
-            .with_context(|| format!("Unknown harness: {name}"))?;
-        let mut context = machine.clone();
-        context.insert("machine".into(), settings.machine.clone().into());
-        context.insert("harness".into(), name.into());
-        let base = if mode == "staging" || preview {
+            .with_context(|| format!("Harness name must be a string: {harness_name}"));
+        let Some(name) =
+            diagnostics.capture(name_result, machine_name, None, None, &profile_path)?
+        else {
+            continue;
+        };
+        let harness_result = render_harness(
+            scope,
+            &machine,
+            name,
+            &harnesses,
+            &mut result,
+            &mut base_roots,
+            diagnostics,
+        );
+        if let Some(summary) = diagnostics.capture(
+            harness_result,
+            machine_name,
+            Some(name),
+            None,
+            &source.join("harnesses.toml"),
+        )? {
+            diagnostics.harnesses.push(summary);
+        }
+    }
+    Ok(result)
+}
+
+struct HarnessRender<'a, 's> {
+    scope: &'a RenderScope<'s>,
+    name: &'a str,
+    definition: &'a Harness,
+    context: &'a toml::Table,
+    os: &'a str,
+    mode: &'a str,
+}
+
+fn harness_base(
+    rendering: &HarnessRender<'_, '_>,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<PathBuf> {
+    let HarnessRender {
+        scope,
+        name,
+        definition: harness,
+        context,
+        os,
+        mode,
+    } = *rendering;
+    let RenderScope {
+        source,
+        machine: machine_name,
+        project,
+        output,
+        ..
+    } = *scope;
+    let (settings, preview) = match output {
+        Output::Workspace { settings, preview } => (Some(settings), preview),
+        Output::Validation => (None, true),
+    };
+    // Validation uses logical destinations only. They are never inspected or created.
+    Ok(if let Some(settings) = settings {
+        if mode == "staging" || preview {
             let staging = settings.state_dir.join(&settings.machine).join("staging");
             if let Some(project) = project {
                 staging
@@ -311,7 +527,7 @@ fn render_scope(
                 "Cannot apply {os} profile on {}",
                 host_os()
             );
-            let home = Path::new(string(&machine, "home")?);
+            let home = Path::new(string(context, "home")?);
             let actual_home = directories::BaseDirs::new()
                 .context("Cannot find home")?
                 .home_dir()
@@ -324,10 +540,93 @@ fn render_scope(
                 .roots
                 .get(os)
                 .context("Harness lacks a root for machine OS")?;
-            PathBuf::from(render(root, &context, false)?)
-        };
-        ensure!(base.is_absolute(), "Output root must be absolute");
+            PathBuf::from(render(root, context, false)?)
+        }
+    } else {
+        if mode == "live" {
+            let root = harness
+                .roots
+                .get(os)
+                .context("Harness lacks a root for machine OS")
+                .and_then(|root| render(root, context, false))
+                .and_then(|root| validation::validate_root(&root, os));
+            diagnostics.capture(
+                root,
+                machine_name,
+                Some(name),
+                None,
+                &source.join("harnesses.toml"),
+            )?;
+            if let Some(root) = &harness.global_root {
+                let root = render(root, context, false)
+                    .and_then(|root| validation::validate_root(&root, os));
+                diagnostics.capture(
+                    root,
+                    machine_name,
+                    Some(name),
+                    None,
+                    &source.join("harnesses.toml"),
+                )?;
+            }
+        }
+        if let Some(root) = &harness.project_root {
+            diagnostics.capture(
+                relative(root),
+                machine_name,
+                Some(name),
+                None,
+                &source.join("harnesses.toml"),
+            )?;
+        }
+        source.join(".validation").join(name)
+    })
+}
+
+fn render_harness(
+    scope: &RenderScope<'_>,
+    machine: &toml::Table,
+    name: &str,
+    harnesses: &BTreeMap<String, Harness>,
+    result: &mut Desired,
+    base_roots: &mut Vec<PathBuf>,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<HarnessValidation> {
+    let RenderScope {
+        machine: machine_name,
+        content,
+        project,
+        output,
+        ..
+    } = *scope;
+    let mut summary = HarnessValidation::new(name);
+    identifier(name)?;
+    let harness = harnesses
+        .get(name)
+        .with_context(|| format!("Unknown harness: {name}"))?;
+    let mut context = machine.clone();
+    context.insert("machine".into(), machine_name.into());
+    context.insert("harness".into(), name.into());
+    let os = string(machine, "os")?;
+    let mode = result.mode.clone();
+    let mode = mode.as_str();
+    let rendering = &HarnessRender {
+        scope,
+        name,
+        definition: harness,
+        context: &context,
+        os,
+        mode,
+    };
+    let (settings, preview) = match output {
+        Output::Workspace { settings, preview } => (Some(settings), preview),
+        Output::Validation => (None, true),
+    };
+    let base = harness_base(rendering, diagnostics)?;
+    ensure!(base.is_absolute(), "Output root must be absolute");
+    if settings.is_some() {
         no_symlinks(&base)?;
+    }
+    if let Some(settings) = settings {
         ensure!(!overlaps(&base, content), "Output overlaps source checkout");
         if mode == "live" && !preview {
             ensure!(
@@ -335,28 +634,32 @@ fn render_scope(
                 "Output overlaps state"
             );
         }
-        ensure!(
-            !base_roots
-                .iter()
-                .any(|other: &PathBuf| overlaps(other, &base)),
-            "Harness output roots overlap"
-        );
-        base_roots.push(base.clone());
-        let skills_base = base.join(relative(&harness.skills_dir)?);
-        let global_base = if mode == "live" && !preview && project.is_none() {
-            if let Some(root) = &harness.global_root {
-                PathBuf::from(render(root, &context, false)?)
-            } else {
-                base.clone()
-            }
+    }
+    ensure!(
+        !base_roots
+            .iter()
+            .any(|other: &PathBuf| overlaps(other, &base)),
+        "Harness output roots overlap"
+    );
+    base_roots.push(base.clone());
+    let skills_base = base.join(relative(&harness.skills_dir)?);
+    let global_base = if mode == "live" && !preview && project.is_none() {
+        if let Some(root) = &harness.global_root {
+            PathBuf::from(render(root, &context, false)?)
         } else {
             base.clone()
-        };
-        ensure!(
-            global_base.is_absolute(),
-            "Global instruction root must be absolute"
-        );
+        }
+    } else {
+        base.clone()
+    };
+    ensure!(
+        global_base.is_absolute(),
+        "Global instruction root must be absolute"
+    );
+    if settings.is_some() {
         no_symlinks(&global_base)?;
+    }
+    if let Some(settings) = settings {
         ensure!(
             !overlaps(&global_base, content),
             "Instruction root overlaps source"
@@ -367,192 +670,228 @@ fn render_scope(
                 "Instruction root overlaps state"
             );
         }
-        let global_file = global_base.join(relative(&harness.global_file)?);
-        for (other_skills, other_global) in &result.allowed {
-            ensure!(
-                !overlaps(&skills_base, other_skills)
-                    && !overlaps(&skills_base, other_global)
-                    && !overlaps(&global_file, other_skills)
-                    && global_file != *other_global,
-                "Harness destinations overlap"
-            );
-        }
+    }
+    let global_file = global_base.join(relative(&harness.global_file)?);
+    for (other_skills, other_global) in &result.allowed {
         ensure!(
-            !global_file.starts_with(&skills_base),
-            "Global file overlaps skills directory"
+            !overlaps(&skills_base, other_skills)
+                && !overlaps(&skills_base, other_global)
+                && !overlaps(&global_file, other_skills)
+                && global_file != *other_global,
+            "Harness destinations overlap"
         );
-        result
-            .allowed
-            .push((skills_base.clone(), global_file.clone()));
-        result.install_targets.push(InstallTarget {
-            harness: name.into(),
-            skills_root: skills_base.clone(),
-            instructions_file: global_file.clone(),
-            project: project.map(Path::to_path_buf),
-        });
-        let skills_dir = content.join("skills");
-        no_symlinks(&skills_dir)?;
-        if skills_dir.try_exists()? {
-            let mut names = BTreeSet::new();
-            for skill in fs::read_dir(&skills_dir)? {
-                let skill = skill?;
-                ensure!(
-                    skill.file_type()?.is_dir(),
-                    "Skills root must contain directories only"
-                );
-                let skill_name = skill
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| anyhow::anyhow!("Non-UTF8 skill name"))?;
-                identifier(&skill_name)?;
-                ensure!(
-                    !matches!(skill_name.as_str(), "synced" | "anthropic-skills"),
-                    "Reserved skill name"
-                );
-                ensure!(
-                    names.insert(skill_name.to_lowercase()),
-                    "Duplicate skill name"
-                );
-                let metadata = read_toml(&skill.path().join("skill.toml"))?;
-                ensure!(
-                    metadata
-                        .keys()
-                        .all(|k| matches!(k.as_str(), "target" | "frontmatter" | "enabled")),
-                    "Unknown skill.toml fields in {skill_name}"
-                );
-                if let Some(enabled) = metadata.get("enabled") {
-                    ensure!(enabled.is_bool(), "enabled must be a boolean");
-                    if !enabled.as_bool().unwrap_or(false) {
-                        continue;
-                    }
-                }
-                if let Some(target) = metadata.get("target")
-                    && !selectors_match(
-                        target.as_table().context("Target must be a table")?,
-                        &context,
-                    )?
-                {
-                    continue;
-                }
-                let mut sources = file_paths(&skill.path())?;
-                sources.retain(|p, _| p != Path::new("skill.toml") && !p.starts_with("variants"));
-                let variants = skill.path().join("variants");
-                let mut replacements = BTreeSet::new();
-                if variants.try_exists()? {
-                    no_symlinks(&variants)?;
-                    for variant in fs::read_dir(&variants)? {
-                        let variant = variant?;
-                        ensure!(
-                            variant.file_type()?.is_dir(),
-                            "Variants must be directories"
-                        );
-                        let variant_name = variant
-                            .file_name()
-                            .into_string()
-                            .map_err(|_| anyhow::anyhow!("Non-UTF8 variant"))?;
-                        let (key, value) = variant_name
-                            .split_once('=')
-                            .context("Variant requires key=value")?;
-                        ensure!(
-                            matches!(key, "harness" | "machine" | "os"),
-                            "Unknown variant key"
-                        );
-                        identifier(value)?;
-                        let variant_files = file_paths(&variant.path())?;
-                        if context.get(key).and_then(|v| v.as_str()) == Some(value) {
-                            for (path, source) in variant_files {
-                                ensure!(
-                                    replacements.insert(path.clone()),
-                                    "Two matching variants replace {}",
-                                    path.display()
-                                );
-                                ensure!(
-                                    path != Path::new("skill.toml"),
-                                    "Variants cannot replace skill metadata"
-                                );
-                                sources.insert(path, source);
-                            }
-                        }
-                    }
-                }
-                ensure!(
-                    sources.contains_key(Path::new("SKILL.md")),
-                    "Skill {skill_name} lacks SKILL.md"
-                );
-                let root = skills_base.join(&skill_name);
-                result.roots.insert(root.clone());
-                result.skills += 1;
-                let mut cases = BTreeSet::new();
-                for (path, source) in sources {
-                    ensure!(
-                        cases.insert(path.to_string_lossy().to_lowercase()),
-                        "Variant filename collision"
-                    );
-                    let original = fs::read(&source)?;
-                    let reversible = std::str::from_utf8(&original).is_ok_and(|text| {
-                        !text.contains("{{af:")
-                            && !text.contains("<!--")
-                            && !(path == Path::new("SKILL.md")
-                                && metadata.contains_key("frontmatter"))
-                    });
-                    let bytes = original.clone();
-                    let required_text = matches!(
-                        path.extension().and_then(|e| e.to_str()),
-                        Some("md" | "toml" | "py" | "txt")
-                    );
-                    let bytes = match std::str::from_utf8(&bytes) {
-                        Ok(text) if path == Path::new("SKILL.md") => {
-                            skill_markdown(text, &skill_name, &context, &metadata)?.into_bytes()
-                        }
-                        Ok(text) => {
-                            render(text, &context, path.extension().is_some_and(|e| e == "md"))?
-                                .into_bytes()
-                        }
-                        Err(error) if required_text => {
-                            return Err(error).context("Required text file is not UTF-8");
-                        }
-                        Err(_) => bytes,
-                    };
-                    ensure!(
-                        result
-                            .files
-                            .insert(
-                                root.join(path),
-                                Rendered {
-                                    harness: name.into(),
-                                    skill: Some(skill_name.clone()),
-                                    source: source.clone(),
-                                    reversible,
-                                    bytes,
-                                    executable: executable(&source)?
-                                }
-                            )
-                            .is_none(),
-                        "Duplicate output file"
-                    );
-                }
+    }
+    ensure!(
+        !global_file.starts_with(&skills_base),
+        "Global file overlaps skills directory"
+    );
+    result
+        .allowed
+        .push((skills_base.clone(), global_file.clone()));
+    result.install_targets.push(InstallTarget {
+        harness: name.into(),
+        skills_root: skills_base.clone(),
+        instructions_file: global_file.clone(),
+        project: project.map(Path::to_path_buf),
+    });
+    let skills_dir = content.join("skills");
+    no_symlinks(&skills_dir)?;
+    if skills_dir.try_exists()? {
+        let mut names = BTreeSet::new();
+        for skill in fs::read_dir(&skills_dir)? {
+            let skill = match diagnostics.capture(
+                skill.map_err(Into::into),
+                machine_name,
+                Some(name),
+                None,
+                &skills_dir,
+            )? {
+                Some(skill) => skill,
+                None => continue,
+            };
+            let skill_path = skill.path();
+            let skill_label = skill.file_name().to_string_lossy().into_owned();
+            let skill_result = render_skill(
+                rendering,
+                &skill,
+                &skills_base,
+                &mut names,
+                result,
+                &mut summary,
+                diagnostics,
+            );
+            if let Some(false) = diagnostics.capture(
+                skill_result,
+                machine_name,
+                Some(name),
+                Some(&skill_label),
+                &skill_path,
+            )? {
+                summary.skills_skipped += 1;
             }
         }
-        let global = content.join("global/AGENTS.md");
-        no_symlinks(&global)?;
-        if project.is_none() && global.try_exists()? {
-            result.files.insert(
-                global_file,
-                Rendered {
-                    harness: name.into(),
-                    skill: None,
-                    source: global.clone(),
-                    reversible: {
-                        let text = fs::read_to_string(&global)?;
-                        !text.contains("{{af:") && !text.contains("<!--")
-                    },
-                    bytes: render(&fs::read_to_string(global)?, &context, true)?.into_bytes(),
-                    executable: false,
-                },
-            );
+    }
+
+    let global = content.join("global/AGENTS.md");
+    let global_result = render_global(rendering, &global, global_file, result);
+    if let Some(rendered) =
+        diagnostics.capture(global_result, machine_name, Some(name), None, &global)?
+    {
+        summary.global_instructions_rendered = rendered;
+    }
+    Ok(summary)
+}
+
+fn render_skill(
+    rendering: &HarnessRender<'_, '_>,
+    skill: &fs::DirEntry,
+    skills_base: &Path,
+    names: &mut BTreeSet<String>,
+    result: &mut Desired,
+    summary: &mut HarnessValidation,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<bool> {
+    let HarnessRender {
+        scope,
+        name,
+        context,
+        ..
+    } = *rendering;
+    let machine_name = scope.machine;
+    let skill_path = skill.path();
+    ensure!(
+        skill.file_type()?.is_dir(),
+        "Skills root must contain directories only"
+    );
+    let skill_name = skill
+        .file_name()
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("Non-UTF8 skill name"))?;
+    identifier(&skill_name)?;
+    ensure!(
+        !matches!(skill_name.as_str(), "synced" | "anthropic-skills"),
+        "Reserved skill name"
+    );
+    ensure!(
+        names.insert(skill_name.to_lowercase()),
+        "Duplicate skill name"
+    );
+    let Some(SkillSources {
+        metadata,
+        files: sources,
+    }) = skill_sources(&skill_path, &skill_name, context)?
+    else {
+        return Ok(false);
+    };
+    let root = skills_base.join(&skill_name);
+    result.roots.insert(root.clone());
+    let mut clean = true;
+    let mut cases = BTreeSet::new();
+    for (path, source) in sources {
+        let file_result = render_skill_output(
+            &SkillRender {
+                harness: rendering,
+                name: &skill_name,
+                root: &root,
+                metadata: &metadata,
+            },
+            &path,
+            &source,
+            &mut cases,
+            result,
+        );
+        if diagnostics
+            .capture(
+                file_result,
+                machine_name,
+                Some(name),
+                Some(&skill_name),
+                &source,
+            )?
+            .is_some()
+        {
+            summary.files_rendered += 1;
+        } else {
+            clean = false;
         }
     }
-    Ok(result)
+    if clean {
+        summary.skills_rendered += 1;
+        result.skills += 1;
+    }
+    Ok(true)
+}
+
+struct SkillRender<'a, 's> {
+    harness: &'a HarnessRender<'a, 's>,
+    name: &'a str,
+    root: &'a Path,
+    metadata: &'a toml::Table,
+}
+
+fn render_skill_output(
+    skill: &SkillRender<'_, '_>,
+    path: &Path,
+    source: &Path,
+    cases: &mut BTreeSet<String>,
+    result: &mut Desired,
+) -> Result<()> {
+    let SkillRender {
+        harness,
+        name: skill_name,
+        root,
+        metadata,
+    } = *skill;
+    let HarnessRender { name, context, .. } = *harness;
+    ensure!(
+        cases.insert(path.to_string_lossy().to_lowercase()),
+        "Variant filename collision"
+    );
+    ensure!(
+        result
+            .files
+            .insert(
+                root.join(path),
+                render_skill_file(path, source, skill_name, name, context, metadata)?
+            )
+            .is_none(),
+        "Duplicate output file"
+    );
+    Ok(())
+}
+
+fn render_global(
+    rendering: &HarnessRender<'_, '_>,
+    global: &Path,
+    global_file: PathBuf,
+    result: &mut Desired,
+) -> Result<bool> {
+    let HarnessRender {
+        scope,
+        name,
+        context,
+        ..
+    } = *rendering;
+    let project = scope.project;
+    no_symlinks(global)?;
+    if project.is_none() && global.try_exists()? {
+        result.files.insert(
+            global_file,
+            Rendered {
+                harness: name.into(),
+                skill: None,
+                source: global.into(),
+                reversible: {
+                    let text = fs::read_to_string(global)?;
+                    !text.contains("{{af:") && !text.contains("<!--")
+                },
+                bytes: render(&fs::read_to_string(global)?, context, true)?.into_bytes(),
+                executable: false,
+            },
+        );
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn desired(settings: &Settings) -> Result<Desired> {

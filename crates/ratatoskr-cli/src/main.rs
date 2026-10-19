@@ -28,6 +28,8 @@ enum Action {
         #[arg(long, conflicts_with = "create")]
         remote: Option<String>,
     },
+    /// Render every machine profile without configuration or filesystem writes.
+    Validate { source: PathBuf },
     /// Validate and preview all output changes, including text diffs.
     Plan,
     /// Check generated output and monitored projects. Exit 1 for pending work.
@@ -242,8 +244,76 @@ fn show(plan: &Plan, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn counted(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
 fn run() -> Result<i32> {
     let cli = Cli::parse();
+    if let Action::Validate { source } = &cli.command {
+        let report = core::validate_source(source)?;
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for profile in &report.profiles {
+                let skills: usize = profile.harnesses.iter().map(|h| h.skills_rendered).sum();
+                println!(
+                    "{}: {} across {} rendered; {}",
+                    profile.machine,
+                    counted(skills, "skill installation", "skill installations"),
+                    counted(profile.harnesses.len(), "harness", "harnesses"),
+                    counted(
+                        profile.problem_occurrences,
+                        "problem occurrence",
+                        "problem occurrences"
+                    )
+                );
+                for harness in &profile.harnesses {
+                    println!(
+                        "  {}: {}, {} skipped, {}; global instructions {}",
+                        harness.harness,
+                        counted(harness.skills_rendered, "skill", "skills"),
+                        harness.skills_skipped,
+                        counted(harness.files_rendered, "file", "files"),
+                        if harness.global_instructions_rendered {
+                            "rendered"
+                        } else {
+                            "not rendered"
+                        }
+                    );
+                }
+            }
+            for problem in &report.problems {
+                let contexts = problem
+                    .contexts
+                    .iter()
+                    .map(|context| {
+                        let mut parts = vec![context.machine.as_str()];
+                        parts.extend(context.harness.as_deref());
+                        parts.extend(context.skill.as_deref());
+                        parts.join("/")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("ERROR {}: {} [{}]", problem.path, problem.message, contexts);
+            }
+            println!(
+                "{}; {}; {}",
+                counted(report.profiles.len(), "profile", "profiles"),
+                counted(
+                    report.problems.len(),
+                    "distinct problem",
+                    "distinct problems"
+                ),
+                counted(
+                    report.problem_occurrences,
+                    "problem occurrence",
+                    "problem occurrences"
+                )
+            );
+        }
+        return Ok(i32::from(!report.problems.is_empty()));
+    }
     let path = cli.config.map(Ok).unwrap_or_else(default_config_path)?;
     match cli.command {
         Action::Init {

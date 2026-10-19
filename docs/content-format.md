@@ -9,6 +9,14 @@ Ratatoskr reads the existing agentfiles layout:
 
 The initial reader uses machine `repo` and `alert_command` fields only as available template context. It does not execute a legacy alert command or move its checkout according to `repo`. The local Ratatoskr configuration owns source/state paths. Scheduled syncing and alerts use the local configuration; they do not execute legacy machine-profile alert commands.
 
+## Validate before deployment
+
+Run `ratatoskr validate <source-path>` (optionally `--json`) to render all machine profiles and their enabled harnesses without configuration or writes. Selection and disabled skills behave exactly as sync: excluded skills are counted as skipped; selected skills, matching variants and global instructions use the shared renderer. Live root templates are checked for the profile's OS without accessing foreign destinations. Every independent render failure is reported with its source path and machine/harness/skill context. Invalid configuration for one profile does not prevent the others from being checked. Fix blocking profile/skill metadata errors and rerun to inspect content that depends on those definitions.
+
+Problem paths in human output and JSON `path` fields are relative to the source checkout and use forward slashes on every OS. Problems with the same path and message are grouped with all affected contexts.
+
+The command does not register projects or inspect Git, local ownership, host permissions, or language-specific syntax. No profiles is an inspection error rather than a successful empty validation. Use `plan` on the actual target before deployment.
+
 ## Selection and templates
 
 Set `enabled = false` at the top level of `skill.toml` to disable a skill without deleting its source. It can also contain `[target]` arrays named `harnesses`, `os`, `machines`, and `capabilities`. Members of each ordinary list are OR; different keys are AND. All capabilities must be present. An empty ordinary selector excludes the skill. Unknown selector keys are errors.

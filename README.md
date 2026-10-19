@@ -52,6 +52,23 @@ ratatoskr status
 
 Use `--config` to select a local configuration or set the absolute `RATATOSKR_CONFIG` environment variable. Both the desktop app and helper respect it. `--json` emits structured plans and status. `status` returns 1 for pending changes, conflicts, project inspection problems, or uncommitted/unpushed skill work; operational errors return 2.
 
+## Validate a content checkout
+
+Before opening a content PR, render every profile on any host:
+
+```sh
+ratatoskr validate ./agentfiles
+ratatoskr validate ./agentfiles --json
+```
+
+`validate` needs no local configuration. It reads every `machines/*.toml` profile and uses the sync renderer for each enabled harness, selected skill and optional `global/AGENTS.md`. It reports independent template, variable, metadata, target, variant and portable-path errors with machine/harness/skill/file context, continuing after failures. Summaries include each harness's rendered/skipped skill counts, file counts and global instructions.
+
+Rendering stays in memory: no state directory, staging copies, output writes, Git commands or network access. Foreign live profiles are supported without resolving their homes on the local filesystem. This checks generic rendering; it does not run language-specific syntax checks, inspect installed-file ownership or validate host permissions/symlinks at foreign destinations. Use `plan` on the intended machine for deployment checks.
+
+Exit codes are 0 when every profile renders cleanly, 1 for reported validation problems, and 2 when the source cannot be inspected (for example, a missing checkout or no profiles). Identical problems (same path and message) appear once with every affected machine/harness/skill context. Only failing contexts appear, so a missing `paths.*` variable identifies the machine profiles that need attention. Human diagnostics and JSON problem `path` fields use paths relative to the source checkout with forward slashes on every OS, such as `skills/review-code/SKILL.md`. Human contexts look like `[brunnr/claude/grill-me, brunnr/codex/grill-me]`; global instructions and harness configuration contexts omit the skill, and profile-level contexts omit the harness too.
+
+Each profile counts **problem occurrences**: one per distinct problem and affected context. The final summary reports both distinct problems and total occurrences; total occurrences equal the sum of the profile counts. For example, one shared error affecting two harnesses on three profiles produces two occurrences per profile and `3 profiles; 1 distinct problem; 6 problem occurrences` overall. `--json` uses the same grouping: each `problems` entry has `path`, `message` and `contexts: [{machine, harness, skill}]` (unavailable harness/skill values are `null`). Profile summaries and the report both expose `problem_occurrences`; `problems.length` is the distinct count. Inspection failures go to stderr.
+
 ## Development checks
 
 ```sh
