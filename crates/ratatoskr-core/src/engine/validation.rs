@@ -3,6 +3,7 @@ use crate::config::no_symlinks;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -41,6 +42,7 @@ impl HarnessValidation {
 pub struct ProfileValidation {
     pub machine: String,
     pub harnesses: Vec<HarnessValidation>,
+    /// Failed render attempts for this profile, including problems shared with other targets.
     pub problems: usize,
 }
 
@@ -48,6 +50,7 @@ pub struct ProfileValidation {
 pub struct ValidationReport {
     pub source: PathBuf,
     pub profiles: Vec<ProfileValidation>,
+    /// Unique (path, message) problems, retaining their first machine/harness/skill context.
     pub problems: Vec<ValidationProblem>,
 }
 
@@ -139,6 +142,10 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
         });
         report.problems.extend(diagnostics.problems);
     }
+    let mut seen = BTreeSet::new();
+    report
+        .problems
+        .retain(|problem| seen.insert((problem.path.clone(), problem.message.clone())));
     Ok(report)
 }
 

@@ -1719,3 +1719,118 @@ fn source_validation_reports_each_invalid_harness_and_continues_valid_targets() 
     assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
     assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);
 }
+
+#[test]
+fn source_validation_deduplicates_shared_problems_and_keeps_first_context() {
+    let f = Fixture::new();
+    f.write("harnesses.toml", "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\n[codex.roots]\nmacos='/unused'\n[claude]\nskills_dir='skills'\nglobal_file='CLAUDE.md'\n[claude.roots]\nmacos='/unused'\n");
+    for machine in ["first", "second", "test"] {
+        f.write(
+            &format!("machines/{machine}.toml"),
+            "os='macos'\nharnesses=['codex', 'claude']\n",
+        );
+    }
+    f.write(
+        "skills/review-code/variants/flavour=codex/readme.txt",
+        "Bad variant key",
+    );
+    f.write("skills/missing/skill.toml", "");
+    f.write("skills/malformed/skill.toml", "target = [");
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
+    for problem in &report.problems {
+        assert_eq!(problem.machine, "first");
+        assert_eq!(problem.harness.as_deref(), Some("codex"));
+    }
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.message.contains("Unknown variant key"))
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.message.contains("lacks SKILL.md"))
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.skill.as_deref() == Some("malformed"))
+    );
+    for profile in &report.profiles {
+        assert_eq!(
+            profile.problems, 6,
+            "Counts must retain every failing target"
+        );
+        assert_eq!(profile.harnesses.len(), 2);
+        assert!(profile.harnesses.iter().all(|h| h.skills_rendered == 0));
+    }
+    assert!(!f.settings.state_dir.exists());
+}
+
+#[test]
+fn source_validation_keeps_distinct_messages_at_the_same_path() {
+    let f = Fixture::new();
+    f.write("machines/remote.toml", "os='macos'\nharnesses=['codex']\n");
+    f.write("skills/review-code/SKILL.md", "---\nname: review-code\ndescription: Review code\n---\n<!-- only machine=remote -->{{af:missing_remote}}<!-- /only -->\n<!-- only machine=test -->{{af:missing_test}}<!-- /only -->\n");
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.problems.len(), 2);
+    assert_eq!(report.problems[0].path, report.problems[1].path);
+    assert_ne!(report.problems[0].message, report.problems[1].message);
+}
+
+#[test]
+fn deployment_propagates_render_errors_unchanged_without_writes() {
+    for (path, content, expected) in [
+        (
+            "skills/review-code/skill.toml",
+            "[target]\ninvalid=['codex']",
+            "Unknown target selector",
+        ),
+        (
+            "skills/review-code/extra.txt",
+            "{{af:missing_file}}",
+            "missing_file",
+        ),
+        (
+            "global/AGENTS.md",
+            "{{af:missing_global}}",
+            "missing_global",
+        ),
+        (
+            "harnesses.toml",
+            "[codex]\nskills_dir='../skills'\nglobal_file='AGENTS.md'\n[codex.roots]\nmacos='/unused'\n",
+            "Unsafe filename",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.write(path, content);
+        let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+        assert_eq!(report.problems.len(), 1, "{path}: {:?}", report.problems);
+        assert!(report.problems[0].message.contains(expected));
+        let error = format!("{:#}", plan(&f.settings).unwrap_err());
+        assert_eq!(error, report.problems[0].message, "{path}");
+        assert!(!f.settings.state_dir.exists());
+    }
+}
+
+#[test]
+fn source_validation_labels_non_string_harnesses_with_the_profile_and_value() {
+    let f = Fixture::new();
+    f.write(
+        "machines/test.toml",
+        "os='macos'\nharnesses=[42, 'codex']\n[paths]\nvault='/knowledge'\n",
+    );
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.problems.len(), 1);
+    let problem = &report.problems[0];
+    assert!(problem.harness.is_none());
+    assert_eq!(problem.path, f.settings.source.join("machines/test.toml"));
+    assert_eq!(problem.message, "Harness name must be a string: 42");
+    assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
+    assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);
+    assert!(!f.settings.state_dir.exists());
+}

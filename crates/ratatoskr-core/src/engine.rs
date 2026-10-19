@@ -394,9 +394,7 @@ fn render_scope_inner(
     let RenderScope {
         source,
         machine: machine_name,
-        content,
-        project,
-        output,
+        ..
     } = *scope;
     no_symlinks(source)?;
     identifier(machine_name)?;
@@ -435,308 +433,25 @@ fn render_scope_inner(
         project_roots: BTreeMap::new(),
     };
     let mut base_roots = Vec::new();
+    let profile_path = source.join("machines").join(format!("{machine_name}.toml"));
     for harness_name in enabled {
-        let name = harness_name.as_str().unwrap_or("<invalid>");
-        let harness_result = (|| -> Result<HarnessValidation> {
-            let name = harness_name
-                .as_str()
-                .context("Harness name must be a string")?;
-            let mut summary = HarnessValidation::new(name);
-            identifier(name)?;
-            let harness = harnesses
-                .get(name)
-                .with_context(|| format!("Unknown harness: {name}"))?;
-            let mut context = machine.clone();
-            context.insert("machine".into(), machine_name.into());
-            context.insert("harness".into(), name.into());
-            let (settings, preview) = match output {
-                Output::Workspace { settings, preview } => (Some(settings), preview),
-                Output::Validation => (None, true),
-            };
-            // Validation uses logical destinations only. They are never inspected or created.
-            let base = if let Some(settings) = settings {
-                if mode == "staging" || preview {
-                    let staging = settings.state_dir.join(&settings.machine).join("staging");
-                    if let Some(project) = project {
-                        staging
-                            .join("projects")
-                            .join(format!(
-                                "{:x}",
-                                Sha256::digest(project.to_string_lossy().as_bytes())
-                            ))
-                            .join(name)
-                    } else {
-                        staging.join(name)
-                    }
-                } else if let Some(project) = project {
-                    ensure!(os == host_os(), "Project profile does not match host OS");
-                    project.join(relative(
-                        harness
-                            .project_root
-                            .as_deref()
-                            .unwrap_or(&format!(".{name}")),
-                    )?)
-                } else {
-                    ensure!(
-                        os == host_os(),
-                        "Cannot apply {os} profile on {}",
-                        host_os()
-                    );
-                    let home = Path::new(string(&machine, "home")?);
-                    let actual_home = directories::BaseDirs::new()
-                        .context("Cannot find home")?
-                        .home_dir()
-                        .canonicalize()?;
-                    ensure!(
-                        home.canonicalize()? == actual_home,
-                        "Live machine profile belongs to another home"
-                    );
-                    let root = harness
-                        .roots
-                        .get(os)
-                        .context("Harness lacks a root for machine OS")?;
-                    PathBuf::from(render(root, &context, false)?)
-                }
-            } else {
-                if mode == "live" {
-                    let root = (|| {
-                        let root = harness
-                            .roots
-                            .get(os)
-                            .context("Harness lacks a root for machine OS")?;
-                        validation::validate_root(&render(root, &context, false)?, os)
-                    })();
-                    diagnostics.capture(
-                        root,
-                        machine_name,
-                        Some(name),
-                        None,
-                        &source.join("harnesses.toml"),
-                    )?;
-                    if let Some(root) = &harness.global_root {
-                        let root = render(root, &context, false)
-                            .and_then(|root| validation::validate_root(&root, os));
-                        diagnostics.capture(
-                            root,
-                            machine_name,
-                            Some(name),
-                            None,
-                            &source.join("harnesses.toml"),
-                        )?;
-                    }
-                }
-                if let Some(root) = &harness.project_root {
-                    diagnostics.capture(
-                        relative(root),
-                        machine_name,
-                        Some(name),
-                        None,
-                        &source.join("harnesses.toml"),
-                    )?;
-                }
-                source.join(".validation").join(name)
-            };
-            ensure!(base.is_absolute(), "Output root must be absolute");
-            if settings.is_some() {
-                no_symlinks(&base)?;
-            }
-            if let Some(settings) = settings {
-                ensure!(!overlaps(&base, content), "Output overlaps source checkout");
-                if mode == "live" && !preview {
-                    ensure!(
-                        !overlaps(&base, &settings.state_dir),
-                        "Output overlaps state"
-                    );
-                }
-            }
-            ensure!(
-                !base_roots
-                    .iter()
-                    .any(|other: &PathBuf| overlaps(other, &base)),
-                "Harness output roots overlap"
-            );
-            base_roots.push(base.clone());
-            let skills_base = base.join(relative(&harness.skills_dir)?);
-            let global_base = if mode == "live" && !preview && project.is_none() {
-                if let Some(root) = &harness.global_root {
-                    PathBuf::from(render(root, &context, false)?)
-                } else {
-                    base.clone()
-                }
-            } else {
-                base.clone()
-            };
-            ensure!(
-                global_base.is_absolute(),
-                "Global instruction root must be absolute"
-            );
-            if settings.is_some() {
-                no_symlinks(&global_base)?;
-            }
-            if let Some(settings) = settings {
-                ensure!(
-                    !overlaps(&global_base, content),
-                    "Instruction root overlaps source"
-                );
-                if mode == "live" && !preview {
-                    ensure!(
-                        !overlaps(&global_base, &settings.state_dir),
-                        "Instruction root overlaps state"
-                    );
-                }
-            }
-            let global_file = global_base.join(relative(&harness.global_file)?);
-            for (other_skills, other_global) in &result.allowed {
-                ensure!(
-                    !overlaps(&skills_base, other_skills)
-                        && !overlaps(&skills_base, other_global)
-                        && !overlaps(&global_file, other_skills)
-                        && global_file != *other_global,
-                    "Harness destinations overlap"
-                );
-            }
-            ensure!(
-                !global_file.starts_with(&skills_base),
-                "Global file overlaps skills directory"
-            );
-            result
-                .allowed
-                .push((skills_base.clone(), global_file.clone()));
-            result.install_targets.push(InstallTarget {
-                harness: name.into(),
-                skills_root: skills_base.clone(),
-                instructions_file: global_file.clone(),
-                project: project.map(Path::to_path_buf),
-            });
-            let skills_dir = content.join("skills");
-            no_symlinks(&skills_dir)?;
-            if skills_dir.try_exists()? {
-                let mut names = BTreeSet::new();
-                for skill in fs::read_dir(&skills_dir)? {
-                    let skill = match diagnostics.capture(
-                        skill.map_err(Into::into),
-                        machine_name,
-                        Some(name),
-                        None,
-                        &skills_dir,
-                    )? {
-                        Some(skill) => skill,
-                        None => continue,
-                    };
-                    let skill_path = skill.path();
-                    let skill_label = skill.file_name().to_string_lossy().into_owned();
-                    let skill_result = (|| -> Result<bool> {
-                        ensure!(
-                            skill.file_type()?.is_dir(),
-                            "Skills root must contain directories only"
-                        );
-                        let skill_name = skill
-                            .file_name()
-                            .into_string()
-                            .map_err(|_| anyhow::anyhow!("Non-UTF8 skill name"))?;
-                        identifier(&skill_name)?;
-                        ensure!(
-                            !matches!(skill_name.as_str(), "synced" | "anthropic-skills"),
-                            "Reserved skill name"
-                        );
-                        ensure!(
-                            names.insert(skill_name.to_lowercase()),
-                            "Duplicate skill name"
-                        );
-                        let Some(SkillSources {
-                            metadata,
-                            files: sources,
-                        }) = skill_sources(&skill_path, &skill_name, &context)?
-                        else {
-                            return Ok(false);
-                        };
-                        let root = skills_base.join(&skill_name);
-                        result.roots.insert(root.clone());
-                        let mut clean = true;
-                        let mut cases = BTreeSet::new();
-                        for (path, source) in sources {
-                            let file_result = (|| -> Result<()> {
-                                ensure!(
-                                    cases.insert(path.to_string_lossy().to_lowercase()),
-                                    "Variant filename collision"
-                                );
-                                ensure!(
-                                    result
-                                        .files
-                                        .insert(
-                                            root.join(&path),
-                                            render_skill_file(
-                                                &path,
-                                                &source,
-                                                &skill_name,
-                                                name,
-                                                &context,
-                                                &metadata
-                                            )?
-                                        )
-                                        .is_none(),
-                                    "Duplicate output file"
-                                );
-                                Ok(())
-                            })();
-                            if diagnostics
-                                .capture(
-                                    file_result,
-                                    machine_name,
-                                    Some(name),
-                                    Some(&skill_name),
-                                    &source,
-                                )?
-                                .is_some()
-                            {
-                                summary.files_rendered += 1;
-                            } else {
-                                clean = false;
-                            }
-                        }
-                        if clean {
-                            summary.skills_rendered += 1;
-                            result.skills += 1;
-                        }
-                        Ok(true)
-                    })();
-                    if let Some(false) = diagnostics.capture(
-                        skill_result,
-                        machine_name,
-                        Some(name),
-                        Some(&skill_label),
-                        &skill_path,
-                    )? {
-                        summary.skills_skipped += 1;
-                    }
-                }
-            }
-            let global = content.join("global/AGENTS.md");
-            let global_result = (|| -> Result<()> {
-                no_symlinks(&global)?;
-                if project.is_none() && global.try_exists()? {
-                    result.files.insert(
-                        global_file,
-                        Rendered {
-                            harness: name.into(),
-                            skill: None,
-                            source: global.clone(),
-                            reversible: {
-                                let text = fs::read_to_string(&global)?;
-                                !text.contains("{{af:") && !text.contains("<!--")
-                            },
-                            bytes: render(&fs::read_to_string(&global)?, &context, true)?
-                                .into_bytes(),
-                            executable: false,
-                        },
-                    );
-                    summary.global_instructions_rendered = true;
-                }
-                Ok(())
-            })();
-            diagnostics.capture(global_result, machine_name, Some(name), None, &global)?;
-            Ok(summary)
-        })();
+        let name_result = harness_name
+            .as_str()
+            .with_context(|| format!("Harness name must be a string: {harness_name}"));
+        let Some(name) =
+            diagnostics.capture(name_result, machine_name, None, None, &profile_path)?
+        else {
+            continue;
+        };
+        let harness_result = render_harness(
+            scope,
+            &machine,
+            name,
+            &harnesses,
+            &mut result,
+            &mut base_roots,
+            diagnostics,
+        );
         if let Some(summary) = diagnostics.capture(
             harness_result,
             machine_name,
@@ -748,6 +463,434 @@ fn render_scope_inner(
         }
     }
     Ok(result)
+}
+
+struct HarnessRender<'a, 's> {
+    scope: &'a RenderScope<'s>,
+    name: &'a str,
+    definition: &'a Harness,
+    context: &'a toml::Table,
+    os: &'a str,
+    mode: &'a str,
+}
+
+fn harness_base(
+    rendering: &HarnessRender<'_, '_>,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<PathBuf> {
+    let HarnessRender {
+        scope,
+        name,
+        definition: harness,
+        context,
+        os,
+        mode,
+    } = *rendering;
+    let RenderScope {
+        source,
+        machine: machine_name,
+        project,
+        output,
+        ..
+    } = *scope;
+    let (settings, preview) = match output {
+        Output::Workspace { settings, preview } => (Some(settings), preview),
+        Output::Validation => (None, true),
+    };
+    // Validation uses logical destinations only. They are never inspected or created.
+    Ok(if let Some(settings) = settings {
+        if mode == "staging" || preview {
+            let staging = settings.state_dir.join(&settings.machine).join("staging");
+            if let Some(project) = project {
+                staging
+                    .join("projects")
+                    .join(format!(
+                        "{:x}",
+                        Sha256::digest(project.to_string_lossy().as_bytes())
+                    ))
+                    .join(name)
+            } else {
+                staging.join(name)
+            }
+        } else if let Some(project) = project {
+            ensure!(os == host_os(), "Project profile does not match host OS");
+            project.join(relative(
+                harness
+                    .project_root
+                    .as_deref()
+                    .unwrap_or(&format!(".{name}")),
+            )?)
+        } else {
+            ensure!(
+                os == host_os(),
+                "Cannot apply {os} profile on {}",
+                host_os()
+            );
+            let home = Path::new(string(context, "home")?);
+            let actual_home = directories::BaseDirs::new()
+                .context("Cannot find home")?
+                .home_dir()
+                .canonicalize()?;
+            ensure!(
+                home.canonicalize()? == actual_home,
+                "Live machine profile belongs to another home"
+            );
+            let root = harness
+                .roots
+                .get(os)
+                .context("Harness lacks a root for machine OS")?;
+            PathBuf::from(render(root, context, false)?)
+        }
+    } else {
+        if mode == "live" {
+            let root = harness
+                .roots
+                .get(os)
+                .context("Harness lacks a root for machine OS")
+                .and_then(|root| render(root, context, false))
+                .and_then(|root| validation::validate_root(&root, os));
+            diagnostics.capture(
+                root,
+                machine_name,
+                Some(name),
+                None,
+                &source.join("harnesses.toml"),
+            )?;
+            if let Some(root) = &harness.global_root {
+                let root = render(root, context, false)
+                    .and_then(|root| validation::validate_root(&root, os));
+                diagnostics.capture(
+                    root,
+                    machine_name,
+                    Some(name),
+                    None,
+                    &source.join("harnesses.toml"),
+                )?;
+            }
+        }
+        if let Some(root) = &harness.project_root {
+            diagnostics.capture(
+                relative(root),
+                machine_name,
+                Some(name),
+                None,
+                &source.join("harnesses.toml"),
+            )?;
+        }
+        source.join(".validation").join(name)
+    })
+}
+
+fn render_harness(
+    scope: &RenderScope<'_>,
+    machine: &toml::Table,
+    name: &str,
+    harnesses: &BTreeMap<String, Harness>,
+    result: &mut Desired,
+    base_roots: &mut Vec<PathBuf>,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<HarnessValidation> {
+    let RenderScope {
+        machine: machine_name,
+        content,
+        project,
+        output,
+        ..
+    } = *scope;
+    let mut summary = HarnessValidation::new(name);
+    identifier(name)?;
+    let harness = harnesses
+        .get(name)
+        .with_context(|| format!("Unknown harness: {name}"))?;
+    let mut context = machine.clone();
+    context.insert("machine".into(), machine_name.into());
+    context.insert("harness".into(), name.into());
+    let os = string(machine, "os")?;
+    let mode = result.mode.clone();
+    let mode = mode.as_str();
+    let rendering = &HarnessRender {
+        scope,
+        name,
+        definition: harness,
+        context: &context,
+        os,
+        mode,
+    };
+    let (settings, preview) = match output {
+        Output::Workspace { settings, preview } => (Some(settings), preview),
+        Output::Validation => (None, true),
+    };
+    let base = harness_base(rendering, diagnostics)?;
+    ensure!(base.is_absolute(), "Output root must be absolute");
+    if settings.is_some() {
+        no_symlinks(&base)?;
+    }
+    if let Some(settings) = settings {
+        ensure!(!overlaps(&base, content), "Output overlaps source checkout");
+        if mode == "live" && !preview {
+            ensure!(
+                !overlaps(&base, &settings.state_dir),
+                "Output overlaps state"
+            );
+        }
+    }
+    ensure!(
+        !base_roots
+            .iter()
+            .any(|other: &PathBuf| overlaps(other, &base)),
+        "Harness output roots overlap"
+    );
+    base_roots.push(base.clone());
+    let skills_base = base.join(relative(&harness.skills_dir)?);
+    let global_base = if mode == "live" && !preview && project.is_none() {
+        if let Some(root) = &harness.global_root {
+            PathBuf::from(render(root, &context, false)?)
+        } else {
+            base.clone()
+        }
+    } else {
+        base.clone()
+    };
+    ensure!(
+        global_base.is_absolute(),
+        "Global instruction root must be absolute"
+    );
+    if settings.is_some() {
+        no_symlinks(&global_base)?;
+    }
+    if let Some(settings) = settings {
+        ensure!(
+            !overlaps(&global_base, content),
+            "Instruction root overlaps source"
+        );
+        if mode == "live" && !preview {
+            ensure!(
+                !overlaps(&global_base, &settings.state_dir),
+                "Instruction root overlaps state"
+            );
+        }
+    }
+    let global_file = global_base.join(relative(&harness.global_file)?);
+    for (other_skills, other_global) in &result.allowed {
+        ensure!(
+            !overlaps(&skills_base, other_skills)
+                && !overlaps(&skills_base, other_global)
+                && !overlaps(&global_file, other_skills)
+                && global_file != *other_global,
+            "Harness destinations overlap"
+        );
+    }
+    ensure!(
+        !global_file.starts_with(&skills_base),
+        "Global file overlaps skills directory"
+    );
+    result
+        .allowed
+        .push((skills_base.clone(), global_file.clone()));
+    result.install_targets.push(InstallTarget {
+        harness: name.into(),
+        skills_root: skills_base.clone(),
+        instructions_file: global_file.clone(),
+        project: project.map(Path::to_path_buf),
+    });
+    let skills_dir = content.join("skills");
+    no_symlinks(&skills_dir)?;
+    if skills_dir.try_exists()? {
+        let mut names = BTreeSet::new();
+        for skill in fs::read_dir(&skills_dir)? {
+            let skill = match diagnostics.capture(
+                skill.map_err(Into::into),
+                machine_name,
+                Some(name),
+                None,
+                &skills_dir,
+            )? {
+                Some(skill) => skill,
+                None => continue,
+            };
+            let skill_path = skill.path();
+            let skill_label = skill.file_name().to_string_lossy().into_owned();
+            let skill_result = render_skill(
+                rendering,
+                &skill,
+                &skills_base,
+                &mut names,
+                result,
+                &mut summary,
+                diagnostics,
+            );
+            if let Some(false) = diagnostics.capture(
+                skill_result,
+                machine_name,
+                Some(name),
+                Some(&skill_label),
+                &skill_path,
+            )? {
+                summary.skills_skipped += 1;
+            }
+        }
+    }
+
+    let global = content.join("global/AGENTS.md");
+    let global_result = render_global(rendering, &global, global_file, result);
+    if let Some(rendered) =
+        diagnostics.capture(global_result, machine_name, Some(name), None, &global)?
+    {
+        summary.global_instructions_rendered = rendered;
+    }
+    Ok(summary)
+}
+
+fn render_skill(
+    rendering: &HarnessRender<'_, '_>,
+    skill: &fs::DirEntry,
+    skills_base: &Path,
+    names: &mut BTreeSet<String>,
+    result: &mut Desired,
+    summary: &mut HarnessValidation,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<bool> {
+    let HarnessRender {
+        scope,
+        name,
+        context,
+        ..
+    } = *rendering;
+    let machine_name = scope.machine;
+    let skill_path = skill.path();
+    ensure!(
+        skill.file_type()?.is_dir(),
+        "Skills root must contain directories only"
+    );
+    let skill_name = skill
+        .file_name()
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("Non-UTF8 skill name"))?;
+    identifier(&skill_name)?;
+    ensure!(
+        !matches!(skill_name.as_str(), "synced" | "anthropic-skills"),
+        "Reserved skill name"
+    );
+    ensure!(
+        names.insert(skill_name.to_lowercase()),
+        "Duplicate skill name"
+    );
+    let Some(SkillSources {
+        metadata,
+        files: sources,
+    }) = skill_sources(&skill_path, &skill_name, context)?
+    else {
+        return Ok(false);
+    };
+    let root = skills_base.join(&skill_name);
+    result.roots.insert(root.clone());
+    let mut clean = true;
+    let mut cases = BTreeSet::new();
+    for (path, source) in sources {
+        let file_result = render_skill_output(
+            &SkillRender {
+                harness: rendering,
+                name: &skill_name,
+                root: &root,
+                metadata: &metadata,
+            },
+            &path,
+            &source,
+            &mut cases,
+            result,
+        );
+        if diagnostics
+            .capture(
+                file_result,
+                machine_name,
+                Some(name),
+                Some(&skill_name),
+                &source,
+            )?
+            .is_some()
+        {
+            summary.files_rendered += 1;
+        } else {
+            clean = false;
+        }
+    }
+    if clean {
+        summary.skills_rendered += 1;
+        result.skills += 1;
+    }
+    Ok(true)
+}
+
+struct SkillRender<'a, 's> {
+    harness: &'a HarnessRender<'a, 's>,
+    name: &'a str,
+    root: &'a Path,
+    metadata: &'a toml::Table,
+}
+
+fn render_skill_output(
+    skill: &SkillRender<'_, '_>,
+    path: &Path,
+    source: &Path,
+    cases: &mut BTreeSet<String>,
+    result: &mut Desired,
+) -> Result<()> {
+    let SkillRender {
+        harness,
+        name: skill_name,
+        root,
+        metadata,
+    } = *skill;
+    let HarnessRender { name, context, .. } = *harness;
+    ensure!(
+        cases.insert(path.to_string_lossy().to_lowercase()),
+        "Variant filename collision"
+    );
+    ensure!(
+        result
+            .files
+            .insert(
+                root.join(path),
+                render_skill_file(path, source, skill_name, name, context, metadata)?
+            )
+            .is_none(),
+        "Duplicate output file"
+    );
+    Ok(())
+}
+
+fn render_global(
+    rendering: &HarnessRender<'_, '_>,
+    global: &Path,
+    global_file: PathBuf,
+    result: &mut Desired,
+) -> Result<bool> {
+    let HarnessRender {
+        scope,
+        name,
+        context,
+        ..
+    } = *rendering;
+    let project = scope.project;
+    no_symlinks(global)?;
+    if project.is_none() && global.try_exists()? {
+        result.files.insert(
+            global_file,
+            Rendered {
+                harness: name.into(),
+                skill: None,
+                source: global.into(),
+                reversible: {
+                    let text = fs::read_to_string(global)?;
+                    !text.contains("{{af:") && !text.contains("<!--")
+                },
+                bytes: render(&fs::read_to_string(global)?, context, true)?.into_bytes(),
+                executable: false,
+            },
+        );
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn desired(settings: &Settings) -> Result<Desired> {

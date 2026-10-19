@@ -65,7 +65,7 @@ ratatoskr validate ./agentfiles --json
 
 Rendering stays in memory: no state directory, staging copies, output writes, Git commands or network access. Foreign live profiles are supported without resolving their homes on the local filesystem. This checks generic rendering; it does not run language-specific syntax checks, inspect installed-file ownership or validate host permissions/symlinks at foreign destinations. Use `plan` on the intended machine for deployment checks.
 
-Exit codes are 0 when every profile renders cleanly, 1 for reported validation problems, and 2 when the source cannot be inspected (for example, a missing checkout or no profiles). `--json` emits the full profile summaries and problem list for completed validation; inspection failures go to stderr.
+Exit codes are 0 when every profile renders cleanly, 1 for reported validation problems, and 2 when the source cannot be inspected (for example, a missing checkout or no profiles). Identical problems (same path and message) appear once, with their first context; per-profile counts still include every failed render attempt. `--json` emits the full profile summaries and problem list for completed validation; inspection failures go to stderr.
 
 ## Development checks
 
