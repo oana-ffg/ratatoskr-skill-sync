@@ -1,4 +1,4 @@
-//! Windows owns its sync/update timers in Rust, independent of WebView timers.
+//! Windows owns its sync timer and tray independently of the WebView.
 use anyhow::{Context, Result};
 use ratatoskr_core::{
     self as core, NotificationKind,
@@ -131,7 +131,6 @@ pub(crate) struct Runtime {
     sync_requested: AtomicBool,
     migrate_requested: AtomicBool,
     stopped: AtomicBool,
-    pub(crate) desktop_busy: AtomicBool,
     pause_item: MenuItem<tauri::Wry>,
 }
 impl Runtime {
@@ -414,7 +413,6 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         sync_requested: AtomicBool::new(false),
         migrate_requested: AtomicBool::new(true),
         stopped: AtomicBool::new(false),
-        desktop_busy: AtomicBool::new(false),
         pause_item,
     });
     TrayIconBuilder::with_id("sync")
@@ -531,64 +529,20 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
     refresh(app.handle())?;
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        // Updates precede the first sync, as on macOS. Hidden windows need no JS.
-        if let Err(error) = automatic_update(handle.clone(), true, true).await {
+        // The shared native updater completes startup before the first sync.
+        if let Err(error) = crate::update_scheduler::startup(handle.clone()).await {
             eprintln!("Ratatoskr update: {error}");
         }
-        let worker = handle.clone();
-        tauri::async_runtime::spawn_blocking(move || run_loop(&worker));
-        let mut next_update = Instant::now() + Duration::from_secs(60);
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if handle.state::<Runtime>().stopped.load(Ordering::Acquire) {
-                return;
-            }
-            if Instant::now() >= next_update {
-                next_update = Instant::now() + Duration::from_secs(60);
-                match automatic_update(handle.clone(), false, false).await {
-                    Ok(true)
-                        if !handle
-                            .state::<Runtime>()
-                            .desktop_busy
-                            .load(Ordering::Acquire) =>
-                    {
-                        if let Err(error) = automatic_update(handle.clone(), true, false).await {
-                            eprintln!("Ratatoskr update: {error}");
-                        }
-                    }
-                    Ok(_) => (),
-                    Err(error) => eprintln!("Ratatoskr update: {error}"),
-                }
-            }
-        }
+        tauri::async_runtime::spawn_blocking(move || run_loop(&handle));
     });
     Ok(())
 }
 
-async fn automatic_update(
-    app: tauri::AppHandle,
-    install: bool,
-    launch: bool,
-) -> Result<bool, String> {
-    let result = crate::commands::automatic_update(app.clone(), install, launch).await;
-    let diagnostic = (|| -> Result<()> {
-        let config = core::default_config_path()?;
-        let error = if config.try_exists()? {
-            core::job_status(&core::load(&config)?)?
-                .desktop_update_error
-                .or_else(|| result.as_ref().err().cloned())
-        } else {
-            result.as_ref().err().cloned()
-        };
-        app.state::<Runtime>().change(|s| {
-            s.update_error = error.map(|message| Problem::message("Desktop update", message))
-        })?;
-        refresh(&app)
-    })();
-    if let Err(error) = diagnostic {
-        report(&app, error);
-    }
-    result
+pub(crate) fn update_outcome(app: &tauri::AppHandle, error: Option<String>) -> Result<()> {
+    app.state::<Runtime>().change(|s| {
+        s.update_error = error.map(|message| Problem::message("Desktop update", message))
+    })?;
+    refresh(app)
 }
 
 fn run_loop(app: &tauri::AppHandle) {

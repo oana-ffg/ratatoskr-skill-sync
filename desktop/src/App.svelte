@@ -13,7 +13,8 @@
     type Skill,
     type BackgroundStatus,
   } from "./api";
-  import { runNightlyUpdate, runStartupUpdate } from "./update-policy";
+  import { runStartupUpdate } from "./update-policy";
+  import { listen } from "@tauri-apps/api/event";
   import Library from "./views/Library.svelte";
   import type SkillEditor from "./views/SkillEditor.svelte";
   let editorModule: ReturnType<typeof importEditor> | undefined;
@@ -116,7 +117,7 @@
     }
   }
   $effect(() => {
-    if (trayMode && ready)
+    if (isTauri() && ready)
       void api
         .command("set_desktop_busy", { busy: dirty || busy || !!pending })
         .catch(fail);
@@ -130,7 +131,7 @@
             (await api.command<BackgroundStatus | null>(
               "background_status",
             )) !== null;
-          if (!trayMode) await api.command("startup_update");
+          await api.command("startup_update");
         }
       },
       async () => {
@@ -141,21 +142,17 @@
         }
       },
     ).catch(fail);
-    const interval = setInterval(() => {
-      if (!isTauri() || trayMode || busy || !ready) return;
-      void runNightlyUpdate(
-        () => api.command<boolean>("nightly_update", { install: false }),
-        () => !dirty && !busy && !pending,
-        async () => {
-          busy = true;
-          try {
-            await api.command("nightly_update", { install: true });
-          } finally {
-            busy = false;
-          }
-        },
-      ).catch(fail);
-    }, 60000);
+    let stopUpdateErrors: (() => void) | undefined;
+    let disposed = false;
+    if (isTauri())
+      void listen<string | null>("desktop-update-error", (event) => {
+        if (event.payload) fail(event.payload);
+      })
+        .then((stop) => {
+          if (disposed) stop();
+          else stopUpdateErrors = stop;
+        })
+        .catch(fail);
     if (isTauri())
       void getCurrentWindow()
         .onCloseRequested((event) => {
@@ -178,7 +175,8 @@
     }
     window.addEventListener("beforeunload", beforeUnload);
     return () => {
-      clearInterval(interval);
+      disposed = true;
+      stopUpdateErrors?.();
       cleanup?.();
       window.removeEventListener("beforeunload", beforeUnload);
     };

@@ -120,6 +120,12 @@ pub struct DesktopUpdateState {
     last_check: Option<chrono::DateTime<chrono::FixedOffset>>,
     settings: Option<UpdateSettings>,
     pending: bool,
+    #[serde(default)]
+    last_success: Option<chrono::DateTime<chrono::FixedOffset>>,
+    #[serde(default)]
+    monitoring_since: Option<chrono::DateTime<chrono::FixedOffset>>,
+    #[serde(default)]
+    catch_up_started: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
 impl DesktopUpdateState {
@@ -149,8 +155,7 @@ impl DesktopUpdateState {
             .transpose()?;
         let slot = desktop_slot(settings, now)?;
         let missed = last_slot.is_none_or(|last| last < slot);
-        Ok((missed || (launch && same_settings && self.pending))
-            && (launch || desktop_window(settings, now)?))
+        Ok(missed || (launch && same_settings && self.pending))
     }
 
     pub fn record_attempt(
@@ -159,9 +164,93 @@ impl DesktopUpdateState {
         settings: &UpdateSettings,
         now: chrono::DateTime<chrono::FixedOffset>,
     ) -> Result<()> {
+        if self.settings.as_ref() != Some(settings) {
+            self.last_success = None;
+            self.monitoring_since = Some(now);
+        }
+        self.catch_up_started = (!desktop_window(settings, now)?).then_some(now);
         self.last_check = Some(now);
         self.settings = Some(settings.clone());
         self.record_available(path, false)
+    }
+
+    /// Normal nightly installation stays within the configured hour. A missed
+    /// window gets one persisted hour from its catch-up attempt, never a sliding retry.
+    pub fn installation_allowed(
+        &self,
+        settings: &UpdateSettings,
+        now: chrono::DateTime<chrono::FixedOffset>,
+        launch: bool,
+    ) -> Result<bool> {
+        if !settings.automatic || self.settings.as_ref() != Some(settings) {
+            return Ok(false);
+        }
+        Ok(launch
+            || desktop_window(settings, now)?
+            || self.catch_up_started.is_some_and(|started| {
+                let elapsed = now.signed_duration_since(started);
+                elapsed >= chrono::Duration::zero()
+                    && elapsed < chrono::Duration::minutes(DESKTOP_WINDOW_MINUTES)
+            }))
+    }
+
+    /// Track health only while this process is running. Old attempts are not
+    /// proof of success, and time spent with the app closed is not a missed check.
+    pub fn observe(
+        &mut self,
+        path: &std::path::Path,
+        settings: &UpdateSettings,
+        now: chrono::DateTime<chrono::FixedOffset>,
+        new_session: bool,
+    ) -> Result<()> {
+        let changed = self.settings.as_ref() != Some(settings);
+        if changed {
+            self.last_check = None;
+            self.last_success = None;
+            self.pending = false;
+            self.catch_up_started = None;
+        }
+        if new_session || self.monitoring_since.is_none() || changed {
+            self.monitoring_since = Some(now);
+            self.settings = Some(settings.clone());
+            crate::config::atomic_write(path, &serde_json::to_vec(self)?)?;
+        }
+        Ok(())
+    }
+
+    /// Two completed nightly windows without a successful check are unhealthy.
+    /// Keep the message stable so the existing 24-hour alert dedup policy applies.
+    pub fn overdue(
+        &self,
+        settings: &UpdateSettings,
+        now: chrono::DateTime<chrono::FixedOffset>,
+    ) -> Result<bool> {
+        if !settings.automatic || self.settings.as_ref() != Some(settings) {
+            return Ok(false);
+        }
+        let Some(since) = self.last_success.max(self.monitoring_since) else {
+            return Ok(false);
+        };
+        let slot = desktop_slot(settings, now)?;
+        let completed =
+            if now.naive_local() - slot < chrono::Duration::minutes(DESKTOP_WINDOW_MINUTES) {
+                slot - chrono::Duration::days(1)
+            } else {
+                slot
+            };
+        // Stored local calendar slots survive DST offset changes without turning
+        // yesterday's midnight check into a check on the day before yesterday.
+        Ok(completed - desktop_slot(settings, since)? >= chrono::Duration::days(2))
+    }
+
+    pub fn record_success(
+        &mut self,
+        path: &std::path::Path,
+        now: chrono::DateTime<chrono::FixedOffset>,
+        available: bool,
+    ) -> Result<()> {
+        self.last_success = Some(now);
+        self.record_available(path, available)
     }
 
     pub fn record_available(&mut self, path: &std::path::Path, available: bool) -> Result<()> {
@@ -508,6 +597,7 @@ mod tests {
             last_check,
             settings: Some(settings.clone()),
             pending: false,
+            ..Default::default()
         }
         .due(settings, now, false)
         .unwrap()
@@ -578,18 +668,21 @@ mod tests {
             time: "03:15".into(),
             ..Default::default()
         };
-        assert!(!nightly_due(
+        assert!(nightly_due(
             &settings,
             clock("2026-10-16T03:14:59+02:00"),
             None
         ));
         let now = clock("2026-10-16T03:15:00+02:00");
+        assert!(!desktop_window(&settings, clock("2026-10-16T03:14:59+02:00")).unwrap());
+        assert!(desktop_window(&settings, now).unwrap());
+        assert!(!desktop_window(&settings, clock("2026-10-16T04:15:00+02:00")).unwrap());
         assert!(nightly_due(&settings, now, None));
         assert!(!helper_check_due(&settings, now, Some(now)).unwrap());
         assert!(
             helper_check_due(&settings, clock("2026-10-17T03:15:00+02:00"), Some(now)).unwrap()
         );
-        assert!(!nightly_due(
+        assert!(nightly_due(
             &settings,
             clock("2026-10-16T04:15:00+02:00"),
             None
@@ -657,7 +750,7 @@ mod tests {
         let path = settings.state_dir.join("test/desktop-update.json");
         let mut state = DesktopUpdateState::load(&path).unwrap();
         assert!(state.due(&settings.updates, now, true).unwrap());
-        assert!(!state.due(&settings.updates, now, false).unwrap());
+        assert!(state.due(&settings.updates, now, false).unwrap());
         state.record_attempt(&path, &settings.updates, now).unwrap();
         let mut state = DesktopUpdateState::load(&path).unwrap();
         assert!(!state.due(&settings.updates, now, true).unwrap());
@@ -714,6 +807,134 @@ mod tests {
         )
         .unwrap();
         assert!(DesktopUpdateState::load(&path).is_err());
+    }
+
+    #[test]
+    fn resident_checks_catch_up_after_sleep_and_days_of_uptime() {
+        let settings = UpdateSettings::default();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("desktop-update.json");
+        let mut state = DesktopUpdateState::default();
+        let checked = clock("2026-10-18T00:01:00+02:00");
+        state.record_attempt(&path, &settings, checked).unwrap();
+        state.record_success(&path, checked, false).unwrap();
+        for resume in ["2026-10-19T13:38:00+02:00", "2026-10-25T13:38:00+01:00"] {
+            let mut resumed = DesktopUpdateState::load(&path).unwrap();
+            let now = clock(resume);
+            assert!(!desktop_window(&settings, now).unwrap());
+            assert!(resumed.due(&settings, now, false).unwrap());
+            resumed.record_attempt(&path, &settings, now).unwrap();
+            assert!(resumed.installation_allowed(&settings, now, false).unwrap());
+            assert!(!resumed.due(&settings, now, false).unwrap());
+            let reopened = DesktopUpdateState::load(&path).unwrap();
+            assert!(
+                reopened
+                    .installation_allowed(&settings, now + chrono::Duration::minutes(59), false)
+                    .unwrap()
+            );
+            assert!(
+                !reopened
+                    .installation_allowed(&settings, now + chrono::Duration::hours(1), false)
+                    .unwrap()
+            );
+        }
+        let normal = clock("2026-10-26T00:01:00+01:00");
+        state.record_attempt(&path, &settings, normal).unwrap();
+        assert!(
+            state
+                .installation_allowed(&settings, clock("2026-10-26T00:59:59+01:00"), false)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .installation_allowed(&settings, clock("2026-10-26T01:00:00+01:00"), false)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn overdue_tracks_success_not_attempts_and_migrates_legacy_state_with_grace() {
+        let settings = UpdateSettings::default();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("desktop-update.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "last_check": "2026-10-18T00:01:00+02:00", "settings": settings, "pending": false
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut state = DesktopUpdateState::load(&path).unwrap();
+        let started = clock("2026-10-19T13:38:00+02:00");
+        state.observe(&path, &settings, started, false).unwrap();
+        assert!(!state.overdue(&settings, started).unwrap());
+        for value in ["2026-10-20T13:38:00+02:00", "2026-10-21T00:59:59+02:00"] {
+            assert!(!state.overdue(&settings, clock(value)).unwrap());
+        }
+        let overdue = clock("2026-10-21T01:00:00+02:00");
+        state.record_attempt(&path, &settings, overdue).unwrap();
+        assert!(
+            DesktopUpdateState::load(&path)
+                .unwrap()
+                .overdue(&settings, overdue)
+                .unwrap()
+        );
+        assert!(
+            state
+                .overdue(&settings, clock("2026-10-22T00:30:00+02:00"))
+                .unwrap()
+        );
+        state.record_success(&path, overdue, false).unwrap();
+        assert!(!state.overdue(&settings, overdue).unwrap());
+        state
+            .record_success(&path, clock("2026-10-24T00:01:00+02:00"), false)
+            .unwrap();
+        assert!(
+            !state
+                .overdue(&settings, clock("2026-10-25T13:38:00+01:00"))
+                .unwrap()
+        );
+        assert!(
+            state
+                .overdue(&settings, clock("2026-10-26T13:38:00+01:00"))
+                .unwrap()
+        );
+        let reopened = clock("2026-10-28T13:38:00+01:00");
+        state.observe(&path, &settings, reopened, true).unwrap();
+        assert!(
+            !state.overdue(&settings, reopened).unwrap(),
+            "time with the app closed is not a resident failure"
+        );
+        assert!(
+            state
+                .overdue(&settings, clock("2026-10-30T01:00:00+01:00"))
+                .unwrap()
+        );
+        let disabled = UpdateSettings {
+            automatic: false,
+            ..settings.clone()
+        };
+        assert!(
+            !state
+                .overdue(&disabled, clock("2026-10-25T13:38:00+01:00"))
+                .unwrap()
+        );
+        let changed = UpdateSettings {
+            time: "23:30".into(),
+            ..settings
+        };
+        state.observe(&path, &changed, overdue, false).unwrap();
+        assert!(state.due(&changed, overdue, false).unwrap());
+        assert!(!state.overdue(&changed, overdue).unwrap());
     }
 
     #[test]
