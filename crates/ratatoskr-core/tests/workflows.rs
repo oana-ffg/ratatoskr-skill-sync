@@ -1524,3 +1524,198 @@ fn tray_runs_record_success_conflicts_and_configuration_errors_in_existing_ledge
             .is_empty()
     );
 }
+
+#[test]
+fn source_validation_renders_all_profiles_without_writing_anything() {
+    let f = Fixture::new();
+    f.write("machines/remote.toml", "os='windows'\nmode='live'\nhome='Z:\\remote-user'\nharnesses=['codex']\n[paths]\nvault='Z:\\knowledge'\n");
+    f.write(
+        "global/AGENTS.md",
+        "Use {{af:machine}} with {{af:harness}}.\n",
+    );
+    fn snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        let mut entries = Vec::new();
+        for entry in walkdir::WalkDir::new(root) {
+            let entry = entry.unwrap();
+            entries.push((
+                entry.path().strip_prefix(root).unwrap().into(),
+                entry
+                    .file_type()
+                    .is_file()
+                    .then(|| fs::read(entry.path()).unwrap()),
+            ));
+        }
+        entries.sort();
+        entries
+    }
+    let before = snapshot(&f.root);
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(
+        report
+            .profiles
+            .iter()
+            .map(|p| p.machine.as_str())
+            .collect::<Vec<_>>(),
+        ["remote", "test"]
+    );
+    for profile in &report.profiles {
+        assert_eq!(profile.harnesses.len(), 1);
+        assert_eq!(profile.harnesses[0].skills_rendered, 1);
+        assert!(profile.harnesses[0].global_instructions_rendered);
+    }
+    assert_eq!(
+        snapshot(&f.root),
+        before,
+        "Validation must not change source or create state/staging"
+    );
+}
+
+#[test]
+fn source_validation_collects_remote_templates_files_skills_globals_and_profiles() {
+    let f = Fixture::new();
+    f.write("machines/remote.toml", "os='windows'\nmode='live'\nhome='Z:\\remote-user'\nharnesses=['codex', 'unknown']\n[paths]\nvault='Z:\\knowledge'\n");
+    f.write("machines/broken.toml", "os = [");
+    f.write("skills/review-code/SKILL.md", "---\nname: review-code\ndescription: Review code\n---\nGood locally.\n<!-- only machine=remote -->\n{{af:missing_remote}}\n<!-- /only -->\n");
+    f.write("skills/review-code/extra.txt", "{{af:missing_file}}");
+    f.write("skills/second/skill.toml", "[target]\ninvalid=['codex']\n");
+    f.write(
+        "skills/second/SKILL.md",
+        "Not reached because targeting is invalid",
+    );
+    f.write(
+        "global/AGENTS.md",
+        "<!-- only machine=remote -->\n{{af:missing_global}}\n<!-- /only -->\n",
+    );
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.profiles.len(), 3);
+    let remote = report
+        .problems
+        .iter()
+        .filter(|p| p.machine == "remote")
+        .collect::<Vec<_>>();
+    assert_eq!(remote.len(), 5, "{remote:?}");
+    assert!(remote.iter().any(|p| p.harness.as_deref() == Some("codex")
+        && p.skill.as_deref() == Some("review-code")
+        && p.path.ends_with("SKILL.md")
+        && p.message.contains("missing_remote")));
+    assert!(
+        remote
+            .iter()
+            .any(|p| p.path.ends_with("extra.txt") && p.message.contains("missing_file"))
+    );
+    assert!(
+        remote.iter().any(|p| p.skill.as_deref() == Some("second")
+            && p.message.contains("Unknown target selector"))
+    );
+    assert!(remote.iter().any(|p| p.skill.is_none()
+        && p.path.ends_with("global/AGENTS.md")
+        && p.message.contains("missing_global")));
+    assert!(
+        remote
+            .iter()
+            .any(|p| p.harness.as_deref() == Some("unknown"))
+    );
+    assert!(report.problems.iter().any(|p| p.machine == "broken"));
+    assert_eq!(
+        report
+            .profiles
+            .iter()
+            .find(|p| p.machine == "test")
+            .unwrap()
+            .problems,
+        2
+    );
+    assert!(
+        plan(&f.settings).is_err(),
+        "Sync/plan must still refuse bad sources"
+    );
+    assert!(!f.settings.state_dir.exists());
+}
+
+#[test]
+fn source_validation_reports_invalid_variants_and_reserved_names() {
+    let f = Fixture::new();
+    f.write(
+        "skills/review-code/variants/flavour=codex/readme.txt",
+        "Invalid variant key",
+    );
+    f.write("skills/synced/skill.toml", "");
+    f.write(
+        "skills/synced/SKILL.md",
+        "---\nname: synced\ndescription: Reserved name\n---\nBody\n",
+    );
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.skill.as_deref() == Some("review-code")
+                && p.message.contains("Unknown variant key"))
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.skill.as_deref() == Some("synced")
+                && p.message.contains("Reserved skill name"))
+    );
+}
+
+#[test]
+fn source_validation_checks_foreign_live_root_templates_without_accessing_them() {
+    let f = Fixture::new();
+    f.write("machines/remote.toml", "os='windows'\nmode='live'\nhome='Z:\\remote-user'\nharnesses=['codex']\n[paths]\nvault='Z:\\knowledge'\n");
+    f.write("harnesses.toml", "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\nglobal_root='relative'\n[codex.roots]\nwindows='{{af:missing_root}}'\n");
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.message.contains("missing_root"))
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.message.contains("must be absolute for windows"))
+    );
+    assert_eq!(
+        report.profiles[0].harnesses[0].skills_rendered, 1,
+        "Root errors must not hide template errors"
+    );
+}
+
+#[test]
+fn source_validation_reports_each_invalid_harness_and_continues_valid_targets() {
+    let f = Fixture::new();
+    f.write(
+        "machines/test.toml",
+        "os='macos'\nharnesses=['bad', 'codex', 'unknown']\n[paths]\nvault='/knowledge'\n",
+    );
+    let mut harnesses = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();
+    harnesses.push_str(
+        "\n[bad]\nskills_dir='../skills'\nglobal_file='AGENTS.md'\n[bad.roots]\nmacos='/unused'\n",
+    );
+    f.write("harnesses.toml", &harnesses);
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.harness.as_deref() == Some("bad") && p.message.contains("Unsafe filename"))
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.harness.as_deref() == Some("unknown")
+                && p.message.contains("Unknown harness"))
+    );
+    assert_eq!(report.profiles[0].harnesses.len(), 1);
+    assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
+    assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);
+}

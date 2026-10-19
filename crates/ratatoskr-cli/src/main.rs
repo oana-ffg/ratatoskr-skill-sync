@@ -28,6 +28,8 @@ enum Action {
         #[arg(long, conflicts_with = "create")]
         remote: Option<String>,
     },
+    /// Render every machine profile without configuration or filesystem writes.
+    Validate { source: PathBuf },
     /// Validate and preview all output changes, including text diffs.
     Plan,
     /// Check generated output and monitored projects. Exit 1 for pending work.
@@ -244,6 +246,53 @@ fn show(plan: &Plan, json: bool) -> Result<()> {
 
 fn run() -> Result<i32> {
     let cli = Cli::parse();
+    if let Action::Validate { source } = &cli.command {
+        let report = core::validate_source(source)?;
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for profile in &report.profiles {
+                let skills: usize = profile.harnesses.iter().map(|h| h.skills_rendered).sum();
+                println!(
+                    "{}: {} skill installations across {} harnesses rendered; {} problems",
+                    profile.machine,
+                    skills,
+                    profile.harnesses.len(),
+                    profile.problems
+                );
+                for harness in &profile.harnesses {
+                    println!(
+                        "  {}: {} skills, {} skipped, {} files; global instructions {}",
+                        harness.harness,
+                        harness.skills_rendered,
+                        harness.skills_skipped,
+                        harness.files_rendered,
+                        if harness.global_instructions_rendered {
+                            "rendered"
+                        } else {
+                            "not rendered"
+                        }
+                    );
+                }
+            }
+            for problem in &report.problems {
+                println!(
+                    "ERROR {} / {} / {} ({}): {}",
+                    problem.machine,
+                    problem.harness.as_deref().unwrap_or("profile"),
+                    problem.skill.as_deref().unwrap_or("global/config"),
+                    problem.path.display(),
+                    problem.message
+                );
+            }
+            println!(
+                "{} profiles; {} problems",
+                report.profiles.len(),
+                report.problems.len()
+            );
+        }
+        return Ok(i32::from(!report.problems.is_empty()));
+    }
     let path = cli.config.map(Ok).unwrap_or_else(default_config_path)?;
     match cli.command {
         Action::Init {

@@ -33,9 +33,10 @@ pub use content::{
 };
 pub use content::{SourceDocument, read_source_file, source_files, write_source_file};
 pub use engine::{
-    Change, Conflict, ConflictAction, Plan, ResolutionPreview, adopt, apply, apply_reviewed, plan,
+    Change, Conflict, ConflictAction, HarnessValidation, Plan, ProfileValidation,
+    ResolutionPreview, ValidationProblem, ValidationReport, adopt, apply, apply_reviewed, plan,
     preview_resolution, preview_source_edit, read_conflict_source, resolve_conflict,
-    restore_backup,
+    restore_backup, validate_source,
 };
 pub use git::{ProjectStatus, add_project, project_status, remove_project, sync};
 pub use jobs::{JobRun, JobStatus, detect_helper, job_status};
