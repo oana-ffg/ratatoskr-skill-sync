@@ -812,7 +812,10 @@ mod tests {
         let (config, mut settings) = configured(&temp);
         settings.updates.automatic = true;
         settings.updates.time = "00:00".into();
-        let alerts = temp.path().canonicalize().unwrap().join("alerts.gitconfig");
+        // Git's --file cannot open Windows verbatim paths from std::fs::canonicalize.
+        let alerts = dunce::canonicalize(temp.path())
+            .unwrap()
+            .join("alerts.gitconfig");
         // Git's argv-only config writer is a cross-platform, local alert recorder.
         settings.alert_command = vec![
             "git".into(),
