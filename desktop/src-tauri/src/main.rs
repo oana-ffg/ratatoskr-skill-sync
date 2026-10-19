@@ -4,6 +4,7 @@ mod commands;
 mod desktop_updates;
 #[cfg(windows)]
 mod tray;
+mod update_scheduler;
 
 fn main() {
     let builder = tauri::Builder::default();
@@ -16,12 +17,18 @@ fn main() {
                 tray::report(app, error);
             }
         }))
-        .plugin(tauri_plugin_notification::init())
-        .setup(|app| tray::setup(app).map_err(Into::into));
+        .plugin(tauri_plugin_notification::init());
     let autostart = tauri_plugin_autostart::Builder::new();
     #[cfg(windows)]
     let autostart = autostart.args(["--background"]);
     builder
+        .manage(update_scheduler::Runtime::default())
+        .setup(|app| {
+            #[cfg(windows)]
+            tray::setup(app)?;
+            update_scheduler::setup(app);
+            Ok(())
+        })
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(autostart.build())
         .plugin(tauri_plugin_dialog::init())
@@ -85,7 +92,6 @@ fn main() {
             commands::disable_schedule,
             commands::read_update_settings,
             commands::update_desktop,
-            commands::nightly_update,
             commands::startup_update,
             commands::save_update_schedule,
             commands::restart_desktop

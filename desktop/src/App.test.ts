@@ -130,14 +130,11 @@ test("onboarding Settings checks and installs updates without workspace commands
   );
 });
 
-test("unconfigured native startup and nightly ticks run, then timers stop on unmount", async () => {
+test("native startup gates readiness and unsaved editors notify the native scheduler", async () => {
   vi.stubGlobal("isTauri", true);
   mockWindows("main");
   const calls = vi.fn((cmd: string, args: unknown) => {
     if (cmd === "startup_update") return false;
-    if (cmd === "read_workspace") return null;
-    if (cmd === "nightly_update")
-      return !(args as { install: boolean }).install;
     if (cmd.startsWith("plugin:event|")) return 1;
     return fixtureIPC(cmd, args as Record<string, unknown>);
   });
@@ -145,11 +142,18 @@ test("unconfigured native startup and nightly ticks run, then timers stop on unm
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const { unmount } = render(App);
   try {
-    await screen.findByRole("button", { name: "Connect workspace" });
+    await screen.findByRole("heading", { name: /Skills/ });
     expect(calls).toHaveBeenCalledWith("startup_update", {});
+    expect(calls).toHaveBeenCalledWith("set_desktop_busy", { busy: false });
+    await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+    await screen.findByLabelText("Open Ratatoskr at login");
+    await fireEvent.click(screen.getByLabelText("Open Ratatoskr at login"));
+    await waitFor(() =>
+      expect(calls).toHaveBeenCalledWith("set_desktop_busy", { busy: true }),
+    );
+    calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);
-    expect(calls).toHaveBeenCalledWith("nightly_update", { install: false });
-    expect(calls).toHaveBeenCalledWith("nightly_update", { install: true });
+    expect(calls).not.toHaveBeenCalled();
     unmount();
     calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);

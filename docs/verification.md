@@ -68,7 +68,7 @@ Regression coverage now exercises the desktop policy used by the native commands
 - Manual checks and installations use compiled official defaults without creating a workspace config.
 - Configured endpoint/key overrides, disabled automatic updates, custom nightly time, and cross-process idle deferral still apply. The legacy workspace ledger remains readable and subsequent attempts persist in the app directory.
 - Network/install errors propagate; failed attempts are accounted for; corrupt state and invalid configuration are refused.
-- App UI tests open Settings from onboarding, exercise Check → Install → Restart, reject accidental workspace-setting reads, and verify native startup/nightly IPC calls and interval cleanup without a workspace.
+- App UI tests open Settings from onboarding, exercise Check → Install → Restart, reject accidental workspace-setting reads, and verify native startup IPC and busy-state handoff without scheduling frontend update timers.
 
 Local checks passed: 79 Rust tests, 24 frontend tests, Rust formatting, strict Clippy for default targets and native desktop (including tests), npm ci, Prettier, TypeScript, Vite production build, and native desktop/helper debug builds. Remote CI results are recorded in PR #4. A production-signed 0.2.1 update downloading, installing, and relaunching on Brunnr or Windows remains unverified: no release is cut by this change. The injected installer tests establish the policy and persistence, not a real operating-system installation. Reboot/login launch and an unattended midnight run also remain platform acceptance steps.
 

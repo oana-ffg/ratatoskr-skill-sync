@@ -265,21 +265,19 @@ pub(crate) fn disable_schedule() -> Reply<String> {
 fn install_desktop_update(
     app: &tauri::AppHandle,
     update: tauri_plugin_updater::Update,
-    automatic: bool,
+) -> anyhow::Result<()> {
+    // The updater verifies the signed download before invoking the installer.
+    let bytes = tauri::async_runtime::block_on(update.download(|_, _| (), || ()))?;
+    install_downloaded_update(app, &update, bytes)
+}
+
+fn install_downloaded_update(
+    app: &tauri::AppHandle,
+    update: &tauri_plugin_updater::Update,
+    bytes: Vec<u8>,
 ) -> anyhow::Result<()> {
     #[cfg(not(windows))]
-    let _ = (app, automatic);
-    // Verify the download first, then recheck edits made during the request.
-    let bytes = tauri::async_runtime::block_on(update.download(|_, _| (), || ()))?;
-    #[cfg(windows)]
-    if automatic {
-        anyhow::ensure!(
-            !app.state::<crate::tray::Runtime>()
-                .desktop_busy
-                .load(std::sync::atomic::Ordering::Acquire),
-            "Desktop update postponed: the app has unsaved or busy work. Retry from Settings or wait for the next update window."
-        );
-    }
+    let _ = app;
     #[cfg(windows)]
     crate::tray::prepare_restart(app)?;
     let result = update.install(bytes);
@@ -292,12 +290,7 @@ fn install_desktop_update(
 
 #[tauri::command]
 pub(crate) fn set_desktop_busy(app: tauri::AppHandle, busy: bool) {
-    #[cfg(windows)]
-    app.state::<crate::tray::Runtime>()
-        .desktop_busy
-        .store(busy, std::sync::atomic::Ordering::Release);
-    #[cfg(not(windows))]
-    let _ = (app, busy);
+    crate::update_scheduler::set_busy(&app, busy);
 }
 #[tauri::command]
 pub(crate) fn background_status(app: tauri::AppHandle) -> Reply<Option<serde_json::Value>> {
@@ -379,13 +372,8 @@ fn update_result<T>(context: &UpdateContext, result: anyhow::Result<T>) -> Reply
 }
 
 #[tauri::command]
-pub(crate) async fn nightly_update(app: tauri::AppHandle, install: bool) -> Reply<bool> {
-    automatic_update(app, install, false).await
-}
-
-#[tauri::command]
 pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
-    automatic_update(app, true, true).await
+    crate::update_scheduler::startup(app).await
 }
 
 pub(crate) async fn automatic_update(
@@ -394,6 +382,9 @@ pub(crate) async fn automatic_update(
     launch: bool,
 ) -> Reply<bool> {
     tauri::async_runtime::spawn_blocking(move || {
+        if install && !launch && crate::update_scheduler::busy(&app) {
+            return Ok(false);
+        }
         let _guard = if install {
             match MUTATION.try_lock() {
                 Ok(guard) => Some(guard),
@@ -418,9 +409,18 @@ pub(crate) async fn automatic_update(
                         .map_err(Into::into)
                 },
                 |update| {
-                    install_desktop_update(&app, update, true)?;
+                    // A download can outlast the idle period. Keep the checked
+                    // update pending when editing begins during that request.
+                    let bytes = tauri::async_runtime::block_on(update.download(|_, _| (), || ()))?;
+                    if crate::update_scheduler::busy(&app)
+                        || !context
+                            .installation_allowed(chrono::Local::now().fixed_offset(), launch)?
+                    {
+                        return Ok(false);
+                    }
+                    install_downloaded_update(&app, update, bytes)?;
                     installed = true;
-                    Ok(())
+                    Ok(true)
                 },
             )
         })();
@@ -478,8 +478,11 @@ pub(crate) async fn update_desktop(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
         let context = update_context(&app)?;
+        let mut nightly = NIGHTLY.lock().map_err(|e| e.to_string())?;
+        nightly.pending = None;
         let result = manual_update_with(
             &context,
+            chrono::Local::now().fixed_offset(),
             install,
             |settings| {
                 tauri::async_runtime::block_on(desktop_updater(&app, settings)?.check())
@@ -487,7 +490,7 @@ pub(crate) async fn update_desktop(
             },
             |update| update.version.clone(),
             |update| {
-                install_desktop_update(&app, update, false)?;
+                install_desktop_update(&app, update)?;
                 Ok(())
             },
         );
