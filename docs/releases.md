@@ -1,5 +1,11 @@
 # Releases and signed updates
 
+## v0.2.9 release notes
+
+- Add `ratatoskr validate <source>` to check content across machine profiles and enabled harnesses without local configuration or writing rendered files. It reports rendering problems with their machine, harness, skill and file context.
+- Fix desktops never catching up after a missed nightly update window (for example, a Mac asleep at midnight), which left macOS apps on old versions without any error. Update checks now run on a shared native Rust scheduler instead of a WebView timer, catch up after a missed window, and alert when two completed windows pass without a successful check.
+- **Automatic updates can now install and relaunch during the day after a missed nightly window.** Catch-up opens one persisted hour for installation once unsaved edits and running operations are clear. If the app stays busy until that hour expires, installation waits for the next night or app launch.
+
 The official trust root is compiled into the helper (`crates/ratatoskr-core/src/update-public-key.txt`) and the desktop updater configuration. Both use:
 
 `https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json`
