@@ -244,6 +244,10 @@ fn show(plan: &Plan, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn counted(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     if let Action::Validate { source } = &cli.command {
@@ -254,19 +258,23 @@ fn run() -> Result<i32> {
             for profile in &report.profiles {
                 let skills: usize = profile.harnesses.iter().map(|h| h.skills_rendered).sum();
                 println!(
-                    "{}: {} skill installations across {} harnesses rendered; {} problems",
+                    "{}: {} across {} rendered; {}",
                     profile.machine,
-                    skills,
-                    profile.harnesses.len(),
-                    profile.problems
+                    counted(skills, "skill installation", "skill installations"),
+                    counted(profile.harnesses.len(), "harness", "harnesses"),
+                    counted(
+                        profile.problem_occurrences,
+                        "problem occurrence",
+                        "problem occurrences"
+                    )
                 );
                 for harness in &profile.harnesses {
                     println!(
-                        "  {}: {} skills, {} skipped, {} files; global instructions {}",
+                        "  {}: {}, {} skipped, {}; global instructions {}",
                         harness.harness,
-                        harness.skills_rendered,
+                        counted(harness.skills_rendered, "skill", "skills"),
                         harness.skills_skipped,
-                        harness.files_rendered,
+                        counted(harness.files_rendered, "file", "files"),
                         if harness.global_instructions_rendered {
                             "rendered"
                         } else {
@@ -276,19 +284,37 @@ fn run() -> Result<i32> {
                 }
             }
             for problem in &report.problems {
+                let contexts = problem
+                    .contexts
+                    .iter()
+                    .map(|context| {
+                        let mut parts = vec![context.machine.as_str()];
+                        parts.extend(context.harness.as_deref());
+                        parts.extend(context.skill.as_deref());
+                        parts.join("/")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 println!(
-                    "ERROR {} / {} / {} ({}): {}",
-                    problem.machine,
-                    problem.harness.as_deref().unwrap_or("profile"),
-                    problem.skill.as_deref().unwrap_or("global/config"),
-                    problem.path.display(),
-                    problem.message
+                    "ERROR {}: {} [{}]",
+                    problem.path.strip_prefix(&report.source)?.display(),
+                    problem.message,
+                    contexts
                 );
             }
             println!(
-                "{} profiles; {} problems",
-                report.profiles.len(),
-                report.problems.len()
+                "{}; {}; {}",
+                counted(report.profiles.len(), "profile", "profiles"),
+                counted(
+                    report.problems.len(),
+                    "distinct problem",
+                    "distinct problems"
+                ),
+                counted(
+                    report.problem_occurrences,
+                    "problem occurrence",
+                    "problem occurrences"
+                )
             );
         }
         return Ok(i32::from(!report.problems.is_empty()));

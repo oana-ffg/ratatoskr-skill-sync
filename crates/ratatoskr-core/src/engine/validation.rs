@@ -3,18 +3,23 @@ use crate::config::no_symlinks;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Serialize)]
-pub struct ValidationProblem {
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct ValidationContext {
     pub machine: String,
     pub harness: Option<String>,
     pub skill: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidationProblem {
     pub path: PathBuf,
     pub message: String,
+    pub contexts: Vec<ValidationContext>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,22 +47,24 @@ impl HarnessValidation {
 pub struct ProfileValidation {
     pub machine: String,
     pub harnesses: Vec<HarnessValidation>,
-    /// Failed render attempts for this profile, including problems shared with other targets.
-    pub problems: usize,
+    /// Distinct problem/context pairs affecting this profile.
+    pub problem_occurrences: usize,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ValidationReport {
     pub source: PathBuf,
     pub profiles: Vec<ProfileValidation>,
-    /// Unique (path, message) problems, retaining their first machine/harness/skill context.
+    /// Total problem/context pairs across all profiles, equal to the sum of profile counts.
+    pub problem_occurrences: usize,
+    /// Unique (path, message) problems with every affected machine/harness/skill context.
     pub problems: Vec<ValidationProblem>,
 }
 
 #[derive(Default)]
 pub(super) struct RenderDiagnostics {
     pub collect: bool,
-    pub problems: Vec<ValidationProblem>,
+    problems: BTreeMap<(PathBuf, String), BTreeSet<ValidationContext>>,
     pub harnesses: Vec<HarnessValidation>,
 }
 
@@ -75,13 +82,14 @@ impl RenderDiagnostics {
         match result {
             Ok(value) => Ok(Some(value)),
             Err(error) if self.collect => {
-                self.problems.push(ValidationProblem {
-                    machine: machine.into(),
-                    harness: harness.map(Into::into),
-                    skill: skill.map(Into::into),
-                    path: path.into(),
-                    message: format!("{error:#}"),
-                });
+                self.problems
+                    .entry((path.into(), format!("{error:#}")))
+                    .or_default()
+                    .insert(ValidationContext {
+                        machine: machine.into(),
+                        harness: harness.map(Into::into),
+                        skill: skill.map(Into::into),
+                    });
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -109,11 +117,8 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
     profiles.retain(|path| path.extension().is_some_and(|ext| ext == "toml"));
     profiles.sort();
     ensure!(!profiles.is_empty(), "No machines/*.toml profiles found");
-    let mut report = ValidationReport {
-        source: source.clone(),
-        profiles: vec![],
-        problems: vec![],
-    };
+    let mut summaries = vec![];
+    let mut problems: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
     for path in profiles {
         let machine = path
             .file_stem()
@@ -135,18 +140,28 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
             &mut diagnostics,
         );
         diagnostics.capture(result, &machine, None, None, &path)?;
-        report.profiles.push(ProfileValidation {
+        summaries.push(ProfileValidation {
             machine,
             harnesses: diagnostics.harnesses,
-            problems: diagnostics.problems.len(),
+            problem_occurrences: diagnostics.problems.values().map(BTreeSet::len).sum(),
         });
-        report.problems.extend(diagnostics.problems);
+        for (key, contexts) in diagnostics.problems {
+            problems.entry(key).or_default().extend(contexts);
+        }
     }
-    let mut seen = BTreeSet::new();
-    report
-        .problems
-        .retain(|problem| seen.insert((problem.path.clone(), problem.message.clone())));
-    Ok(report)
+    Ok(ValidationReport {
+        source,
+        problem_occurrences: summaries.iter().map(|p| p.problem_occurrences).sum(),
+        profiles: summaries,
+        problems: problems
+            .into_iter()
+            .map(|((path, message), contexts)| ValidationProblem {
+                path,
+                message,
+                contexts: contexts.into_iter().collect(),
+            })
+            .collect(),
+    })
 }
 
 // A foreign live profile's paths must be checked without asking the host filesystem

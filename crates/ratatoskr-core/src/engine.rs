@@ -21,7 +21,8 @@ use std::{
 };
 use validation::RenderDiagnostics;
 pub use validation::{
-    HarnessValidation, ProfileValidation, ValidationProblem, ValidationReport, validate_source,
+    HarnessValidation, ProfileValidation, ValidationContext, ValidationProblem, ValidationReport,
+    validate_source,
 };
 use walkdir::WalkDir;
 

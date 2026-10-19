@@ -1592,38 +1592,54 @@ fn source_validation_collects_remote_templates_files_skills_globals_and_profiles
     let remote = report
         .problems
         .iter()
-        .filter(|p| p.machine == "remote")
+        .filter(|p| p.contexts.iter().any(|c| c.machine == "remote"))
         .collect::<Vec<_>>();
     assert_eq!(remote.len(), 5, "{remote:?}");
-    assert!(remote.iter().any(|p| p.harness.as_deref() == Some("codex")
-        && p.skill.as_deref() == Some("review-code")
-        && p.path.ends_with("SKILL.md")
-        && p.message.contains("missing_remote")));
+    assert!(
+        remote.iter().any(|p| p
+            .contexts
+            .iter()
+            .any(|c| c.harness.as_deref() == Some("codex")
+                && c.skill.as_deref() == Some("review-code"))
+            && p.path.ends_with("SKILL.md")
+            && p.message.contains("missing_remote"))
+    );
     assert!(
         remote
             .iter()
             .any(|p| p.path.ends_with("extra.txt") && p.message.contains("missing_file"))
     );
-    assert!(
-        remote.iter().any(|p| p.skill.as_deref() == Some("second")
-            && p.message.contains("Unknown target selector"))
-    );
-    assert!(remote.iter().any(|p| p.skill.is_none()
-        && p.path.ends_with("global/AGENTS.md")
-        && p.message.contains("missing_global")));
+    assert!(remote.iter().any(|p| {
+        p.contexts
+            .iter()
+            .any(|c| c.skill.as_deref() == Some("second"))
+            && p.message.contains("Unknown target selector")
+    }));
     assert!(
         remote
             .iter()
-            .any(|p| p.harness.as_deref() == Some("unknown"))
+            .any(|p| p.contexts.iter().any(|c| c.skill.is_none())
+                && p.path.ends_with("global/AGENTS.md")
+                && p.message.contains("missing_global"))
     );
-    assert!(report.problems.iter().any(|p| p.machine == "broken"));
+    assert!(remote.iter().any(|p| {
+        p.contexts
+            .iter()
+            .any(|c| c.harness.as_deref() == Some("unknown"))
+    }));
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.contexts.iter().any(|c| c.machine == "broken"))
+    );
     assert_eq!(
         report
             .profiles
             .iter()
             .find(|p| p.machine == "test")
             .unwrap()
-            .problems,
+            .problem_occurrences,
         2
     );
     assert!(
@@ -1647,20 +1663,18 @@ fn source_validation_reports_invalid_variants_and_reserved_names() {
     );
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
-    assert!(
-        report
-            .problems
+    assert!(report.problems.iter().any(|p| {
+        p.contexts
             .iter()
-            .any(|p| p.skill.as_deref() == Some("review-code")
-                && p.message.contains("Unknown variant key"))
-    );
-    assert!(
-        report
-            .problems
+            .any(|c| c.skill.as_deref() == Some("review-code"))
+            && p.message.contains("Unknown variant key")
+    }));
+    assert!(report.problems.iter().any(|p| {
+        p.contexts
             .iter()
-            .any(|p| p.skill.as_deref() == Some("synced")
-                && p.message.contains("Reserved skill name"))
-    );
+            .any(|c| c.skill.as_deref() == Some("synced"))
+            && p.message.contains("Reserved skill name")
+    }));
 }
 
 #[test]
@@ -1702,26 +1716,25 @@ fn source_validation_reports_each_invalid_harness_and_continues_valid_targets() 
     f.write("harnesses.toml", &harnesses);
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
-    assert!(
-        report
-            .problems
+    assert!(report.problems.iter().any(|p| {
+        p.contexts
             .iter()
-            .any(|p| p.harness.as_deref() == Some("bad") && p.message.contains("Unsafe filename"))
-    );
-    assert!(
-        report
-            .problems
+            .any(|c| c.harness.as_deref() == Some("bad"))
+            && p.message.contains("Unsafe filename")
+    }));
+    assert!(report.problems.iter().any(|p| {
+        p.contexts
             .iter()
-            .any(|p| p.harness.as_deref() == Some("unknown")
-                && p.message.contains("Unknown harness"))
-    );
+            .any(|c| c.harness.as_deref() == Some("unknown"))
+            && p.message.contains("Unknown harness")
+    }));
     assert_eq!(report.profiles[0].harnesses.len(), 1);
     assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
     assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);
 }
 
 #[test]
-fn source_validation_deduplicates_shared_problems_and_keeps_first_context() {
+fn source_validation_groups_shared_problems_with_every_context() {
     let f = Fixture::new();
     f.write("harnesses.toml", "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\n[codex.roots]\nmacos='/unused'\n[claude]\nskills_dir='skills'\nglobal_file='CLAUDE.md'\n[claude.roots]\nmacos='/unused'\n");
     for machine in ["first", "second", "test"] {
@@ -1739,8 +1752,19 @@ fn source_validation_deduplicates_shared_problems_and_keeps_first_context() {
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
     for problem in &report.problems {
-        assert_eq!(problem.machine, "first");
-        assert_eq!(problem.harness.as_deref(), Some("codex"));
+        let expected = ["first", "second", "test"]
+            .into_iter()
+            .flat_map(|machine| ["claude", "codex"].map(move |harness| (machine, harness)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            problem
+                .contexts
+                .iter()
+                .map(|c| (c.machine.as_str(), c.harness.as_deref().unwrap()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(problem.contexts.iter().all(|c| c.skill.is_some()));
     }
     assert!(
         report
@@ -1754,20 +1778,28 @@ fn source_validation_deduplicates_shared_problems_and_keeps_first_context() {
             .iter()
             .any(|p| p.message.contains("lacks SKILL.md"))
     );
-    assert!(
-        report
-            .problems
+    assert!(report.problems.iter().any(|p| {
+        p.contexts
             .iter()
-            .any(|p| p.skill.as_deref() == Some("malformed"))
-    );
+            .any(|c| c.skill.as_deref() == Some("malformed"))
+    }));
     for profile in &report.profiles {
         assert_eq!(
-            profile.problems, 6,
+            profile.problem_occurrences, 6,
             "Counts must retain every failing target"
         );
         assert_eq!(profile.harnesses.len(), 2);
         assert!(profile.harnesses.iter().all(|h| h.skills_rendered == 0));
     }
+    assert_eq!(report.problem_occurrences, 18);
+    assert_eq!(
+        report.problem_occurrences,
+        report
+            .profiles
+            .iter()
+            .map(|p| p.problem_occurrences)
+            .sum::<usize>()
+    );
     assert!(!f.settings.state_dir.exists());
 }
 
@@ -1827,7 +1859,10 @@ fn source_validation_labels_non_string_harnesses_with_the_profile_and_value() {
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
     assert_eq!(report.problems.len(), 1);
     let problem = &report.problems[0];
-    assert!(problem.harness.is_none());
+    assert_eq!(problem.contexts.len(), 1);
+    assert_eq!(problem.contexts[0].machine, "test");
+    assert!(problem.contexts[0].harness.is_none());
+    assert!(problem.contexts[0].skill.is_none());
     assert_eq!(problem.path, f.settings.source.join("machines/test.toml"));
     assert_eq!(problem.message, "Harness name must be a string: 42");
     assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
