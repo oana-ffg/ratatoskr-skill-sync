@@ -6,7 +6,12 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
-pub fn create_content(config: &Path, source: &Path, machine: &str) -> Result<Settings> {
+pub fn create_content(
+    config: &Path,
+    source: &Path,
+    machine: &str,
+    state_dir: Option<&Path>,
+) -> Result<Settings> {
     identifier(machine)?;
     no_symlinks(source)?;
     ensure!(source.is_absolute(), "Choose an absolute content directory");
@@ -59,7 +64,7 @@ pub fn create_content(config: &Path, source: &Path, machine: &str) -> Result<Set
         "Git initialization failed: {}",
         String::from_utf8_lossy(&git.stderr)
     );
-    initialize(config, source, machine)
+    initialize(config, source, machine, state_dir)
 }
 
 pub fn clone_content(
@@ -67,6 +72,7 @@ pub fn clone_content(
     remote: &str,
     destination: &Path,
     machine: &str,
+    state_dir: Option<&Path>,
 ) -> Result<Settings> {
     ensure!(
         !remote.is_empty() && !remote.starts_with('-') && !remote.chars().any(char::is_control),
@@ -87,5 +93,5 @@ pub fn clone_content(
         "Clone failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    initialize(config, destination, machine)
+    initialize(config, destination, machine, state_dir)
 }

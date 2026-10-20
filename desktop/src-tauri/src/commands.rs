@@ -126,7 +126,7 @@ pub(crate) fn connect_workspace(
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     let path = config()?;
     if create {
-        core::create_content(&path, &PathBuf::from(source), &machine)
+        core::create_content(&path, &PathBuf::from(source), &machine, None)
     } else if let Some(remote) = remote.filter(|r| !r.trim().is_empty()) {
         let parent = PathBuf::from(source);
         let name = clone_name
@@ -140,9 +140,9 @@ pub(crate) fn connect_workspace(
         {
             return Err("Checkout name must be one folder name".into());
         }
-        core::clone_content(&path, &remote, &parent.join(leaf), &machine)
+        core::clone_content(&path, &remote, &parent.join(leaf), &machine, None)
     } else {
-        core::initialize(&path, &PathBuf::from(source), &machine)
+        core::initialize(&path, &PathBuf::from(source), &machine, None)
     }
     .map_err(|e| format!("{e:#}"))?;
     snapshot()

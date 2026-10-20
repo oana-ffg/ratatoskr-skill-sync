@@ -50,7 +50,20 @@ ratatoskr apply
 ratatoskr status
 ```
 
-Use `--config` to select a local configuration or set the absolute `RATATOSKR_CONFIG` environment variable. Both the desktop app and helper respect it. `--json` emits structured plans and status. `status` returns 1 for pending changes, conflicts, project inspection problems, or uncommitted/unpushed skill work; operational errors return 2.
+Use `--config` to select a local configuration or set the absolute `RATATOSKR_CONFIG` environment variable. Both the desktop app and helper respect it. On initialization, the platform-default config keeps the platform-default state directory. A custom config defaults to an absolute `<config filename>.state/` directory beside that config, including when selected through `RATATOSKR_CONFIG`. `init --state-dir <DIR>` explicitly selects a different absolute state directory for connect, `--create` or `--remote`. Existing configs keep their saved `state_dir`; loading them does not recalculate it. `--json` emits structured plans and status. `status` returns 1 for pending changes, conflicts, project inspection problems, or uncommitted/unpushed skill work; operational errors return 2.
+
+## Disposable preview configuration
+
+For `plan` or `skill preview` from a content PR checkout, create a separate temporary directory for the config and state. On macOS, use `/private/tmp` because `/tmp` is a symlink and Ratatoskr rejects symlinked paths:
+
+```sh
+preview_dir="$(mktemp -d /private/tmp/ratatoskr-preview.XXXXXX)"
+ratatoskr --config "$preview_dir/config.toml" init --source "$PWD" --machine brunnr
+ratatoskr --config "$preview_dir/config.toml" plan
+ratatoskr --config "$preview_dir/config.toml" skill preview grill-me --machine brunnr --harness codex
+```
+
+Run this from the content checkout with an existing `brunnr` profile and `grill-me` skill, or substitute identifiers present in your source. State is isolated at `$preview_dir/config.toml.state`; add `--state-dir "$preview_dir/preview-state"` to `init` to choose it explicitly. Each config filename gets its own derived state directory, even when multiple configs are in the same directory. These commands do not apply outputs; `apply` still follows the machine profile's staging/live mode, so an isolated state directory alone does not sandbox live destinations.
 
 ## Validate a content checkout
 

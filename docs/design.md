@@ -10,6 +10,16 @@ Ratatoskr keeps tool code separate from skill content. The content repository ca
 - A content checkout provides portable sources and target definitions. Git credentials use the existing Git authentication mechanism; Ratatoskr stores no Git tokens.
 - Local configuration/state holds source selection, project registry, manifests, OS locks, scheduler records, notification state, and adoption backups.
 
+## Initialization and local state
+
+CLI `init --source <DIR> --machine <ID>` connects an existing content checkout; `--create` creates one and `--remote <URL>` clones one. All three use the same core initialization path and accept `--state-dir <DIR>` to save an explicit absolute state directory.
+
+Without `--state-dir`, initialization compares the config path with the platform's default config file. That default retains the platform's local-data `state/` directory. Any other config path uses an absolute `<config filename>.state/` sibling, including relative CLI `--config` paths and absolute `RATATOSKR_CONFIG` overrides. The platform comparison deliberately ignores the environment override: setting `RATATOSKR_CONFIG` must not turn a disposable config into the live workspace. Including the config filename keeps separate configs in one directory isolated and avoids sharing live state when a custom config sits beside the default config (whose config/data directories coincide on macOS).
+
+This selection occurs only when creating a config. Existing configs retain their explicit `state_dir`, with no migration or fallback on load. The desktop's `connect_workspace` uses the same core for create, clone and connect; its default config and default state remain unchanged. A desktop launched with a custom `RATATOSKR_CONFIG` gets config-specific sibling state when connecting a new workspace.
+
+See the [disposable preview example](../README.md#disposable-preview-configuration) for `plan` and `skill preview` from a content PR checkout. Initialization saves the config after validating a plan but does not apply outputs or create state. Isolated state does not change a profile's live output destinations; review the plan and use staging before applying to disposable outputs.
+
 ## Rendering and ownership
 
 Global and project content share the selected machine and harness definitions. Conditions, variables, file variants, and harness frontmatter are resolved into an immutable desired-file map. Projects provide only skill content and a marker; they do not vendor the rendering tool.

@@ -98,7 +98,33 @@ pub fn load(path: &Path) -> Result<Settings> {
     Ok(settings)
 }
 
-pub fn initialize(path: &Path, source: &Path, machine: &str) -> Result<Settings> {
+// Compare with the platform default, not default_config_path(): RATATOSKR_CONFIG
+// selects a custom configuration and must not opt it into the live state directory.
+fn initial_state_dir(path: &Path, state_dir: Option<&Path>) -> Result<PathBuf> {
+    if let Some(state_dir) = state_dir {
+        return Ok(state_dir.to_path_buf());
+    }
+    let directories = ProjectDirs::from("", "", "ratatoskr-skill-sync")
+        .context("Cannot find the current user's configuration and data directories")?;
+    let path = std::path::absolute(path)?;
+    if path == std::path::absolute(directories.config_dir().join("config.toml"))? {
+        Ok(directories.data_local_dir().join("state"))
+    } else {
+        let mut state_name = path
+            .file_name()
+            .context("Configuration has no filename")?
+            .to_os_string();
+        state_name.push(".state");
+        Ok(path.with_file_name(state_name))
+    }
+}
+
+pub fn initialize(
+    path: &Path,
+    source: &Path,
+    machine: &str,
+    state_dir: Option<&Path>,
+) -> Result<Settings> {
     ensure!(
         !path.try_exists()?,
         "Configuration already exists: {}",
@@ -115,10 +141,7 @@ pub fn initialize(path: &Path, source: &Path, machine: &str) -> Result<Settings>
             .is_file(),
         "Source has no profile for machine {machine}"
     );
-    let state_dir = ProjectDirs::from("", "", "ratatoskr-skill-sync")
-        .context("Cannot find the current user's data directory")?
-        .data_local_dir()
-        .join("state");
+    let state_dir = initial_state_dir(path, state_dir)?;
     let settings = Settings {
         source,
         machine: machine.into(),
@@ -309,5 +332,48 @@ mod lock_tests {
         drop(guard);
         assert!(super::operation_lock(&settings, "apply.lock").is_ok());
         drop(inherited);
+    }
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::*;
+
+    #[test]
+    fn platform_default_config_keeps_platform_default_state_without_writing() {
+        let directories = ProjectDirs::from("", "", "ratatoskr-skill-sync").unwrap();
+        let config = directories.config_dir().join("config.toml");
+        assert_eq!(
+            initial_state_dir(&config, None).unwrap(),
+            directories.data_local_dir().join("state")
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let explicit = dunce::canonicalize(temp.path())
+            .unwrap()
+            .join("chosen-state");
+        assert_eq!(
+            initial_state_dir(&config, Some(&explicit)).unwrap(),
+            explicit
+        );
+    }
+
+    #[test]
+    fn another_config_in_default_directory_does_not_share_live_state() {
+        let directories = ProjectDirs::from("", "", "ratatoskr-skill-sync").unwrap();
+        let config = directories.config_dir().join("preview.toml");
+        let state = initial_state_dir(&config, None).unwrap();
+        assert_eq!(state, directories.config_dir().join("preview.toml.state"));
+        assert_ne!(state, directories.data_local_dir().join("state"));
+    }
+
+    #[test]
+    fn relative_custom_config_uses_absolute_config_specific_state() {
+        let config = Path::new("preview/config.toml");
+        assert_eq!(
+            initial_state_dir(config, None).unwrap(),
+            std::env::current_dir()
+                .unwrap()
+                .join("preview/config.toml.state")
+        );
     }
 }
