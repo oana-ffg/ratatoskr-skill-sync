@@ -1,5 +1,16 @@
 # Releases and signed updates
 
+## v0.2.10 release notes
+
+- Refresh the desktop workspace snapshot when the window is shown or focused and every 60 seconds while visible. An "As of" indicator dates the last successful snapshot; refresh failures remain visible with Retry. Refresh waits while edits, dialogs or operations are in progress, preserving the editor and current selection. Window and updater errors share the app's error reporting.
+- **On macOS, closing the window now hides it and keeps the app running. Use Cmd+Q to quit; click the Dock icon to reopen the window.** Open at login launches the app hidden with `--background`, updates existing enabled login entries, and preserves opt-outs. Settings warns when automatic updates are enabled but Open at login is off.
+- On macOS, the launchd sync helper now reports overdue desktop update checks after two completed nightly windows without a successful check, even when the desktop app is not running. The helper must remain running and have a working alert route. Monitoring survives app restarts; missing or legacy desktop state gets a grace period, CLI-only installs without desktop monitoring are excluded, and unreadable monitoring state is reported as an error.
+- Retry alerts that have never been delivered when delivery becomes possible. A shared delivery lock prevents concurrent reporters from sending the same transition twice; delivered errors retain their 24-hour repeat interval and recovery is sent once.
+- Clear the obsolete bundled-helper self-update error. Bundled helpers leave their replacement to the desktop updater and no longer record that error; other pending errors remain retryable.
+- Add `ratatoskr init --state-dir` for connect, create and clone. Without an override, a custom `--config` or `RATATOSKR_CONFIG` now uses an absolute state directory beside that config, named by appending `.state` to its filename (`config.toml` uses `config.toml.state`) instead of the live default state directory. The platform-default config keeps its existing default state location, and existing configs retain their saved `state_dir`. Separate state does not redirect a machine profile's sync destinations.
+
+Still unverified: real Dock reopen, Cmd+Q and login-launch acceptance on the Macs, and native Windows tray show/hide acceptance.
+
 ## v0.2.9 release notes
 
 - Add `ratatoskr validate <source>` to check content across machine profiles and enabled harnesses without local configuration or writing rendered files. It reports rendering problems with their machine, harness, skill and file context.
