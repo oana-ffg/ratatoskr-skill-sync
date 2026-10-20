@@ -94,7 +94,7 @@ Tray notification ledgers store stable problem identities separately from full m
 
 ## macOS resident lifecycle and update notifications
 
-Closing the main window hides it while the Rust update scheduler keeps running. A Dock reopen (`RunEvent::Reopen`) shows and focuses the same window. Application Quit/Cmd+Q remains unprevented. macOS and Windows share close/hide, show/focus, `--background` startup and one-shot restart visibility logic. Windows retains its sync tray, migration, native toast and single-instance behavior; macOS sync remains a launchd helper job.
+Closing the main window hides it while the Rust update scheduler keeps running. A Dock reopen (`RunEvent::Reopen`) shows and focuses the same window. Application Quit/Cmd+Q remains unprevented. macOS and Windows share close/hide, show/focus, `--background` startup and one-shot restart visibility logic. The frontend uses the runtime OS to leave close-to-hide to native code even with unsaved edits, preserving the editor instead of offering to destroy its window. Windows retains its sync tray, migration, native toast and single-instance behavior; macOS sync remains a launchd helper job.
 
 Lifecycle failures use `app-error` when the main window is visible and its frontend listener is ready. Before that listener attaches or while hidden, a native dialog reports the failure instead. The frontend acknowledges listener readiness through `set_app_error_listener({active})`; a page load resets it.
 

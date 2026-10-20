@@ -7,6 +7,8 @@ import App from "./App.svelte";
 import { emit } from "@tauri-apps/api/event";
 import type { Snapshot } from "./api";
 const native = vi.hoisted(() => ({
+  platform: "linux",
+  close: new Set<(event: { preventDefault: () => void }) => void>(),
   visible: true,
   minimized: false,
   focus: new Set<(event: { payload: boolean }) => void>(),
@@ -44,7 +46,12 @@ vi.mock("@tauri-apps/api/window", () => ({
         native.stopShown();
       };
     },
-    onCloseRequested: async () => () => {},
+    onCloseRequested: async (
+      callback: (event: { preventDefault: () => void }) => void,
+    ) => {
+      native.close.add(callback);
+      return () => native.close.delete(callback);
+    },
   }),
 }));
 let reads: Mock<() => Snapshot | Promise<Snapshot>>;
@@ -60,6 +67,8 @@ beforeEach(() => {
   );
   clearMocks();
   vi.stubGlobal("isTauri", true);
+  native.platform = "linux";
+  native.close.clear();
   native.visible = true;
   native.minimized = false;
   native.focus.clear();
@@ -72,6 +81,7 @@ beforeEach(() => {
   reads = vi.fn<() => Snapshot | Promise<Snapshot>>(() => current);
   mockIPC(
     (cmd, args) => {
+      if (cmd === "runtime_platform") return native.platform;
       if (cmd === "read_workspace") return reads();
       if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
       return fixtureIPC(cmd, args as Record<string, unknown>);
@@ -278,5 +288,32 @@ test.each([
     // Successful updater diagnostics must not dismiss an unrelated app failure.
     await emit("app-error", null);
     expect(screen.getByRole("alert")).toHaveTextContent(message);
+  },
+);
+
+test.each(["macos", "windows"])(
+  "%s close preserves unsaved edits for the native hide path",
+  async (platform) => {
+    HTMLDialogElement.prototype.showModal = function () {
+      this.open = true;
+    };
+    HTMLDialogElement.prototype.close = function () {
+      this.open = false;
+    };
+    native.platform = platform;
+    await start();
+    await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+    await fireEvent.click(
+      await screen.findByLabelText("Open Ratatoskr at login"),
+    );
+    await screen.findByRole("button", { name: "Save" });
+    const preventDefault = vi.fn();
+    native.close.forEach((callback) => callback({ preventDefault }));
+    flushSync();
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("dialog", { name: "You have unsaved changes" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   },
 );
