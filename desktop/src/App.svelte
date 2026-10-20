@@ -188,7 +188,7 @@
         }
       },
     ).catch(fail);
-    let stopUpdateErrors: (() => void) | undefined;
+    let stopAppErrors: (() => void) | undefined;
     const ageTimer = setInterval(() => (now = Date.now()), 10_000);
     const stopRefresh = watchWindow(
       () => {
@@ -198,12 +198,12 @@
       { onVisibility: (visible) => (windowVisible = visible) },
     );
     if (isTauri())
-      void listen<string | null>("desktop-update-error", (event) => {
+      void listen<string | null>("app-error", (event) => {
         if (event.payload) fail(event.payload);
       })
         .then((stop) => {
           if (disposed) stop();
-          else stopUpdateErrors = stop;
+          else stopAppErrors = stop;
         })
         .catch(fail);
     if (isTauri())
@@ -234,7 +234,7 @@
       disposed = true;
       clearInterval(ageTimer);
       stopRefresh();
-      stopUpdateErrors?.();
+      stopAppErrors?.();
       cleanup?.();
       window.removeEventListener("beforeunload", beforeUnload);
     };

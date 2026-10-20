@@ -4,6 +4,7 @@ import { test, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import { fixture, fixtureIPC } from "../tests/fixture";
 import App from "./App.svelte";
+import { emit } from "@tauri-apps/api/event";
 import type { Snapshot } from "./api";
 const native = vi.hoisted(() => ({
   visible: true,
@@ -69,12 +70,14 @@ beforeEach(() => {
   native.stopShown.mockClear();
   current = structuredClone(fixture.workspace);
   reads = vi.fn<() => Snapshot | Promise<Snapshot>>(() => current);
-  mockIPC((cmd, args) => {
-    if (cmd === "read_workspace") return reads();
-    if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
-    if (cmd.startsWith("plugin:event|")) return 1;
-    return fixtureIPC(cmd, args as Record<string, unknown>);
-  });
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
   vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
 });
@@ -262,3 +265,18 @@ test("deferred catch-up waits until the hidden window is shown", async () => {
   native.shown.forEach((callback) => callback({ payload: true }));
   await waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
 });
+
+test.each([
+  "Cannot reopen workspace: Cannot show main window",
+  "Desktop update diagnostics failed: configuration unreadable",
+])(
+  "shows native app errors through the shared handler: %s",
+  async (message) => {
+    await start();
+    await emit("app-error", message);
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    // Successful updater diagnostics must not dismiss an unrelated app failure.
+    await emit("app-error", null);
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+  },
+);

@@ -518,7 +518,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         }
     };
     if !hidden {
-        open(app.handle())?;
+        crate::window_lifecycle::open(app.handle())?;
     }
     refresh(app.handle())?;
     let handle = app.handle().clone();

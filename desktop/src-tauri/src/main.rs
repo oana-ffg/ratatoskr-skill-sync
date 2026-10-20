@@ -105,9 +105,9 @@ fn main() {
                 && let Err(error) = window_lifecycle::open(_app)
             {
                 use tauri::Emitter;
-                let message = format!("Cannot reopen workspace: {error}");
+                let message = format!("Cannot reopen workspace: {error:#}");
                 eprintln!("{message}");
-                if let Err(error) = _app.emit("desktop-update-error", Some(message)) {
+                if let Err(error) = _app.emit("app-error", Some(message)) {
                     eprintln!("Cannot report workspace reopen error: {error}");
                 }
             }
