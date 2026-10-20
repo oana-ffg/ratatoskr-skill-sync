@@ -146,6 +146,19 @@ test("native startup gates readiness and unsaved editors notify the native sched
   try {
     await screen.findByRole("heading", { name: /Skills/ });
     expect(calls).toHaveBeenCalledWith("startup_update", {});
+    expect(calls).toHaveBeenCalledWith("set_app_error_listener", {
+      active: true,
+    });
+    const listener = calls.mock.calls.findIndex(
+      ([cmd, args]) =>
+        cmd === "plugin:event|listen" &&
+        (args as { event?: string }).event === "app-error",
+    );
+    const acknowledged = calls.mock.calls.findIndex(
+      ([cmd]) => cmd === "set_app_error_listener",
+    );
+    expect(listener).toBeGreaterThanOrEqual(0);
+    expect(acknowledged).toBeGreaterThan(listener);
     expect(calls).toHaveBeenCalledWith("set_desktop_busy", { busy: false });
     await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
     await screen.findByLabelText("Open Ratatoskr at login");
@@ -159,6 +172,9 @@ test("native startup gates readiness and unsaved editors notify the native sched
       false,
     );
     unmount();
+    expect(calls).toHaveBeenCalledWith("set_app_error_listener", {
+      active: false,
+    });
     calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);
     expect(calls).not.toHaveBeenCalled();

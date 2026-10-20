@@ -155,3 +155,70 @@ test("an owned task migration refreshes the login checkbox without making a new 
     expect.anything(),
   );
 });
+
+test("macOS runtime warns even with a Windows profile and never enables login implicitly", async () => {
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "runtime_platform") return "macos";
+    if (cmd === "read_structured_source") {
+      const result = fixtureIPC(cmd, args as Record<string, unknown>) as {
+        values: Record<string, unknown>;
+      };
+      return { ...result, values: { ...result.values, os: "windows" } };
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  render(Settings, {
+    workspace: fixture.workspace,
+    onupdate: vi.fn(),
+    onerror: vi.fn(),
+    ondirty: vi.fn(),
+  });
+  const warning = await screen.findByText(
+    /Automatic desktop updates can only run while Ratatoskr is running/,
+  );
+  expect(warning).toBeVisible();
+  expect(screen.getByLabelText("Open Ratatoskr at login")).not.toBeChecked();
+  expect(
+    screen.getByText(/Closing the window keeps Ratatoskr running/),
+  ).toBeVisible();
+  expect(calls).not.toHaveBeenCalledWith(
+    "set_login_enabled",
+    expect.anything(),
+  );
+  await fireEvent.click(screen.getByLabelText("Open Ratatoskr at login"));
+  expect(
+    screen.queryByText(
+      /Automatic desktop updates can only run while Ratatoskr is running/,
+    ),
+  ).toBeNull();
+});
+
+test.each(["windows", "linux"])(
+  "%s runtime never shows the macOS login warning for a macOS profile",
+  async (platform) => {
+    mockIPC((cmd, args) => {
+      if (cmd === "runtime_platform") return platform;
+      if (cmd === "read_structured_source") {
+        const result = fixtureIPC(cmd, args as Record<string, unknown>) as {
+          values: Record<string, unknown>;
+        };
+        return { ...result, values: { ...result.values, os: "macos" } };
+      }
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    });
+    render(Settings, {
+      workspace: fixture.workspace,
+      onupdate: vi.fn(),
+      onerror: vi.fn(),
+      ondirty: vi.fn(),
+    });
+    await screen.findByLabelText("Open Ratatoskr at login");
+    expect(
+      screen.queryByText(/Automatic desktop updates can only run/),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/Closing the window keeps Ratatoskr running/),
+    ).toBeNull();
+  },
+);

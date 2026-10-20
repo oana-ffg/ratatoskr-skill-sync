@@ -203,7 +203,17 @@
       })
         .then((stop) => {
           if (disposed) stop();
-          else stopAppErrors = stop;
+          else {
+            stopAppErrors = () => {
+              void api
+                .command("set_app_error_listener", { active: false })
+                .catch(fail);
+              stop();
+            };
+            void api
+              .command("set_app_error_listener", { active: true })
+              .catch(fail);
+          }
         })
         .catch(fail);
     if (isTauri())

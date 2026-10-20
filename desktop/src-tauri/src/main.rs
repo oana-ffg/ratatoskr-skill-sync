@@ -16,18 +16,33 @@ fn main() {
             if !args.iter().any(|arg| arg == "--background")
                 && let Err(error) = window_lifecycle::open(app)
             {
-                tray::report(app, error);
+                window_lifecycle::report(app, error);
             }
         }))
         .plugin(tauri_plugin_notification::init());
     let autostart = tauri_plugin_autostart::Builder::new();
-    #[cfg(windows)]
-    let autostart = autostart.args(["--background"]);
+    #[cfg(any(windows, target_os = "macos"))]
+    let autostart = autostart.args(window_lifecycle::AUTOSTART_ARGS);
     builder
         .manage(update_scheduler::Runtime::default())
+        .on_page_load(|_window, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                commands::set_app_error_listener(false);
+            }
+        })
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            window_lifecycle::setup(app.handle())?;
             #[cfg(windows)]
             tray::setup(app)?;
+            #[cfg(target_os = "macos")]
+            {
+                // Rewrite an existing opt-in login entry with --background.
+                // An opted-out install stays opted out.
+                if let Err(error) = window_lifecycle::refresh_login(app.handle()) {
+                    window_lifecycle::report(app.handle(), error.context("Open at login"));
+                }
+            }
             update_scheduler::setup(app);
             Ok(())
         })
@@ -67,6 +82,8 @@ fn main() {
             commands::list_preview_targets,
             commands::detect_helper,
             commands::add_agent_target,
+            commands::runtime_platform,
+            commands::set_app_error_listener,
             commands::login_enabled,
             commands::set_login_enabled,
             commands::read_workspace,
@@ -99,17 +116,14 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Ratatoskr Skill Sync")
-        .run(|_app, _event| {
+        .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event
-                && let Err(error) = window_lifecycle::open(_app)
+            if matches!(event, tauri::RunEvent::Reopen { .. })
+                && let Err(error) = window_lifecycle::open(app)
             {
-                use tauri::Emitter;
-                let message = format!("Cannot reopen workspace: {error:#}");
-                eprintln!("{message}");
-                if let Err(error) = _app.emit("app-error", Some(message)) {
-                    eprintln!("Cannot report workspace reopen error: {error}");
-                }
+                window_lifecycle::report(app, error);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         });
 }

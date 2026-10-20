@@ -78,9 +78,9 @@ impl UpdateContext {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn report_overdue(&self) -> Result<()> {
-        const OVERDUE: &str =
-            "Desktop update overdue: two nightly windows passed without a successful check";
+        const OVERDUE: &str = core::updates::DESKTOP_OVERDUE;
         if let Some(settings) = &self.workspace
             && core::job_status(settings)?
                 .desktop_update_error
@@ -106,6 +106,10 @@ impl UpdateContext {
                 alerts
             };
             core::updates::report_outcome(settings, error, core::updates::UpdateKind::Desktop)?;
+            if error.is_none() {
+                // A successful desktop check owns the bundled helper's update health.
+                core::updates::report_outcome(settings, None, core::updates::UpdateKind::Helper)?;
+            }
         }
         // Without a workspace there is no configured alert transport; the command returns
         // the original error to the desktop's visible status message.
@@ -179,6 +183,7 @@ pub(crate) fn automatic_update_with<U>(
     })()?;
     // A failed check is reported by the command layer with its specific cause.
     // Successful work recovers there too; only an idle, overdue tick needs a watchdog alert.
+    #[cfg(not(target_os = "macos"))]
     if !outcome.checked && !outcome.installed && state.overdue(settings, now)? {
         context.report_overdue()?;
     }
@@ -806,6 +811,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn overdue_failing_checks_keep_specific_error_and_one_alert_per_24_hours() {
         let temp = tempfile::tempdir().unwrap();
@@ -920,6 +926,7 @@ mod tests {
         assert_eq!(read_alerts(), vec![format!("Ratatoskr test: {error}"); 2]);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn overdue_is_visible_in_job_status_uses_alert_dedup_and_recovers_only_on_success() {
         let temp = tempfile::tempdir().unwrap();
@@ -1061,5 +1068,93 @@ mod tests {
                 .desktop_update_error
                 .is_none()
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_desktop_leaves_overdue_delivery_to_helper_and_success_clears_bundled_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let (config, mut settings) = configured(&temp);
+        settings.updates.automatic = true;
+        settings.updates.time = "00:00".into();
+        core::save(&config, &settings).unwrap();
+        let context = UpdateContext::load(
+            &config,
+            &dunce::canonicalize(temp.path()).unwrap().join("app"),
+        )
+        .unwrap();
+        let mut state = DesktopUpdateState::default();
+        let first = clock("2026-10-18T00:01:00+02:00");
+        state
+            .observe(&context.state_path, &settings.updates, first, false)
+            .unwrap();
+        state
+            .record_success(&context.state_path, first, false)
+            .unwrap();
+        let overdue = clock("2026-10-20T01:01:00+02:00");
+        state
+            .record_attempt(&context.state_path, &settings.updates, overdue)
+            .unwrap();
+        automatic_update_with::<()>(
+            &context,
+            &mut None,
+            overdue,
+            false,
+            false,
+            |_| panic!("already attempted"),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert!(
+            core::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .is_none()
+        );
+        core::updates::report_outcome(
+            &settings,
+            Some(core::updates::DESKTOP_OVERDUE),
+            core::updates::UpdateKind::Desktop,
+        )
+        .unwrap();
+        core::updates::report_outcome(
+            &settings,
+            Some("Helper update: old standalone failure"),
+            core::updates::UpdateKind::Helper,
+        )
+        .unwrap();
+        for _ in 0..2 {
+            automatic_update_with::<()>(
+                &context,
+                &mut None,
+                overdue,
+                false,
+                false,
+                |_| unreachable!(),
+                |_| unreachable!(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            core::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .as_deref(),
+            Some(core::updates::DESKTOP_OVERDUE)
+        );
+        let checked = automatic_update_with::<()>(
+            &context,
+            &mut None,
+            clock("2026-10-21T00:01:00+02:00"),
+            false,
+            false,
+            |_| Ok(None),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert!(checked.checked);
+        context.report_outcome(None).unwrap();
+        let jobs = core::job_status(&settings).unwrap();
+        assert!(jobs.desktop_update_error.is_none() && jobs.helper_update_error.is_none());
     }
 }

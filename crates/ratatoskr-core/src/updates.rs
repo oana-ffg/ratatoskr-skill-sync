@@ -194,8 +194,8 @@ impl DesktopUpdateState {
             }))
     }
 
-    /// Track health only while this process is running. Old attempts are not
-    /// proof of success, and time spent with the app closed is not a missed check.
+    /// Old attempts are not proof of success. macOS preserves health across
+    /// restarts for the helper watchdog; other platforms track resident sessions.
     pub fn observe(
         &mut self,
         path: &std::path::Path,
@@ -210,7 +210,8 @@ impl DesktopUpdateState {
             self.pending = false;
             self.catch_up_started = None;
         }
-        if new_session || self.monitoring_since.is_none() || changed {
+        if self.monitoring_since.is_none() || changed || (new_session && !cfg!(target_os = "macos"))
+        {
             self.monitoring_since = Some(now);
             self.settings = Some(settings.clone());
             crate::config::atomic_write(path, &serde_json::to_vec(self)?)?;
@@ -259,22 +260,129 @@ impl DesktopUpdateState {
     }
 }
 
+pub const DESKTOP_OVERDUE: &str =
+    "Desktop update overdue: two nightly windows passed without a successful check";
+#[cfg(any(target_os = "macos", test))]
+const MONITORING_FAILED: &str = "Desktop update monitoring failed:";
+
+#[cfg(target_os = "macos")]
+pub(crate) fn desktop_watchdog(settings: &crate::Settings) -> Result<()> {
+    let executable = std::env::current_exe()?;
+    if !executable
+        .file_stem()
+        .is_some_and(|name| name == "ratatoskr")
+    {
+        // In-process desktop/library calls do not own the helper watchdog.
+        return Ok(());
+    }
+    // Match Tauri's app_data_dir: data_dir / bundle identifier. No installed
+    // application, launch agent, or desktop-owned state is modified here.
+    let data = directories::BaseDirs::new()
+        .context("Find desktop app-data directory")?
+        .data_dir()
+        .join("io.github.oana-ffg.ratatoskr-skill-sync");
+    let state = data.join("desktop-update.json");
+    let grace = settings
+        .state_dir
+        .join(&settings.machine)
+        .join("desktop-update-watchdog.json");
+    if !bundled_helper_path(&executable) && !state.try_exists()? && !grace.try_exists()? {
+        // A CLI-only installation has no desktop scheduler to monitor.
+        return Ok(());
+    }
+    desktop_watchdog_with(settings, &state, chrono::Local::now().fixed_offset())
+}
+
+/// The helper owns only its grace ledger. Never write the desktop's scheduler
+/// ledger: that could race a successful check or erase pending installation.
+#[cfg(any(target_os = "macos", test))]
+fn desktop_watchdog_with(
+    settings: &crate::Settings,
+    state_path: &std::path::Path,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<()> {
+    let mut result = Ok(false);
+    crate::notifications::update_for(settings, "desktop-update-notification.json", |current| {
+        // Re-read health while holding the delivery lock. A waiting helper must
+        // not overwrite a desktop recovery using an earlier overdue snapshot.
+        result = (|| -> Result<bool> {
+            let grace = settings
+                .state_dir
+                .join(&settings.machine)
+                .join("desktop-update-watchdog.json");
+            let mut baseline = DesktopUpdateState::load(&grace)?;
+            baseline.observe(&grace, &settings.updates, now, false)?;
+            if !settings.updates.automatic {
+                return Ok(false);
+            }
+            let mut state = DesktopUpdateState::load(state_path)?;
+            // Old files contain attempts only. Start one persistent grace period,
+            // rather than treating last_check as success or resetting every minute.
+            if state.settings.as_ref() != Some(&settings.updates) {
+                state = baseline;
+            } else if state.monitoring_since.is_none() && state.last_success.is_none() {
+                state.monitoring_since = baseline.monitoring_since;
+            }
+            state.overdue(&settings.updates, now)
+        })();
+        if let Err(error) = &result {
+            return Some(format!("{MONITORING_FAILED} {error:#}"));
+        }
+        let specific = current.filter(|error| {
+            !error.starts_with(DESKTOP_OVERDUE) && !error.starts_with(MONITORING_FAILED)
+        });
+        if let Some(error) = specific {
+            // Retry undelivered causes, without replacing them with a generic warning.
+            Some(error.to_owned())
+        } else if matches!(result, Ok(true)) {
+            Some(DESKTOP_OVERDUE.to_owned())
+        } else {
+            None
+        }
+    })?;
+    result.map(|_| ())
+}
+
 #[derive(Default, Deserialize, Serialize)]
 struct HelperState {
     last_check: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
 pub fn helper_update(settings: &crate::Settings) -> Result<()> {
-    if !standalone_helper()? {
-        return Ok(());
+    let standalone = standalone_helper()?;
+    helper_update_for(
+        settings,
+        standalone,
+        chrono::Local::now().fixed_offset(),
+        || {
+            if let Some(release) = check(&settings.updates, env!("CARGO_PKG_VERSION"))? {
+                install(&settings.updates, &release)?;
+            }
+            Ok(())
+        },
+    )
+}
+
+fn helper_update_for(
+    settings: &crate::Settings,
+    standalone: bool,
+    now: chrono::DateTime<chrono::FixedOffset>,
+    check: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if standalone {
+        return helper_update_with(settings, now, check);
     }
-    helper_update_with(settings, chrono::Local::now().fixed_offset(), || {
-        if let Some(release) = check(&settings.updates, env!("CARGO_PKG_VERSION"))? {
-            install(&settings.updates, &release)?;
-        }
-        Ok(())
+    // This legacy error described ownership, not a broken helper. Bundled helpers
+    // are replaced by the desktop updater and never attempt self-replacement.
+    crate::notifications::update_for(settings, "helper-update-notification.json", |error| {
+        error
+            .filter(|error| !error.starts_with(BUNDLED_HELPER_ERROR))
+            .map(str::to_owned)
     })
 }
+
+const BUNDLED_HELPER_ERROR: &str =
+    "Helper update: Update the desktop app to replace its bundled helper";
 
 pub(crate) fn helper_update_with(
     settings: &crate::Settings,
@@ -320,6 +428,8 @@ pub(crate) fn helper_update_with(
                 error.as_deref().unwrap_or("Helper update completed")
             )
         })?;
+    } else {
+        crate::notifications::retry_for(settings, "helper-update-notification.json")?;
     }
     result.map(|_| ())
 }
@@ -467,12 +577,18 @@ fn download_helper(
     Ok(file)
 }
 
+fn bundled_helper_path(path: &std::path::Path) -> bool {
+    path.ancestors().any(|parent| {
+        parent
+            .extension()
+            .is_some_and(|extension| extension == "app")
+    })
+}
+
 pub fn standalone_helper() -> Result<bool> {
     let path = std::env::current_exe()?;
     Ok(path.file_stem().is_some_and(|x| x == "ratatoskr")
-        && !path
-            .ancestors()
-            .any(|p| p.extension().is_some_and(|x| x == "app"))
+        && !bundled_helper_path(&path)
         && !path.with_file_name("ratatoskr-desktop.exe").try_exists()?)
 }
 
@@ -910,9 +1026,10 @@ mod tests {
         );
         let reopened = clock("2026-10-28T13:38:00+01:00");
         state.observe(&path, &settings, reopened, true).unwrap();
-        assert!(
-            !state.overdue(&settings, reopened).unwrap(),
-            "time with the app closed is not a resident failure"
+        assert_eq!(
+            state.overdue(&settings, reopened).unwrap(),
+            cfg!(target_os = "macos"),
+            "macOS must preserve health while closed; other platforms retain resident-session accounting"
         );
         assert!(
             state
@@ -963,6 +1080,271 @@ mod tests {
         assert!(
             helper_update_with(&settings, now, || panic!("invalid state must fail closed"))
                 .is_err()
+        );
+    }
+
+    fn alert_settings(temp: &tempfile::TempDir) -> crate::Settings {
+        let root = dunce::canonicalize(temp.path()).unwrap();
+        let settings = crate::Settings {
+            source: root.join("source"),
+            state_dir: root.join("state"),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        std::fs::create_dir(&settings.source).unwrap();
+        std::fs::create_dir(&settings.state_dir).unwrap();
+        settings
+    }
+
+    fn enable_recorder(settings: &mut crate::Settings) -> std::path::PathBuf {
+        let path = settings.state_dir.join("alerts.gitconfig");
+        settings.alert_command = vec![
+            "git".into(),
+            "config".into(),
+            "--file".into(),
+            path.to_string_lossy().into_owned(),
+            "--add".into(),
+            "alerts.message".into(),
+        ];
+        path
+    }
+    fn alert_count(path: &std::path::Path) -> usize {
+        if !path.exists() {
+            return 0;
+        }
+        let output = crate::process::command("git")
+            .args(["config", "--file"])
+            .arg(path)
+            .args(["--get-all", "alerts.message"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().lines().count()
+    }
+
+    #[test]
+    fn skipped_helper_check_delivers_previously_unsent_error_and_recovers_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = alert_settings(&temp);
+        let now = clock("2026-10-20T00:01:00+02:00");
+        assert!(helper_update_with(&settings, now, || anyhow::bail!("offline")).is_err());
+        let ledger = settings
+            .state_dir
+            .join("test/helper-update-notification.json");
+        let unsent: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ledger).unwrap()).unwrap();
+        assert_eq!(unsent["sent_at"], 0);
+        let alerts = enable_recorder(&mut settings);
+        for _ in 0..2 {
+            helper_update_with(&settings, now, || panic!("daily attempt already consumed"))
+                .unwrap();
+        }
+        assert_eq!(alert_count(&alerts), 1);
+        helper_update_with(&settings, clock("2026-10-21T00:01:00+02:00"), || Ok(())).unwrap();
+        helper_update_with(
+            &settings,
+            clock("2026-10-21T00:02:00+02:00"),
+            || unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(alert_count(&alerts), 2);
+        assert!(
+            crate::job_status(&settings)
+                .unwrap()
+                .helper_update_error
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bundled_helpers_clear_obsolete_errors_without_attempting_self_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = alert_settings(&temp);
+        let alerts = enable_recorder(&mut settings);
+        report_outcome(&settings, Some(BUNDLED_HELPER_ERROR), UpdateKind::Helper).unwrap();
+        assert_eq!(alert_count(&alerts), 1);
+        for _ in 0..2 {
+            helper_update_for(&settings, false, clock("2026-10-20T00:01:00+02:00"), || {
+                panic!("bundled helpers must not check or install helper updates")
+            })
+            .unwrap();
+        }
+        assert!(
+            crate::job_status(&settings)
+                .unwrap()
+                .helper_update_error
+                .is_none()
+        );
+        assert_eq!(alert_count(&alerts), 2);
+        report_outcome(
+            &settings,
+            Some("Helper update: unknown failure"),
+            UpdateKind::Helper,
+        )
+        .unwrap();
+        helper_update_for(
+            &settings,
+            false,
+            clock("2026-10-20T00:01:00+02:00"),
+            || unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::job_status(&settings)
+                .unwrap()
+                .helper_update_error
+                .as_deref(),
+            Some("Helper update: unknown failure")
+        );
+        // An obsolete error never delivered does not generate a false recovery.
+        let mut quiet = settings.clone();
+        quiet.machine = "quiet".into();
+        quiet.alert_command.clear();
+        report_outcome(&quiet, Some(BUNDLED_HELPER_ERROR), UpdateKind::Helper).unwrap();
+        quiet.alert_command = settings.alert_command.clone();
+        helper_update_for(
+            &quiet,
+            false,
+            clock("2026-10-20T00:01:00+02:00"),
+            || unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(alert_count(&alerts), 3);
+    }
+
+    #[test]
+    fn helper_watchdog_observes_stopped_desktop_deduplicates_and_recovers() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = alert_settings(&temp);
+        let alerts = enable_recorder(&mut settings);
+        let path = settings.state_dir.join("app/desktop-update.json");
+        let first = clock("2026-10-18T00:01:00+02:00");
+        let mut state = DesktopUpdateState::default();
+        state
+            .observe(&path, &settings.updates, first, false)
+            .unwrap();
+        state.record_success(&path, first, false).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        desktop_watchdog_with(&settings, &path, clock("2026-10-20T00:59:59+02:00")).unwrap();
+        assert_eq!(alert_count(&alerts), 0);
+        let overdue = clock("2026-10-20T01:00:00+02:00");
+        for _ in 0..2 {
+            desktop_watchdog_with(&settings, &path, overdue).unwrap();
+        }
+        assert_eq!(alert_count(&alerts), 1);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "helper must not modify desktop-owned state"
+        );
+        assert_eq!(
+            crate::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .as_deref(),
+            Some(DESKTOP_OVERDUE)
+        );
+        // Existing desktop reporter and helper share delivery history.
+        report_outcome(&settings, Some(DESKTOP_OVERDUE), UpdateKind::Desktop).unwrap();
+        assert_eq!(alert_count(&alerts), 1);
+        // Simulate a delivered alert older than 24 hours.
+        let ledger = settings
+            .state_dir
+            .join("test/desktop-update-notification.json");
+        let mut notification: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ledger).unwrap()).unwrap();
+        notification["sent_at"] = 1.into();
+        std::fs::write(&ledger, serde_json::to_vec(&notification).unwrap()).unwrap();
+        desktop_watchdog_with(&settings, &path, overdue).unwrap();
+        assert_eq!(alert_count(&alerts), 2);
+        state.record_success(&path, overdue, false).unwrap();
+        for _ in 0..2 {
+            desktop_watchdog_with(&settings, &path, overdue).unwrap();
+        }
+        assert_eq!(alert_count(&alerts), 3);
+        assert!(
+            crate::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn helper_watchdog_missing_and_legacy_state_have_bounded_grace() {
+        for legacy in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings = alert_settings(&temp);
+            let path = settings.state_dir.join("desktop-update.json");
+            if legacy {
+                std::fs::write(&path, serde_json::to_vec(&serde_json::json!({
+                    "last_check": "2026-10-01T00:01:00+02:00", "settings": settings.updates, "pending": false
+                })).unwrap()).unwrap();
+            }
+            let first = clock("2026-10-20T12:00:00+02:00");
+            desktop_watchdog_with(&settings, &path, first).unwrap();
+            desktop_watchdog_with(&settings, &path, clock("2026-10-22T00:59:59+02:00")).unwrap();
+            assert!(
+                crate::job_status(&settings)
+                    .unwrap()
+                    .desktop_update_error
+                    .is_none()
+            );
+            desktop_watchdog_with(&settings, &path, clock("2026-10-22T01:00:00+02:00")).unwrap();
+            assert_eq!(
+                crate::job_status(&settings)
+                    .unwrap()
+                    .desktop_update_error
+                    .as_deref(),
+                Some(DESKTOP_OVERDUE)
+            );
+        }
+    }
+
+    #[test]
+    fn helper_watchdog_reports_unverifiable_state_retries_specific_errors_and_respects_opt_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = alert_settings(&temp);
+        let path = settings.state_dir.join("desktop-update.json");
+        let now = clock("2026-10-20T12:00:00+02:00");
+        std::fs::write(&path, "broken").unwrap();
+        assert!(desktop_watchdog_with(&settings, &path, now).is_err());
+        assert!(
+            crate::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .unwrap()
+                .starts_with(MONITORING_FAILED)
+        );
+        std::fs::remove_file(&path).unwrap();
+        desktop_watchdog_with(&settings, &path, now).unwrap();
+        report_outcome(
+            &settings,
+            Some("Desktop update: bad signature"),
+            UpdateKind::Desktop,
+        )
+        .unwrap();
+        let alerts = enable_recorder(&mut settings);
+        for _ in 0..2 {
+            desktop_watchdog_with(&settings, &path, clock("2026-10-23T12:00:00+02:00")).unwrap();
+        }
+        assert_eq!(alert_count(&alerts), 1);
+        assert_eq!(
+            crate::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .as_deref(),
+            Some("Desktop update: bad signature")
+        );
+        report_outcome(&settings, None, UpdateKind::Desktop).unwrap();
+        settings.updates.automatic = false;
+        std::fs::write(&path, "broken but automatic updates are opted out").unwrap();
+        desktop_watchdog_with(&settings, &path, clock("2026-11-01T12:00:00+01:00")).unwrap();
+        assert!(
+            crate::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .is_none()
         );
     }
 }

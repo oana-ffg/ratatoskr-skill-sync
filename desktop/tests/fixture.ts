@@ -48,6 +48,10 @@ export function fixtureIPC(
   args: Record<string, unknown> = {},
 ): unknown {
   switch (cmd) {
+    case "runtime_platform":
+      return "linux";
+    case "set_app_error_listener":
+      return null;
     case "migrate_background":
       return null;
     case "background_status":
