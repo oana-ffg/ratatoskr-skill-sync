@@ -5,6 +5,8 @@ mod desktop_updates;
 #[cfg(windows)]
 mod tray;
 mod update_scheduler;
+#[cfg(any(windows, target_os = "macos"))]
+mod window_lifecycle;
 
 fn main() {
     let builder = tauri::Builder::default();
@@ -12,7 +14,7 @@ fn main() {
     let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|arg| arg == "--background")
-                && let Err(error) = tray::open(app)
+                && let Err(error) = window_lifecycle::open(app)
             {
                 tray::report(app, error);
             }
@@ -65,7 +67,6 @@ fn main() {
             commands::list_preview_targets,
             commands::detect_helper,
             commands::add_agent_target,
-            commands::read_job_status,
             commands::login_enabled,
             commands::set_login_enabled,
             commands::read_workspace,
@@ -96,6 +97,19 @@ fn main() {
             commands::save_update_schedule,
             commands::restart_desktop
         ])
-        .run(tauri::generate_context!())
-        .expect("Failed to run Ratatoskr Skill Sync");
+        .build(tauri::generate_context!())
+        .expect("Failed to build Ratatoskr Skill Sync")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event
+                && let Err(error) = window_lifecycle::open(_app)
+            {
+                use tauri::Emitter;
+                let message = format!("Cannot reopen workspace: {error:#}");
+                eprintln!("{message}");
+                if let Err(error) = _app.emit("app-error", Some(message)) {
+                    eprintln!("Cannot report workspace reopen error: {error}");
+                }
+            }
+        });
 }

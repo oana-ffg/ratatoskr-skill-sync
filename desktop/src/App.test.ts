@@ -135,6 +135,8 @@ test("native startup gates readiness and unsaved editors notify the native sched
   mockWindows("main");
   const calls = vi.fn((cmd: string, args: unknown) => {
     if (cmd === "startup_update") return false;
+    if (cmd === "plugin:window|is_visible") return true;
+    if (cmd === "plugin:window|is_minimized") return false;
     if (cmd.startsWith("plugin:event|")) return 1;
     return fixtureIPC(cmd, args as Record<string, unknown>);
   });
@@ -153,7 +155,9 @@ test("native startup gates readiness and unsaved editors notify the native sched
     );
     calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);
-    expect(calls).not.toHaveBeenCalled();
+    expect(calls.mock.calls.some(([cmd]) => cmd === "read_workspace")).toBe(
+      false,
+    );
     unmount();
     calls.mockClear();
     await vi.advanceTimersByTimeAsync(60000);

@@ -562,11 +562,6 @@ pub(crate) async fn preview_skill(
 }
 
 #[tauri::command]
-pub(crate) fn read_job_status() -> Reply<core::JobStatus> {
-    core::job_status(&settings()?).map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
 pub(crate) fn login_enabled(app: tauri::AppHandle) -> Reply<bool> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(|e| e.to_string())

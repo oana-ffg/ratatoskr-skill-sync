@@ -1,18 +1,27 @@
 <script lang="ts">
+  import { watchWindow } from "../window-refresh";
   import { onMount } from "svelte";
   import { api, relativeTime, type BackgroundStatus } from "../api";
   let {
     onerror,
     onstatus,
+    onchanged,
   }: {
     onerror: (error: unknown) => void;
     onstatus?: (status: BackgroundStatus | null) => void;
+    onchanged?: () => Promise<void>;
   } = $props();
   let status = $state<BackgroundStatus | null>(null);
   let seconds = $state(60);
   let busy = $state(false);
   let loaded = false;
-  async function refresh() {
+  let refreshing: Promise<void> | undefined;
+  function refresh(): Promise<void> {
+    return (refreshing ??= readStatus().finally(
+      () => (refreshing = undefined),
+    ));
+  }
+  async function readStatus() {
     status = await api.command<BackgroundStatus | null>("background_status");
     onstatus?.(status);
     if (status && !loaded) {
@@ -26,10 +35,13 @@
         if (status) await api.command("migrate_background");
       })
       .catch(onerror);
-    const timer = setInterval(() => {
-      if (status) void refresh().catch(onerror);
-    }, 2000);
-    return () => clearInterval(timer);
+    return watchWindow(
+      () => {
+        if (status) void refresh().catch(onerror);
+      },
+      onerror,
+      { intervalMs: 2000 },
+    );
   });
   async function save(paused: boolean | null, intervalSeconds: number | null) {
     busy = true;
@@ -39,6 +51,7 @@
         intervalSeconds,
       });
       await refresh();
+      await onchanged?.();
     } catch (error) {
       onerror(error);
     } finally {
@@ -50,6 +63,7 @@
     try {
       await api.command("migrate_background");
       await refresh();
+      await onchanged?.();
     } catch (error) {
       onerror(error);
     } finally {

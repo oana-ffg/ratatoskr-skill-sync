@@ -40,7 +40,7 @@ fn report(app: &tauri::AppHandle, result: &Result<bool, String>) {
         if let Some(error) = &error {
             eprintln!("Ratatoskr desktop update: {error}");
         }
-        app.emit("desktop-update-error", &error)?;
+        app.emit("app-error", &error)?;
         #[cfg(windows)]
         crate::tray::update_outcome(app, error)?;
         Ok(())
@@ -48,7 +48,7 @@ fn report(app: &tauri::AppHandle, result: &Result<bool, String>) {
     if let Err(error) = diagnostic {
         let message = format!("Desktop update diagnostics failed: {error:#}; result: {result:?}");
         eprintln!("Ratatoskr: {message}");
-        if let Err(error) = app.emit("desktop-update-error", Some(&message)) {
+        if let Err(error) = app.emit("app-error", Some(&message)) {
             eprintln!("Ratatoskr: cannot show desktop update error: {error:#}");
         }
         #[cfg(windows)]

@@ -87,6 +87,16 @@ npm run test:screenshots
 
 `cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
+For changes to Windows-only desktop code, also compile the Windows cfg paths before pushing. Install the target once, then run these commands from the repository root and from `desktop/src-tauri/`:
+
+```sh
+rustup target add x86_64-pc-windows-msvc
+cargo check --locked --workspace --all-targets --target x86_64-pc-windows-msvc
+cargo clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+```
+
+These commands do not link the app, but dependencies can still compile native code. Cross-checking from macOS requires Windows SDK headers and compatible C/resource tools; installing the Rust target alone is insufficient (`ring` can fail with `fatal error: 'assert.h' file not found`). If native prerequisites block the check, record the exact build-script failure in the PR and require the Windows CI jobs to pass before merging. A macOS build does not compile `#[cfg(windows)]` paths.
+
 ## Content and projects
 
 Content contains `harnesses.toml`, `machines/<machine>.toml`, `skills/<name>/SKILL.md` plus `skill.toml`, and optional `global/AGENTS.md`. See the [format reference](docs/content-format.md).
