@@ -337,9 +337,17 @@ nav button.active {
 .sync-indicator {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  max-width: 220px;
   font-size: 11px;
   white-space: nowrap;
+}
+.snapshot-age {
+  flex-basis: 100%;
+  margin-left: 14px;
+  color: var(--muted);
+  font-size: 10px;
 }
 .live-dot {
   display: inline-block;

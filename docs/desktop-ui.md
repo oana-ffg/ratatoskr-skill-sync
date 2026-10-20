@@ -14,6 +14,14 @@ The old single-template vanilla TypeScript UI has been replaced by Svelte 5 comp
 
 Save/Discard appear in the top bar only for editable, unsaved changes in the skill editor, machine/agent forms or Settings. Navigation and native close ask before abandoning drafts. Every open form/dialog, queued edit and active mutation blocks automatic installation/restart. Startup update decisions finish before the workspace becomes interactive. Errors are visible; failed saves keep drafts open.
 
+## Snapshot freshness
+
+The header's “As of” label dates the last good workspace snapshot, independently of the last successful sync. The app rereads the workspace on native focus, explicit tray show or macOS Dock reopen, and every 60 seconds while visible. Hidden and minimized windows do not poll. Native focus/resize events and `isVisible`/`isMinimized` are used instead of relying on a hidden WebView's DOM events. The Windows tray emits `workspace-window-visible` after show/unminimize and after hide; macOS Dock reopen uses the same show path. Browser previews use DOM focus/visibility events.
+
+Refreshes share one App-level path and concurrent triggers share the in-flight request. Open editors retain their draft state, current screen and selection. Unsaved edits, queued edits, dialogs and active mutations defer snapshot refreshes; the header warns that data may be out of date. Save, discard or leaving the protected screen triggers catch-up when visible. If editing starts during a request, its response is discarded. Mutation snapshots supersede older in-flight reads.
+
+A refresh failure keeps the last good data with a persistent error banner, the error text, last good time and a retry button. The header no longer claims current sync status when refresh is deferred or failed, and the age continues advancing. Activity uses the same workspace jobs snapshot. Windows tray controls read their separate in-process status every two seconds using the same visibility watcher; those reads also coalesce, and preference changes request a shared workspace refresh.
+
 ## Source preservation
 
 CodeMirror keeps a normalized display document plus an exact source state. A UTF-16 map accounts for CRLF offsets, including mixed separators and Unicode. Incremental edits preserve untouched separators. Source-state effects participate in undo/redo, so structured commands can be undone without normalizing the file. Decorations never rewrite document text; copying source selections retains template markers. Source mode uses the same document. Structured mode replaces the complete YAML header as a block so long wrapped metadata contributes no hidden line height. Line numbers appear only in Markdown source mode.

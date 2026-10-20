@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, setContext } from "svelte";
+  import { onMount, setContext, untrack } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
@@ -13,6 +13,7 @@
     type Skill,
     type BackgroundStatus,
   } from "./api";
+  import { watchWindow } from "./window-refresh";
   import { runStartupUpdate } from "./update-policy";
   import { listen } from "@tauri-apps/api/event";
   import Library from "./views/Library.svelte";
@@ -71,13 +72,58 @@
   function fail(e: unknown) {
     error = errorText(e);
   }
-  function update(w: Snapshot) {
+  let snapshotAt = $state<number | null>(null);
+  let now = $state(Date.now());
+  let refreshError = $state("");
+  let deferred = $state(false);
+  let windowVisible = $state(false);
+  let refreshing: Promise<void> | undefined;
+  let revision = 0;
+  let disposed = false;
+  const protectedState = () => dirty || unsaved || busy || !!pending;
+  function update(w: Snapshot | null, asOf = Date.now()) {
+    revision++;
     workspace = w;
+    snapshotAt = asOf;
+    refreshError = "";
+    deferred = false;
+    now = Date.now();
   }
-  async function refresh() {
-    const w = await api.workspace();
-    workspace = w;
+  function refresh(): Promise<void> {
+    if (protectedState()) {
+      deferred = true;
+      return Promise.resolve();
+    }
+    if (refreshing) return refreshing;
+    deferred = false;
+    const current = revision;
+    const started = Date.now();
+    refreshing = (async () => {
+      try {
+        const w = await api.workspace();
+        if (disposed || current !== revision) return;
+        // An edit or mutation can begin while IPC is in flight.
+        if (protectedState()) deferred = true;
+        else update(w, started);
+      } catch (e) {
+        if (!disposed && current === revision) refreshError = errorText(e);
+      } finally {
+        refreshing = undefined;
+      }
+    })();
+    return refreshing;
   }
+  $effect(() => {
+    if (ready && windowVisible && deferred && !protectedState())
+      untrack(() => void refresh());
+  });
+  const snapshotAge = $derived.by(() => {
+    // Keep relative labels advancing even when refreshes fail or are deferred.
+    void now;
+    return snapshotAt === null
+      ? "No good snapshot yet"
+      : `As of ${relativeTime(snapshotAt / 1000).toLowerCase()}`;
+  });
   function navigate(action: () => void) {
     const leave = () => {
       unsaved = false;
@@ -143,7 +189,14 @@
       },
     ).catch(fail);
     let stopUpdateErrors: (() => void) | undefined;
-    let disposed = false;
+    const ageTimer = setInterval(() => (now = Date.now()), 10_000);
+    const stopRefresh = watchWindow(
+      () => {
+        if (ready) void refresh();
+      },
+      (e) => fail(`Automatic workspace refresh: ${errorText(e)}`),
+      { onVisibility: (visible) => (windowVisible = visible) },
+    );
     if (isTauri())
       void listen<string | null>("desktop-update-error", (event) => {
         if (event.payload) fail(event.payload);
@@ -165,7 +218,10 @@
             };
           }
         })
-        .then((fn) => (cleanup = fn))
+        .then((stop) => {
+          if (disposed) stop();
+          else cleanup = stop;
+        })
         .catch(fail);
     function beforeUnload(e: BeforeUnloadEvent) {
       if (!trayMode && dirty) {
@@ -176,6 +232,8 @@
     window.addEventListener("beforeunload", beforeUnload);
     return () => {
       disposed = true;
+      clearInterval(ageTimer);
+      stopRefresh();
       stopUpdateErrors?.();
       cleanup?.();
       window.removeEventListener("beforeunload", beforeUnload);
@@ -184,13 +242,15 @@
   async function connect() {
     busy = true;
     try {
-      workspace = await api.command<Snapshot>("connect_workspace", {
-        source,
-        machine,
-        create,
-        remote: remote || null,
-        cloneName: !create && remote ? cloneName : null,
-      });
+      update(
+        await api.command<Snapshot>("connect_workspace", {
+          source,
+          machine,
+          create,
+          remote: remote || null,
+          cloneName: !create && remote ? cloneName : null,
+        }),
+      );
     } catch (e) {
       fail(e);
     } finally {
@@ -241,13 +301,26 @@
   <div class="workspace">
     <header class="topbar">
       <div class="sync-indicator">
-        <span class="live-dot" class:failing={!!workspace?.jobs.current_error}
+        <span
+          class="live-dot"
+          class:failing={!!workspace?.jobs.current_error ||
+            !!refreshError ||
+            deferred}
         ></span><span
-          >{workspace?.jobs.current_error
-            ? "Sync needs attention"
-            : workspace?.jobs.last_run?.finished_at
-              ? `Synced ${relativeTime(workspace.jobs.last_run.finished_at).toLowerCase()}`
-              : "Ready to sync"}</span
+          >{refreshError || deferred
+            ? "Status may be out of date"
+            : !workspace
+              ? "Status unavailable"
+              : workspace.jobs.current_error
+                ? "Sync needs attention"
+                : workspace?.jobs.last_run?.finished_at
+                  ? `Synced ${relativeTime(workspace.jobs.last_run.finished_at).toLowerCase()}`
+                  : "Ready to sync"}</span
+        ><small
+          class="snapshot-age"
+          title={snapshotAt === null
+            ? undefined
+            : new Date(snapshotAt).toLocaleString()}>{snapshotAge}</small
         >
       </div>
       <span class="mode-badge"
@@ -272,6 +345,29 @@
           >{/if}
       </div>
     </header>
+    {#if refreshError || deferred}<div
+        class="global-error"
+        role={refreshError ? "alert" : "status"}
+      >
+        <div>
+          <strong
+            >{refreshError
+              ? "Workspace refresh failed"
+              : "Refresh paused while editing"}</strong
+          >
+          <p>
+            {refreshError ||
+              "Save or discard your changes to refresh. The displayed data may be out of date."}
+            {snapshotAge}.{#if snapshotAt !== null}{" "}Last good snapshot: {new Date(
+                snapshotAt,
+              ).toLocaleString()}.{/if}
+          </p>
+        </div>
+        <button
+          disabled={dirty || unsaved || busy || !!pending}
+          onclick={() => void refresh()}>Retry refresh</button
+        >
+      </div>{/if}
     {#if error}<div class="global-error" role="alert">
         <div>
           <strong>Something needs attention</strong>
@@ -333,7 +429,7 @@
               onclick={connect}>Connect workspace</button
             >{#if error}<button
                 onclick={() => {
-                  void refresh().catch(fail);
+                  void refresh();
                 }}>Retry loading workspace</button
               >{/if}
           </section>{:else if screen === "Skills"}{#if skill}{#key `${skill.project}:${skill.name}`}{#await loadEditor()}
@@ -378,6 +474,7 @@
             onerror={fail}
             ondirty={(v) => (dirty = v)}
           />{:else if screen === "Activity"}<Activity
+            onrefresh={refresh}
             {workspace}
             onupdate={update}
             onerror={fail}

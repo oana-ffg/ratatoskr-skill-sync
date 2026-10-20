@@ -6,9 +6,14 @@ test("all main screens", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.clock.install({ time: new Date("2026-10-16T18:00:10Z") });
+  let refreshError = false;
   await page.exposeFunction(
     "fixtureIPC",
-    (cmd: string, args: Record<string, unknown>) => fixtureIPC(cmd, args),
+    (cmd: string, args: Record<string, unknown>) => {
+      if (cmd === "read_workspace" && refreshError)
+        throw new Error("Fixture sync history is unavailable");
+      return fixtureIPC(cmd, args);
+    },
   );
   await page.addInitScript(() => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -49,6 +54,7 @@ test("all main screens", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Save", exact: true }),
   ).toHaveCount(0);
+  await expect(page.locator(".snapshot-age")).toHaveText("As of just now");
   await capture("skills");
   await page.getByRole("button", { name: /recordings Enabled/ }).click();
   await page.clock.runFor(250);
@@ -271,5 +277,24 @@ test("all main screens", async ({ page }) => {
       await capture("ntfy-settings");
     }
   }
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.getByText("Refresh paused while editing")).toBeVisible();
+  await expect(page.getByText("Status may be out of date")).toBeVisible();
+  await capture("refresh-paused");
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Save", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Refresh paused while editing")).toHaveCount(0);
+  refreshError = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.getByRole("alert")).toContainText(
+    "Fixture sync history is unavailable",
+  );
+  await expect(page.getByRole("alert")).toContainText("Last good snapshot:");
+  await capture("refresh-error");
+  refreshError = false;
+  await page.getByRole("button", { name: "Retry refresh" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
   expect(errors).toEqual([]);
 });

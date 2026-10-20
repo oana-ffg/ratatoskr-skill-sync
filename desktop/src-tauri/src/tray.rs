@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{
-    Manager,
+    Emitter, Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -226,16 +226,6 @@ fn start_hidden(app: &tauri::AppHandle) -> Result<bool> {
     )
 }
 
-pub(crate) fn open(app: &tauri::AppHandle) -> Result<()> {
-    let window = app
-        .get_webview_window("main")
-        .context("Main window missing")?;
-    window.show()?;
-    window.unminimize()?;
-    window.set_focus()?;
-    Ok(())
-}
-
 fn edit_preferences(
     app: &tauri::AppHandle,
     edit: impl FnOnce(&mut TrayPreferences),
@@ -426,7 +416,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         .on_menu_event(|app, event| {
             let result = (|| -> Result<()> {
                 match event.id.as_ref() {
-                    "open" => open(app)?,
+                    "open" => crate::window_lifecycle::open(app)?,
                     "sync" => request_sync(app),
                     "pause" => {
                         if let Err(error) = edit_preferences(app, |preferences| {
@@ -457,7 +447,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
                     button_state: MouseButtonState::Up,
                     ..
                 }
-            ) && let Err(error) = open(tray.app_handle())
+            ) && let Err(error) = crate::window_lifecycle::open(tray.app_handle())
             {
                 report(tray.app_handle(), error);
             }
@@ -473,7 +463,11 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
             let result = handle
                 .get_webview_window("main")
                 .context("Main window missing")
-                .and_then(|w| w.hide().map_err(Into::into));
+                .and_then(|w| {
+                    w.hide()?;
+                    w.emit("workspace-window-visible", false)?;
+                    Ok(())
+                });
             if let Err(error) = result {
                 report(&handle, error);
             }

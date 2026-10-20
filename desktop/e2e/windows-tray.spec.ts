@@ -80,6 +80,7 @@ test("Windows tray settings in dark mode", async ({ page }) => {
     "Last success: 1 min ago",
   );
   await expect(page.locator(".topbar")).toContainText("Synced 1 min ago");
+  await expect(page.locator(".snapshot-age")).toHaveText("As of just now");
   await expect(page.locator(".mode-badge")).toHaveText("Live");
   await expect(
     page

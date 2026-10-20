@@ -2,6 +2,12 @@
 
 PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for the UI redesign. The desktop uses Svelte 5 and CodeMirror 6; structured edits use the same Rust core as the CLI. All command failures propagate as rejected invocations with contextual error text.
 
+## Workspace reads
+
+`read_workspace()` rebuilds the snapshot from current on-disk settings, machine mode, plan, job history and legacy copies; it has no resident snapshot cache. The frontend serializes automatic reads, records their start time for the header, defers them while drafts or mutations are active, and visibly retains the last good time on failure. Activity consumes this shared snapshot rather than a separate jobs read.
+
+`workspace-window-visible` is a native window event with a boolean payload. The shared native open path emits `true` after show/unminimize/focus; Windows close-to-tray emits `false` after hiding. Native focus and resize events additionally cover ordinary focus and minimize/restore. The frontend confirms native visibility before refreshing.
+
 ## Conflict review and recovery
 
 - `preview_conflict({path, action})` returns a `ResolutionPreview`; actions are `copy-back`, `reinstall`, `adopt`. Copy-back is refused for variables, conditional comments, injected frontmatter, missing installed files and missing source mappings.

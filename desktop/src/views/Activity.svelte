@@ -6,7 +6,6 @@
     relativeTime,
     type Snapshot,
     type BackgroundStatus,
-    type Jobs,
   } from "../api";
   import Dialog from "../components/Dialog.svelte";
   let {
@@ -14,17 +13,15 @@
     onupdate,
     onerror,
     ondirty,
+    onrefresh,
   }: {
     workspace: Snapshot;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
+    onrefresh: () => Promise<void>;
   } = $props();
-  let latestJobs = $state<Jobs | null>(null);
-  const jobs = $derived(latestJobs ?? workspace.jobs);
-  async function refreshJobs() {
-    latestJobs = await api.command<Jobs>("read_job_status");
-  }
+  const jobs = $derived(workspace.jobs);
   let trayMode = $state<boolean | null>(null);
   onMount(() => {
     void api
@@ -112,9 +109,7 @@
     </p>{/each}
   {#if trayMode}<BackgroundSync
       {onerror}
-      onstatus={() => {
-        void refreshJobs().catch(onerror);
-      }}
+      onchanged={onrefresh}
     />{:else if trayMode === false}<article class="panel">
       <div class="section-heading">
         <div>
