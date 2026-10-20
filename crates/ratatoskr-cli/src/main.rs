@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "ratatoskr", version, about = "Ratatoskr Skill Sync")]
 struct Cli {
+    /// Local configuration file (or RATATOSKR_CONFIG). Custom init paths use <config filename>.state/.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[arg(long, global = true)]
@@ -23,6 +24,9 @@ enum Action {
         source: PathBuf,
         #[arg(long)]
         machine: String,
+        /// Absolute state directory. Defaults to <config filename>.state/ beside a custom config; otherwise platform data.
+        #[arg(long, value_name = "DIR")]
+        state_dir: Option<PathBuf>,
         #[arg(long)]
         create: bool,
         #[arg(long, conflicts_with = "create")]
@@ -319,15 +323,16 @@ fn run() -> Result<i32> {
         Action::Init {
             source,
             machine,
+            state_dir,
             create,
             remote,
         } => {
             let settings = if create {
-                core::create_content(&path, &source, &machine)?
+                core::create_content(&path, &source, &machine, state_dir.as_deref())?
             } else if let Some(remote) = remote {
-                core::clone_content(&path, &remote, &source, &machine)?
+                core::clone_content(&path, &remote, &source, &machine, state_dir.as_deref())?
             } else {
-                initialize(&path, &source, &machine)?
+                initialize(&path, &source, &machine, state_dir.as_deref())?
             };
             show(&plan(&settings)?, cli.json)?;
             eprintln!("Saved {}. No skills were applied.", path.display());

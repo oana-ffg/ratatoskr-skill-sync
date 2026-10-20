@@ -3233,6 +3233,7 @@ version = "0.2.9"
 dependencies = [
  "anyhow",
  "clap",
+ "dunce",
  "ratatoskr-core",
  "serde_json",
  "tempfile",

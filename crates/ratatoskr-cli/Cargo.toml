@@ -19,3 +19,4 @@ ratatoskr-core = { path = "../ratatoskr-core" }
 
 [dev-dependencies]
 tempfile.workspace = true
+dunce = "1"

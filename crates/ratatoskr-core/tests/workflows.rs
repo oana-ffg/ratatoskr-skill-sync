@@ -565,11 +565,11 @@ fn content_setup_creates_real_host_profile_and_stays_in_staging() {
     let f = Fixture::new();
     let root = f.root.join("new-content");
     let config = f.root.join("new-config.toml");
-    let settings = ratatoskr_core::create_content(&config, &root, "draft").unwrap();
+    let settings = ratatoskr_core::create_content(&config, &root, "draft", None).unwrap();
     assert_eq!(plan(&settings).unwrap().mode, "staging");
     assert_eq!(plan(&settings).unwrap().targets, 2);
     assert!(root.join(".git").is_dir());
-    assert!(ratatoskr_core::create_content(&config, &root, "draft").is_err());
+    assert!(ratatoskr_core::create_content(&config, &root, "draft", None).is_err());
 }
 
 #[test]
