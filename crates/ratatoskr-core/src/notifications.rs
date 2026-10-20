@@ -24,6 +24,19 @@ pub(crate) fn outcome(settings: &Settings, error: Option<&str>) -> Result<()> {
 }
 
 pub(crate) fn outcome_for(settings: &Settings, error: Option<&str>, filename: &str) -> Result<()> {
+    update_for(settings, filename, |_| error.map(str::to_owned))
+}
+
+/// Serialize read/decide/deliver across the desktop and helper. Atomic writes
+/// alone cannot prevent two processes from delivering the same transition.
+pub(crate) fn update_for(
+    settings: &Settings,
+    filename: &str,
+    decide: impl FnOnce(Option<&str>) -> Option<String>,
+) -> Result<()> {
+    let file = crate::config::state_lock(settings, &format!("{filename}.lock"))?;
+    fs2::FileExt::lock_exclusive(&file)?;
+    let _guard = DeliveryGuard(file);
     let path = settings.state_dir.join(&settings.machine).join(filename);
     no_symlinks(&path)?;
     let mut state: State = if path.try_exists()? {
@@ -38,10 +51,13 @@ pub(crate) fn outcome_for(settings: &Settings, error: Option<&str>, filename: &s
         }
         state.version = 1;
     }
+    let error = decide(state.error.as_deref());
+    let error = error.as_deref();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let send = match error {
         Some(error) => {
-            state.delivered_error.as_deref() != Some(error)
+            state.sent_at == 0
+                || state.delivered_error.as_deref() != Some(error)
                 || now.saturating_sub(state.sent_at) >= 86400
         }
         None => state.delivered_error.is_some(),
@@ -81,6 +97,20 @@ pub(crate) fn outcome_for(settings: &Settings, error: Option<&str>, filename: &s
     state.delivered_error = error.map(str::to_owned);
     state.sent_at = now;
     atomic_write(&path, &serde_json::to_vec(&state)?)
+}
+
+struct DeliveryGuard(fs::File);
+impl Drop for DeliveryGuard {
+    fn drop(&mut self) {
+        if let Err(error) = fs2::FileExt::unlock(&self.0) {
+            eprintln!("Ratatoskr: release notification lock: {error}");
+        }
+    }
+}
+
+/// Retry both undelivered errors and undelivered recovery, preserving dedup.
+pub(crate) fn retry_for(settings: &Settings, filename: &str) -> Result<()> {
+    update_for(settings, filename, |error| error.map(str::to_owned))
 }
 
 pub(crate) fn current_error(settings: &Settings, filename: &str) -> Result<Option<String>> {
@@ -130,6 +160,70 @@ mod tests {
             outcome(&settings, Some("new failure")).is_err(),
             "Failed delivery must retry immediately rather than dedup the undelivered error"
         );
+    }
+
+    #[test]
+    fn never_sent_errors_and_recovery_retry_when_a_route_becomes_available() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(temp.path()).unwrap();
+        let mut settings = Settings {
+            source: root.clone(),
+            state_dir: root.clone(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let ledger = root.join("test/notification.json");
+        // Even an inconsistent delivered_error cannot suppress a never-sent error.
+        atomic_write(
+            &ledger,
+            &serde_json::to_vec(&serde_json::json!({
+                "version": 1, "error": "offline", "delivered_error": "offline", "sent_at": 0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let recorder = root.join("alerts.gitconfig");
+        settings.alert_command = vec![
+            "git".into(),
+            "config".into(),
+            "--file".into(),
+            recorder.to_string_lossy().into_owned(),
+            "--add".into(),
+            "alerts.message".into(),
+        ];
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let settings = settings.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    retry_for(&settings, "notification.json").unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let messages = || {
+            let output = crate::process::command("git")
+                .args(["config", "--file"])
+                .arg(&recorder)
+                .args(["--get-all", "alerts.message"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().lines().count()
+        };
+        assert_eq!(messages(), 1, "parallel reporters must not double deliver");
+        let mut no_route = settings.clone();
+        no_route.alert_command.clear();
+        outcome(&no_route, None).unwrap();
+        assert_eq!(messages(), 1);
+        for _ in 0..2 {
+            retry_for(&settings, "notification.json").unwrap();
+        }
+        assert_eq!(messages(), 2, "pending recovery must deliver exactly once");
     }
 }
 

@@ -6,7 +6,6 @@ use ratatoskr_core::{
 };
 use serde::Serialize;
 use std::{
-    path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -14,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{
-    Emitter, Manager,
+    Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -200,30 +199,6 @@ fn migrate(
         })?;
         result.map(|_| ())
     })
-}
-
-fn launch_mode_path(app: &tauri::AppHandle) -> Result<PathBuf> {
-    Ok(app.path().app_data_dir()?.join("restart-background.json"))
-}
-/// One-shot intent overrides stale launch arguments after a foreground reopen.
-/// The NSIS updater relaunches itself, so this also covers its process exit.
-pub(crate) fn prepare_restart(app: &tauri::AppHandle) -> Result<()> {
-    let hidden = !app
-        .get_webview_window("main")
-        .context("Main window missing")?
-        .is_visible()?;
-    core::tray::save_restart_mode(&launch_mode_path(app)?, hidden)?;
-    app.state::<Runtime>().change(|s| s.restart_error = None)
-}
-pub(crate) fn cancel_restart(app: &tauri::AppHandle) -> Result<()> {
-    core::tray::clear_restart_mode(&launch_mode_path(app)?)?;
-    app.state::<Runtime>().change(|s| s.restart_error = None)
-}
-fn start_hidden(app: &tauri::AppHandle) -> Result<bool> {
-    core::tray::consume_restart_mode(
-        &launch_mode_path(app)?,
-        std::env::args_os().any(|arg| arg == "--background"),
-    )
 }
 
 fn edit_preferences(
@@ -429,7 +404,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
                         app.state::<Runtime>()
                             .stopped
                             .store(true, Ordering::Release);
-                        app.exit(0);
+                        crate::window_lifecycle::quit(app);
                     }
                     _ => (),
                 }
@@ -453,26 +428,6 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
             }
         })
         .build(app)?;
-    let window = app
-        .get_webview_window("main")
-        .context("Main window missing")?;
-    let handle = app.handle().clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let result = handle
-                .get_webview_window("main")
-                .context("Main window missing")
-                .and_then(|w| {
-                    w.hide()?;
-                    w.emit("workspace-window-visible", false)?;
-                    Ok(())
-                });
-            if let Err(error) = result {
-                report(&handle, error);
-            }
-        }
-    });
     // Remove owned legacy persistence before a network update check can delay
     // startup long enough for the old minute trigger to run again.
     let migration = (|| -> Result<()> {
@@ -493,12 +448,8 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
     if let Err(error) = migration {
         report(app.handle(), error);
     }
-    use tauri_plugin_autostart::ManagerExt;
     let autostart = (|| -> Result<()> {
-        let enabled = app.autolaunch().is_enabled()?;
-        if enabled {
-            app.autolaunch().enable()?;
-        }
+        let enabled = crate::window_lifecycle::refresh_login(app.handle())?;
         app.state::<Runtime>()
             .change(|s| s.login_enabled = enabled)?;
         Ok(())
@@ -508,18 +459,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         app.state::<Runtime>()
             .change(|s| s.login_error = Some(Problem::from_error("Open at login", &error)))?;
     }
-    let hidden = match start_hidden(app.handle()) {
-        Ok(hidden) => hidden,
-        Err(error) => {
-            eprintln!("Ratatoskr restart mode: {error:#}");
-            app.state::<Runtime>()
-                .change(|s| s.restart_error = Some(Problem::from_error("Restart", &error)))?;
-            true
-        }
-    };
-    if !hidden {
-        crate::window_lifecycle::open(app.handle())?;
-    }
+    crate::window_lifecycle::setup(app.handle())?;
     refresh(app.handle())?;
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
@@ -530,6 +470,15 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<()> {
         tauri::async_runtime::spawn_blocking(move || run_loop(&handle));
     });
     Ok(())
+}
+
+pub(crate) fn restart_outcome(app: &tauri::AppHandle, result: &Result<()>) -> Result<()> {
+    app.state::<Runtime>().change(|state| {
+        state.restart_error = result
+            .as_ref()
+            .err()
+            .map(|error| Problem::from_error("Restart", error));
+    })
 }
 
 pub(crate) fn update_outcome(app: &tauri::AppHandle, error: Option<String>) -> Result<()> {

@@ -79,3 +79,26 @@ The public disposable fixture now includes a multi-paragraph infrastructure skil
 Review tests cover grouped badge counts, custom Windows roots, separate project scope, concrete staging/live destinations and stale legacy decisions. Rust workflows verify that keeping both copies preserves legacy bytes, releases old ownership and asks again after changes; archive previews retain stale-content and redirected-backup checks. Credential tests cover reference serialization, provider-output redaction, resolution failures and retryability. A disk save/reload regression proves v0.2.1 environment keys are removed when replacing them with gopass references, preserving unrelated configuration bytes.
 
 Required local Rust/frontend checks and native desktop/helper builds are run for this change; PR #5 records CI results. Real Pushover/ntfy delivery with Oana's credentials, native Keychain/Credential Manager access, and Brunnr's first published nightly update remain platform acceptance checks. No secret values were read to identify the existing Pushover entry names. Supervisor review and Oana's screenshot approval are required before merge; no release is cut here.
+
+## macOS background update reliability (2026-10-20)
+
+This code-only change was rebased onto `bdc207e` (PR #21) and built in an isolated `/private/tmp/rs-macbg.*` clone. No installed app, LaunchAgent, live configuration/state, or installed skill was changed. No version bump or release is included. PR #21's stale-snapshot behavior and general `app-error` event are preserved. Both resident platforms use one `window_lifecycle.rs` implementation that emits `workspace-window-visible` after hiding/showing.
+
+Regression tests cover runtime-OS login warnings independently of the machine profile; preserving unsaved editors through native close-to-hide on macOS and Windows; acknowledging and releasing the frontend error listener; choosing exactly one error presentation path for early/hidden vs visible/ready windows; close/hide vs reopen/show vs Quit policy; initially hidden macOS/Windows windows; `--background` and one-shot restart visibility; preserving opt-out when refreshing login arguments; helper monitoring when the desktop stops; two completed nightly windows (including midnight/DST coverage); bounded migration grace for missing and old state; successful-check vs attempt accounting; corrupt state and automatic-update opt-out; helper-only overdue delivery on macOS; shared notification deduplication under concurrent reporters; never-sent errors; pending recovery; obsolete bundled-helper errors; and clearing bundled-helper errors on desktop check success. Alert recorder paths use `dunce::canonicalize` before invoking Git on Windows.
+
+Local commands and results on macOS:
+
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed, including desktop tests.
+- `cargo test --workspace --locked`: 127 tests passed, including 15 native desktop tests.
+- `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all --check`, `cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings`, and `cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked`: passed; 15 native desktop tests.
+- `cargo build --locked -p ratatoskr-desktop`: passed.
+- From `desktop/`: `npm ci`, `npm run format:check`, `npm run check`, `npm run build`: passed; Svelte/TypeScript reported zero errors and zero warnings.
+- From the repository root: `node --test scripts/tests/*.test.mjs`: 1 test passed.
+- From `desktop/`: `npm test`: 5 Node policy tests and 46 Vitest tests passed.
+- From `desktop/`: `npm run test:screenshots`: both Playwright flows passed; generated screenshot changes were discarded.
+- `BASE_SHA=bdc207e python3 scripts/compare-macos-schedule.py`: launchd plist bytes identical to the base at 60, 120 and 3600 seconds.
+- From `desktop/`: `npm run prepare:helper -- --debug` and `npm run tauri -- build --bundles app`: passed; an ad-hoc signed `.app` was produced in the temporary clone.
+- `codesign --verify --deep --strict --verbose=2 "target/release/bundle/macos/Ratatoskr Skill Sync.app"` and `codesign --verify --strict --verbose=2 "target/release/bundle/macos/Ratatoskr Skill Sync.app/Contents/MacOS/ratatoskr"`: passed.
+
+Windows standard-user task migration and NSIS packaging cannot run on this macOS host; the existing Windows CI jobs remain required. Windows retains its resident-session update monitoring, tray sync/migration, native toasts and single-instance behavior. macOS Dock reopen, Cmd+Q, real login startup, real transport delivery and a production signed update remain OS acceptance checks. No installed app was started for these checks. The independent watchdog depends on the launchd helper continuing to run and a working configured alert route; it cannot report while both processes are stopped. GitHub CI results belong to the PR rather than these local results.

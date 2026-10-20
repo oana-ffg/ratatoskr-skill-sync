@@ -1,11 +1,35 @@
 use crate::desktop_updates::{UpdateContext, automatic_update_with, manual_update_with};
 use ratatoskr_core::{self as core, Plan, Settings, SkillDocument, SkillEntry};
 use serde::Serialize;
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
 static MUTATION: Mutex<()> = Mutex::new(());
+static APP_ERROR_LISTENER: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub(crate) fn runtime_platform() -> &'static str {
+    std::env::consts::OS
+}
+
+#[tauri::command]
+pub(crate) fn set_app_error_listener(active: bool) {
+    APP_ERROR_LISTENER.store(active, Ordering::Release);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn app_error_listener_ready() -> bool {
+    APP_ERROR_LISTENER.load(Ordering::Acquire)
+}
+
 type Reply<T> = Result<T, String>;
 
 #[derive(Serialize)]
@@ -276,14 +300,14 @@ fn install_downloaded_update(
     update: &tauri_plugin_updater::Update,
     bytes: Vec<u8>,
 ) -> anyhow::Result<()> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = app;
-    #[cfg(windows)]
-    crate::tray::prepare_restart(app)?;
+    #[cfg(any(windows, target_os = "macos"))]
+    crate::window_lifecycle::prepare_restart(app)?;
     let result = update.install(bytes);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if result.is_err() {
-        crate::tray::cancel_restart(app)?;
+        crate::window_lifecycle::cancel_restart(app)?;
     }
     result.map_err(Into::into)
 }
@@ -510,8 +534,8 @@ pub(crate) fn save_update_schedule(automatic: bool, time: String) -> Reply<Snaps
 }
 #[tauri::command]
 pub(crate) fn restart_desktop(app: tauri::AppHandle) -> Reply<()> {
-    #[cfg(windows)]
-    crate::tray::prepare_restart(&app).map_err(|e| format!("{e:#}"))?;
+    #[cfg(any(windows, target_os = "macos"))]
+    crate::window_lifecycle::prepare_restart(&app).map_err(|e| format!("{e:#}"))?;
     app.restart();
 }
 

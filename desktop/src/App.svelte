@@ -11,7 +11,6 @@
     reviewSummary,
     type Snapshot,
     type Skill,
-    type BackgroundStatus,
   } from "./api";
   import { watchWindow } from "./window-refresh";
   import { runStartupUpdate } from "./update-policy";
@@ -41,7 +40,7 @@
     | "Settings";
   let workspace = $state<Snapshot | null>(null);
   let ready = $state(false);
-  let trayMode = $state(false);
+  let residentMode = $state(false);
   let screen = $state<Screen>("Skills");
   let skill = $state<Skill | null>(null);
   let scope = $state("all");
@@ -173,10 +172,8 @@
     void runStartupUpdate(
       async () => {
         if (isTauri()) {
-          trayMode =
-            (await api.command<BackgroundStatus | null>(
-              "background_status",
-            )) !== null;
+          const platform = await api.command<string>("runtime_platform");
+          residentMode = platform === "macos" || platform === "windows";
           await api.command("startup_update");
         }
       },
@@ -203,13 +200,23 @@
       })
         .then((stop) => {
           if (disposed) stop();
-          else stopAppErrors = stop;
+          else {
+            stopAppErrors = () => {
+              void api
+                .command("set_app_error_listener", { active: false })
+                .catch(fail);
+              stop();
+            };
+            void api
+              .command("set_app_error_listener", { active: true })
+              .catch(fail);
+          }
         })
         .catch(fail);
     if (isTauri())
       void getCurrentWindow()
         .onCloseRequested((event) => {
-          if (trayMode) return;
+          if (residentMode) return;
           if (dirty) {
             event.preventDefault();
             closeAfterDiscard = true;
@@ -224,7 +231,7 @@
         })
         .catch(fail);
     function beforeUnload(e: BeforeUnloadEvent) {
-      if (!trayMode && dirty) {
+      if (!residentMode && dirty) {
         e.preventDefault();
         e.returnValue = "";
       }

@@ -216,6 +216,12 @@ fn sync_locked(
     desktop: bool,
 ) -> Result<Plan> {
     let mut run = crate::jobs::start(settings)?;
+    #[cfg(target_os = "macos")]
+    let desktop_health = if desktop {
+        Ok(())
+    } else {
+        crate::updates::desktop_watchdog(settings)
+    };
     // Updating and syncing have separate outcomes and notification ledgers.
     let deployment = validate_deploy_branch(settings).map_err(|error| {
         if desktop {
@@ -255,6 +261,10 @@ fn sync_locked(
         crate::notifications::outcome(settings, sync_error.as_deref())
     };
     let mut errors = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Err(error) = desktop_health {
+        errors.push(format!("Desktop update monitoring failed: {error:#}"));
+    }
     if let Err(error) = update_result {
         errors.push(format!("Helper update failed: {error:#}"));
     }
