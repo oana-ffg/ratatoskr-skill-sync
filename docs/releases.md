@@ -1,5 +1,9 @@
 # Releases and signed updates
 
+## v0.2.11 security patch
+
+Update `rustls-webpki` to 0.103.16 and `webpki-roots` / `webpki-root-certs` to 1.0.10. These releases distrust the compromised eMudhra intermediate CA keys and update the bundled trust roots used by helper and desktop HTTPS clients. Signed-update verification and existing update settings are unchanged.
+
 ## v0.2.10 release notes
 
 - Refresh the desktop workspace snapshot when the window is shown or focused and every 60 seconds while visible. An "As of" indicator dates the last successful snapshot; refresh failures remain visible with Retry. Refresh waits while edits, dialogs or operations are in progress, preserving the editor and current selection. Window and updater errors share the app's error reporting.
