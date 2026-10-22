@@ -18,7 +18,7 @@ Without `--state-dir`, initialization compares the config path with the platform
 
 This selection occurs only when creating a config. Existing configs retain their explicit `state_dir`, with no migration or fallback on load. The desktop's `connect_workspace` uses the same core for create, clone and connect; its default config and default state remain unchanged. A desktop launched with a custom `RATATOSKR_CONFIG` gets config-specific sibling state when connecting a new workspace.
 
-See the [disposable preview example](../README.md#disposable-preview-configuration) for `plan` and `skill preview` from a content PR checkout. Initialization saves the config after validating a plan but does not apply outputs or create state. Isolated state does not change a profile's live output destinations; review the plan and use staging before applying to disposable outputs.
+See the [disposable preview example](usage.md#disposable-preview-configuration) for `plan` and `skill preview` from a content PR checkout. Initialization saves the config after validating a plan but does not apply outputs or create state. Isolated state does not change a profile's live output destinations; review the plan and use staging before applying to disposable outputs.
 
 ## Rendering and ownership
 

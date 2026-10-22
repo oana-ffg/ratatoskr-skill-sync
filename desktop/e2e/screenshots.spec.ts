@@ -49,6 +49,13 @@ test("all main screens", async ({ page }) => {
     });
     await page.setViewportSize(viewport);
   }
+  // Window-sized crop of a long screen, for the README.
+  async function captureOverview(name: string) {
+    await page.screenshot({
+      path: `../docs/screenshots/${name}-overview-dark.png`,
+      animations: "disabled",
+    });
+  }
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Skills/ })).toBeVisible();
   await expect(
@@ -269,6 +276,9 @@ test("all main screens", async ({ page }) => {
         .fill("pushover/codex-approvals/user-key");
     }
     await capture(file);
+    if (screen === "Review changes" || screen === "Agents & machines") {
+      await captureOverview(file);
+    }
     if (screen === "Settings") {
       await page
         .getByRole("combobox", { name: "Delivery", exact: true })
