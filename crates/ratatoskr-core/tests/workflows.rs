@@ -395,6 +395,134 @@ mod private_permissions {
         assert_eq!(mode(&path), 0o700);
     }
 
+    #[test]
+    fn incompatible_execute_intersection_refuses_before_any_restore() {
+        let f = Fixture::new();
+        f.write("skills/review-code/z-run.sh", "#!/bin/sh\n");
+        fs::set_permissions(
+            f.settings.source.join("skills/review-code/z-run.sh"),
+            fs::Permissions::from_mode(0o750),
+        )
+        .unwrap();
+        apply(&f.settings).unwrap();
+        let path = f.output().join("z-run.sh");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+        let backup = ratatoskr_core::adopt(&f.settings).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o641)).unwrap();
+        let inode = fs::metadata(&path).unwrap().ino();
+        let earlier = fs::metadata(f.output().join("SKILL.md")).unwrap().ino();
+        let error = ratatoskr_core::restore_backup(&f.settings, &backup).unwrap_err();
+        assert!(format!("{error:#}").contains("executable permission"));
+        assert_eq!(mode(&path), 0o641);
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        assert_eq!(
+            fs::metadata(f.output().join("SKILL.md")).unwrap().ino(),
+            earlier
+        );
+    }
+
+    #[test]
+    fn legacy_restore_into_existing_public_destination_defaults_to_owner_only() {
+        let f = Fixture::new();
+        f.write("skills/review-code/data.txt", "private original");
+        apply(&f.settings).unwrap();
+        let backup = ratatoskr_core::adopt(&f.settings).unwrap();
+        let snapshot_path = backup.join("snapshot.json");
+        let mut snapshot: serde_json::Value =
+            serde_json::from_slice(&fs::read(&snapshot_path).unwrap()).unwrap();
+        snapshot.as_object_mut().unwrap().remove("protections");
+        fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        f.write("skills/review-code/data.txt", "harmless replacement");
+        apply(&f.settings).unwrap();
+        let path = f.output().join("data.txt");
+        for (current, expected) in [(0o644, 0o600), (0o440, 0o400)] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(current)).unwrap();
+            ratatoskr_core::restore_backup(&f.settings, &backup).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"private original");
+            assert_eq!(mode(&path), expected);
+        }
+    }
+
+    #[test]
+    fn legacy_source_backups_never_republish_private_bytes_with_public_mode() {
+        use ratatoskr_core::{ConflictAction, preview_source_edit, resolve_conflict};
+        for action in [ConflictAction::CopyBack, ConflictAction::EditSource] {
+            let f = Fixture::new();
+            f.write("skills/review-code/data.txt", "private original");
+            let source = f.settings.source.join("skills/review-code/data.txt");
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+            apply(&f.settings).unwrap();
+            let path = f.output().join("data.txt");
+            fs::write(&path, "harmless installed edit").unwrap();
+            let review = if action == ConflictAction::EditSource {
+                serde_json::to_string(
+                    &preview_source_edit(&f.settings, &path, "harmless source edit").unwrap(),
+                )
+                .unwrap()
+            } else {
+                reviewed_resolution(&f, &path, action)
+            };
+            let backup = resolve_conflict(&f.settings, &review).unwrap();
+            if action == ConflictAction::EditSource {
+                resolve_conflict(
+                    &f.settings,
+                    &reviewed_resolution(&f, &path, ConflictAction::Adopt),
+                )
+                .unwrap();
+            }
+            let snapshot_path = backup.join("snapshot.json");
+            let mut snapshot: serde_json::Value =
+                serde_json::from_slice(&fs::read(&snapshot_path).unwrap()).unwrap();
+            snapshot.as_object_mut().unwrap().remove("protections");
+            for source in snapshot["sources"].as_object_mut().unwrap().values_mut() {
+                source.as_object_mut().unwrap().remove("protection");
+            }
+            fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+            ratatoskr_core::restore_backup(&f.settings, &backup).unwrap();
+            assert_eq!(fs::read(&source).unwrap(), b"private original");
+            assert_eq!(mode(&source), 0o600);
+        }
+    }
+
+    #[test]
+    fn incompatible_source_execute_intersection_refuses_before_mutation() {
+        use ratatoskr_core::{ConflictAction, preview_source_edit, resolve_conflict};
+        for action in [ConflictAction::CopyBack, ConflictAction::EditSource] {
+            let f = Fixture::new();
+            f.write("skills/review-code/run.sh", "#!/bin/sh\nexit 0\n");
+            let source = f.settings.source.join("skills/review-code/run.sh");
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o750)).unwrap();
+            apply(&f.settings).unwrap();
+            let path = f.output().join("run.sh");
+            fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+            let review = if action == ConflictAction::EditSource {
+                serde_json::to_string(
+                    &preview_source_edit(&f.settings, &path, "#!/bin/sh\nexit 2\n").unwrap(),
+                )
+                .unwrap()
+            } else {
+                reviewed_resolution(&f, &path, action)
+            };
+            let backup = resolve_conflict(&f.settings, &review).unwrap();
+            if action == ConflictAction::EditSource {
+                resolve_conflict(
+                    &f.settings,
+                    &reviewed_resolution(&f, &path, ConflictAction::Adopt),
+                )
+                .unwrap();
+            }
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o641)).unwrap();
+            let source_inode = fs::metadata(&source).unwrap().ino();
+            let output_inode = fs::metadata(&path).unwrap().ino();
+            let error = ratatoskr_core::restore_backup(&f.settings, &backup).unwrap_err();
+            assert!(format!("{error:#}").contains("executable permission"));
+            assert_eq!(mode(&source), 0o641);
+            assert_eq!(fs::metadata(&source).unwrap().ino(), source_inode);
+            assert_eq!(fs::metadata(&path).unwrap().ino(), output_inode);
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_parent_access_acl_is_safe_but_default_and_file_acls_refuse() {

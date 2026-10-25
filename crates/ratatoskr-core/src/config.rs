@@ -173,7 +173,7 @@ pub(crate) fn protected_write(
     no_symlinks(path)?;
     let before = crate::protection::capture(path)?;
     if let Some(saved) = saved {
-        saved.restore_check(path)?;
+        saved.restore_check(path, executable)?;
     }
     let parent = path.parent().context("File has no parent directory")?;
     let mut directories = fs::DirBuilder::new();
@@ -185,7 +185,7 @@ pub(crate) fn protected_write(
     }
     directories.create(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    crate::protection::capture(temp.path())?;
+    crate::protection::private_temporary(temp.path())?;
     temp.write_all(bytes)?;
     ensure!(
         crate::protection::capture(path)? == before,

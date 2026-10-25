@@ -61,6 +61,16 @@ pub(crate) fn capture(path: &Path) -> Result<Option<Protection>> {
     }
 }
 
+pub(crate) fn private_temporary(path: &Path) -> Result<()> {
+    if let Some(protection) = capture(path)? {
+        ensure!(
+            protection.mode & 0o077 == 0,
+            "Filesystem did not create an owner-only temporary file; refusing to write content"
+        );
+    }
+    Ok(())
+}
+
 impl Protection {
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -70,25 +80,43 @@ impl Protection {
         Ok(())
     }
 
-    pub(crate) fn restore_check(&self, path: &Path) -> Result<()> {
+    pub(crate) fn for_restore(
+        path: &Path,
+        saved: Option<&Self>,
+        executable: bool,
+    ) -> Result<Option<Self>> {
+        let current = capture(path)?;
+        let selected = saved.cloned().or_else(|| {
+            current.map(|mut protection| {
+                // Historical payloads have unknown protections. The current
+                // file's public mode may itself be damage from an old release.
+                protection.mode &= 0o700;
+                protection
+            })
+        });
+        if let Some(protection) = &selected {
+            protection.restore_check(path, Some(executable))?;
+        }
+        Ok(selected)
+    }
+
+    pub(crate) fn restore_check(&self, path: &Path, executable: Option<bool>) -> Result<()> {
         self.validate()?;
         #[cfg(unix)]
         {
             self.check_identity(path)?;
-            if let Some(current) = capture(path)? {
-                ensure!(
-                    current.uid == self.uid && current.gid == self.gid,
-                    "Owner/group changed since backup; refusing restore: {}",
-                    path.display()
-                );
-            }
+            self.replacement(capture(path)?.as_ref(), executable)
+                .with_context(|| format!("Cannot safely restore {}", path.display()))?;
             Ok(())
         }
         #[cfg(not(unix))]
-        anyhow::bail!(
-            "Cannot restore Unix protection metadata on this platform: {}",
-            path.display()
-        );
+        {
+            let _ = executable;
+            anyhow::bail!(
+                "Cannot restore Unix protection metadata on this platform: {}",
+                path.display()
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -124,29 +152,15 @@ impl Protection {
     ) -> Result<()> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt, fchown};
         let metadata = file.metadata()?;
-        let mut selected = saved.or(current).cloned().unwrap_or(Self {
-            mode: 0o600,
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-        });
-        selected.validate()?;
-        if let (Some(saved), Some(current)) = (saved, current) {
-            ensure!(
-                saved.uid == current.uid && saved.gid == current.gid,
-                "Owner/group changed since backup; refusing restore"
-            );
-            // Preserve per-class tightening, including execute-only restrictions.
-            // The requested executable boolean below can still restore a deliberate
-            // executable/non-executable transition without granting read access.
-            selected.mode &= current.mode;
-        }
-        if let Some(executable) = executable {
-            if !executable {
-                selected.mode &= !0o111;
-            } else if selected.mode & 0o111 == 0 {
-                selected.mode |= 0o100 | ((selected.mode & 0o444) >> 2);
-            }
-        }
+        let selected = saved
+            .or(current)
+            .cloned()
+            .unwrap_or(Self {
+                mode: 0o600,
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+            })
+            .replacement(current, executable)?;
         // chown may clear special bits. Never publish until both ownership and
         // permissions have been set and read back successfully.
         if metadata.uid() != selected.uid || metadata.gid() != selected.gid {
@@ -162,6 +176,36 @@ impl Protection {
             "Filesystem did not preserve requested Unix protections"
         );
         Ok(())
+    }
+
+    #[cfg(unix)]
+    fn replacement(&self, current: Option<&Self>, executable: Option<bool>) -> Result<Self> {
+        let mut selected = self.clone();
+        selected.validate()?;
+        if let Some(current) = current {
+            ensure!(
+                selected.uid == current.uid && selected.gid == current.gid,
+                "Owner/group changed since backup; refusing restore"
+            );
+            // Preserve per-class tightening, including execute-only restrictions.
+            // The requested executable boolean below can still restore a deliberate
+            // executable/non-executable transition without granting read access.
+            selected.mode &= current.mode;
+        }
+        if let Some(executable) = executable {
+            if !executable {
+                selected.mode &= !0o111;
+            } else if selected.mode & 0o111 == 0 {
+                // Both files already being executable is not authorization to
+                // regenerate bits that their per-class intersection removed.
+                ensure!(
+                    current.is_none_or(|protection| protection.mode & 0o111 == 0),
+                    "No executable permission survives the saved/current restrictions; refusing restore"
+                );
+                selected.mode |= 0o100 | ((selected.mode & 0o444) >> 2);
+            }
+        }
+        Ok(selected)
     }
 }
 
@@ -307,4 +351,26 @@ fn check_acl(path: &Path, _directory: bool) -> Result<()> {
         "Cannot verify native file protections on this platform: {}",
         path.display()
     )
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn temporary_privacy_is_verified_before_content_can_be_written() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().canonicalize().unwrap();
+        private_temporary(&path).unwrap();
+        // Model a filesystem that grants group/other access despite the
+        // creation request. The guard must refuse before receiving any bytes.
+        for mode in [0o640, 0o604] {
+            file.as_file()
+                .set_permissions(fs::Permissions::from_mode(mode))
+                .unwrap();
+            assert!(private_temporary(&path).is_err());
+            assert_eq!(file.as_file().metadata().unwrap().len(), 0);
+        }
+    }
 }

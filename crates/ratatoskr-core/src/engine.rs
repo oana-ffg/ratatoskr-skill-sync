@@ -1398,17 +1398,14 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup source hash does not match"
         );
         crate::content::validate_source_replacement(settings, destination, &bytes)?;
-        protection::capture(destination)?;
-        if let Some(saved) = &source.protection {
-            saved.restore_check(destination)?;
-        }
+        let protection = Protection::for_restore(
+            destination,
+            source.protection.as_ref(),
+            source.fingerprint.executable,
+        )?;
         source_restore.insert(
             destination,
-            (
-                bytes,
-                source.fingerprint.executable,
-                source.protection.as_ref(),
-            ),
+            (bytes, source.fingerprint.executable, protection),
         );
     }
     let mut restore = BTreeMap::new();
@@ -1425,31 +1422,28 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup file hash does not match"
         );
         no_symlinks(destination)?;
-        protection::capture(destination)?;
-        if let Some(saved) = snapshot.protections.get(destination) {
-            saved.restore_check(destination)?;
-        }
+        let protection = Protection::for_restore(
+            destination,
+            snapshot.protections.get(destination),
+            expected.executable,
+        )?;
         ensure!(
             !destination.try_exists()? || current.files.contains_key(destination),
             "Backup would overwrite an unmanaged file"
         );
         restore.insert(
             destination.clone(),
-            (
-                bytes,
-                expected.executable,
-                snapshot.protections.get(destination),
-            ),
+            (bytes, expected.executable, protection),
         );
     }
     for path in current.files.keys() {
         protection::capture(path)?;
     }
     for (path, (bytes, executable, protection)) in source_restore {
-        crate::config::protected_write(path, &bytes, Some(executable), protection)?;
+        crate::config::protected_write(path, &bytes, Some(executable), protection.as_ref())?;
     }
     for (path, (bytes, executable, protection)) in restore {
-        crate::config::protected_write(&path, &bytes, Some(executable), protection)?;
+        crate::config::protected_write(&path, &bytes, Some(executable), protection.as_ref())?;
     }
     for path in current
         .files
