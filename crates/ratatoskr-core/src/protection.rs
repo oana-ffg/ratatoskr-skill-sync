@@ -43,7 +43,7 @@ pub(crate) fn capture(path: &Path) -> Result<Option<Protection>> {
             gid: metadata.gid(),
         };
         protection.validate()?;
-        protection.check_identity()?;
+        protection.check_identity(path)?;
         #[cfg(target_os = "macos")]
         {
             use std::os::macos::fs::MetadataExt as MacMetadataExt;
@@ -74,7 +74,7 @@ impl Protection {
         self.validate()?;
         #[cfg(unix)]
         {
-            self.check_identity()?;
+            self.check_identity(path)?;
             if let Some(current) = capture(path)? {
                 ensure!(
                     current.uid == self.uid && current.gid == self.gid,
@@ -92,7 +92,7 @@ impl Protection {
     }
 
     #[cfg(unix)]
-    fn check_identity(&self) -> Result<()> {
+    fn check_identity(&self, path: &Path) -> Result<()> {
         // SAFETY: identity queries have no pointer inputs. getgroups is given
         // exactly the writable capacity obtained by its size-only query.
         let uid = unsafe { libc::geteuid() };
@@ -107,7 +107,9 @@ impl Protection {
         ensure!(actual >= 0, "Cannot inspect supplementary groups");
         groups.truncate(actual as usize);
         ensure!(
-            self.gid == unsafe { libc::getegid() } || groups.contains(&self.gid),
+            self.gid == unsafe { libc::getegid() }
+                || groups.contains(&self.gid)
+                || self.gid == creation_group(path)?,
             "Cannot preserve a file group outside this user's groups"
         );
         Ok(())
@@ -133,8 +135,10 @@ impl Protection {
                 saved.uid == current.uid && saved.gid == current.gid,
                 "Owner/group changed since backup; refusing restore"
             );
-            // A restore must not undo read/write restrictions tightened later.
-            selected.mode = (selected.mode & current.mode & 0o666) | (selected.mode & 0o111);
+            // Preserve per-class tightening, including execute-only restrictions.
+            // The requested executable boolean below can still restore a deliberate
+            // executable/non-executable transition without granting read access.
+            selected.mode &= current.mode;
         }
         if let Some(executable) = executable {
             if !executable {
@@ -158,6 +162,26 @@ impl Protection {
             "Filesystem did not preserve requested Unix protections"
         );
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn creation_group(path: &Path) -> Result<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let parent = path
+        .ancestors()
+        .skip(1)
+        .find(|parent| parent.is_dir())
+        .context("No existing parent directory for replacement")?;
+    let metadata = fs::metadata(parent)?;
+    // macOS always inherits the parent group. Linux does so for setgid
+    // directories; otherwise it uses the process's effective group. Newly
+    // created intermediate directories retain those same inheritance rules.
+    if cfg!(target_os = "macos") || metadata.mode() & 0o2000 != 0 {
+        Ok(metadata.gid())
+    } else {
+        // SAFETY: getegid has no pointer inputs or failure mode.
+        Ok(unsafe { libc::getegid() })
     }
 }
 
@@ -255,7 +279,7 @@ fn check_acl(path: &Path, directory: bool) -> Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt, ptr};
     let path_name = CString::new(path.as_os_str().as_bytes())?;
     for attribute in [c"system.posix_acl_access", c"system.posix_acl_default"] {
-        if !directory && attribute == c"system.posix_acl_default" {
+        if directory != (attribute == c"system.posix_acl_default") {
             continue;
         }
         // SAFETY: both strings are terminated; a null buffer requests size only.

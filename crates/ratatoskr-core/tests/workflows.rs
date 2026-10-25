@@ -355,6 +355,111 @@ mod private_permissions {
             );
         }
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parent_inherited_group_needs_no_membership_for_repeat_writes_or_restore() {
+        // /private/tmp normally has group wheel, outside a standard user's
+        // groups. macOS assigns that group to new files without chown privilege.
+        let f = Fixture::with_temp(tempfile::tempdir_in("/private/tmp").unwrap());
+        f.write("skills/review-code/data.txt", "original");
+        apply(&f.settings).unwrap();
+        let path = f.output().join("data.txt");
+        let group = fs::metadata(path.parent().unwrap()).unwrap().gid();
+        let backup = ratatoskr_core::adopt(&f.settings).unwrap();
+        f.write("skills/review-code/data.txt", "updated");
+        apply(&f.settings).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().gid(), group);
+        fs::remove_file(f.settings.source.join("skills/review-code/data.txt")).unwrap();
+        apply(&f.settings).unwrap();
+        ratatoskr_core::restore_backup(&f.settings, &backup).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().gid(), group);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn restore_keeps_later_execute_class_tightening() {
+        let f = Fixture::new();
+        f.write("skills/review-code/run.sh", "#!/bin/sh\n");
+        fs::set_permissions(
+            f.settings.source.join("skills/review-code/run.sh"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        apply(&f.settings).unwrap();
+        let path = f.output().join("run.sh");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let backup = ratatoskr_core::adopt(&f.settings).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        ratatoskr_core::restore_backup(&f.settings, &backup).unwrap();
+        assert_eq!(mode(&path), 0o700);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_parent_access_acl_is_safe_but_default_and_file_acls_refuse() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        fn set_acl(path: &Path, attribute: &std::ffi::CStr, directory: bool) {
+            // Linux UAPI posix_acl_xattr_header/entry, version2, little-endian.
+            // Include a named user so the kernel retains an extended ACL.
+            let named = if unsafe { libc::geteuid() } == 0 {
+                1
+            } else {
+                0
+            };
+            let owner = if directory { 7 } else { 6 };
+            let group = if directory { 5 } else { 4 };
+            let mut bytes = 2_u32.to_le_bytes().to_vec();
+            for (tag, permission, id) in [
+                (1_u16, owner, u32::MAX),
+                (2, 0, named),
+                (4, group, u32::MAX),
+                (16, group, u32::MAX),
+                (32, 0, u32::MAX),
+            ] {
+                bytes.extend(tag.to_le_bytes());
+                bytes.extend((permission as u16).to_le_bytes());
+                bytes.extend(id.to_le_bytes());
+            }
+            let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: valid terminated names and a live buffer of exactly len bytes.
+            let result = unsafe {
+                libc::setxattr(
+                    name.as_ptr(),
+                    attribute.as_ptr(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    0,
+                )
+            };
+            assert_eq!(
+                result,
+                0,
+                "Set Linux probe ACL: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        let f = Fixture::new();
+        apply(&f.settings).unwrap();
+        set_acl(&f.output(), c"system.posix_acl_access", true);
+        f.write("skills/review-code/data.txt", "original");
+        apply(&f.settings).unwrap();
+        let path = f.output().join("data.txt");
+        set_acl(&path, c"system.posix_acl_access", false);
+        f.write("skills/review-code/data.txt", "updated");
+        assert!(apply(&f.settings).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: both attribute strings are terminated and name is live.
+        assert_eq!(
+            unsafe { libc::removexattr(name.as_ptr(), c"system.posix_acl_access".as_ptr()) },
+            0
+        );
+        set_acl(&f.output(), c"system.posix_acl_default", true);
+        f.write("skills/review-code/new.txt", "must not be written");
+        assert!(apply(&f.settings).is_err());
+        assert!(!f.output().join("new.txt").exists());
+    }
 }
 
 #[cfg(windows)]
@@ -373,7 +478,10 @@ fn windows_canonical_prefix_cannot_hide_source_state_overlap() {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        Self::with_temp(tempfile::tempdir().unwrap())
+    }
+
+    fn with_temp(temp: tempfile::TempDir) -> Self {
         let root = temp.path().canonicalize().unwrap();
         let source = root.join("content");
         fs::create_dir_all(source.join("machines")).unwrap();
