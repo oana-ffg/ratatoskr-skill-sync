@@ -1,5 +1,10 @@
 # Releases and signed updates
 
+## v0.2.12 security patch
+
+- Preserve existing Unix file modes and group ownership during updates and restores; refuse native ACL and other protection cases that cannot be preserved safely. This includes macOS. Old backups without protection metadata restore with owner-only permissions. Windows security-descriptor preservation remains separate work.
+- Require HTTPS throughout ntfy and Pushover notification requests, including every redirect. HTTPS redirects remain supported; a downgrade fails visibly and remains eligible for retry.
+
 ## v0.2.11 security patch
 
 Update `rustls-webpki` to 0.103.16 and `webpki-roots` / `webpki-root-certs` to 1.0.10. These releases distrust the compromised eMudhra intermediate CA keys and update the bundled trust roots used by helper and desktop HTTPS clients. Signed-update verification and existing update settings are unchanged.
