@@ -3187,6 +3187,7 @@ dependencies = [
  "directories",
  "dunce",
  "fs2",
+ "libc",
  "minisign-verify 0.2.5",
  "regex",
  "reqwest 0.12.28",
