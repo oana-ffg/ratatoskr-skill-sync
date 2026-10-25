@@ -40,6 +40,8 @@ The app keeps configuration and project-removal controls available when source p
 
 A dedicated clean deployment checkout avoids scheduled pulls colliding with authoring edits. `sync` holds an OS-backed lock, performs a fast-forward-only pull, applies, handles optional standalone-helper updates, then reports success or failure through a deduplicated notification ledger. It retries apply on every invocation, even if Git has not changed. There is no watcher or per-project CI requirement.
 
+Pushover and ntfy notifications require HTTPS for the initial request and every redirect. HTTPS redirects remain supported; an HTTP downgrade fails delivery and leaves the notification eligible for retry.
+
 macOS sync uses launchd StartInterval and RunAtLoad. Its independent helper also monitors desktop update health, even when the desktop process has stopped. The macOS desktop remains resident when its window closes, reopens from the Dock, and exits on Quit/Cmd+Q. Opt-in login startup uses `--background`; disabled login startup remains disabled and Settings explains the resulting update availability. Windows sync uses a resident Rust tray controller and hidden login startup; owned legacy Task Scheduler jobs are migrated conservatively. The helper requires an available content volume, state directory, Git credentials, and PATH. Existing schedules belong to the current user and are removed only when their definition still matches the stored record.
 
 ## Updates
