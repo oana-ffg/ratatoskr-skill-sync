@@ -254,6 +254,13 @@ pub enum AlertSettings {
         token: Option<SecretReference>,
     },
 }
+
+fn client_builder() -> reqwest::blocking::ClientBuilder {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .https_only(true)
+}
+
 impl AlertSettings {
     pub fn validate(&self) -> Result<()> {
         match self {
@@ -281,9 +288,7 @@ impl AlertSettings {
     }
     fn deliver(&self, message: &str) -> Result<()> {
         self.validate()?;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        let client = client_builder().build()?;
         match self {
             Self::Pushover { token, user } => {
                 let token = token
@@ -329,6 +334,10 @@ impl AlertSettings {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "notifications/transport_tests.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod reference_tests {
