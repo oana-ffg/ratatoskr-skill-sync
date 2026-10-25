@@ -157,12 +157,14 @@ fn resolution_preview(
             .transpose()?;
         revision.update(destination.to_string_lossy().as_bytes());
         revision.update(serde_json::to_vec(&current)?);
+        revision.update(serde_json::to_vec(&protection::capture(&destination)?)?);
         let next = desired.files.get(&destination);
         if let Some(file) = next {
             no_symlinks(&file.source)?;
             revision.update(file.source.to_string_lossy().as_bytes());
             revision.update(fs::read(&file.source)?);
             revision.update([u8::from(executable(&file.source)?)]);
+            revision.update(serde_json::to_vec(&protection::capture(&file.source)?)?);
             revision.update(&file.bytes);
         }
         let (effect_path, after, exec) = if matches!(
@@ -328,6 +330,7 @@ pub fn resolve_conflict(settings: &Settings, expected: &str) -> Result<PathBuf> 
                 stored: "source".into(),
                 fingerprint: fingerprint(&bytes, executable(source)?),
                 after_fingerprint: fingerprint(edited, *executable_after),
+                protection: protection::capture(source)?,
             },
         );
     }
@@ -376,6 +379,7 @@ pub fn resolve_conflict(settings: &Settings, expected: &str) -> Result<PathBuf> 
             if let Some(file) = desired.files.get(&p) {
                 write_rendered(&p, &file.bytes, file.executable)?;
             } else if p.try_exists()? {
+                protection::capture(&p)?;
                 fs::remove_file(&p)?;
             }
         }
@@ -399,20 +403,7 @@ pub fn resolve_conflict(settings: &Settings, expected: &str) -> Result<PathBuf> 
 }
 
 pub(super) fn write_rendered(path: &Path, bytes: &[u8], exec: bool) -> Result<()> {
-    atomic_write(path, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(if exec { 0o755 } else { 0o644 }),
-        )?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = exec;
-    }
-    Ok(())
+    crate::config::protected_write(path, bytes, Some(exec), None)
 }
 
 pub fn read_conflict_source(settings: &Settings, path: &Path) -> Result<crate::SourceDocument> {

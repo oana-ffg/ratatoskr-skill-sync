@@ -161,11 +161,41 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    protected_write(path, bytes, None, None)
+}
+
+pub(crate) fn protected_write(
+    path: &Path,
+    bytes: &[u8],
+    executable: Option<bool>,
+    saved: Option<&crate::protection::Protection>,
+) -> Result<()> {
     no_symlinks(path)?;
+    let before = crate::protection::capture(path)?;
+    if let Some(saved) = saved {
+        saved.restore_check(path, executable)?;
+    }
     let parent = path.parent().context("File has no parent directory")?;
-    fs::create_dir_all(parent)?;
+    let mut directories = fs::DirBuilder::new();
+    directories.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directories.mode(0o700);
+    }
+    directories.create(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    crate::protection::private_temporary(temp.path())?;
     temp.write_all(bytes)?;
+    ensure!(
+        crate::protection::capture(path)? == before,
+        "File protections changed during replacement: {}",
+        path.display()
+    );
+    #[cfg(unix)]
+    crate::protection::Protection::apply(before.as_ref(), saved, temp.as_file(), executable)?;
+    #[cfg(not(unix))]
+    let _ = executable;
     temp.as_file().sync_all()?;
     temp.persist(path)
         .with_context(|| format!("Replace {}", path.display()))?;

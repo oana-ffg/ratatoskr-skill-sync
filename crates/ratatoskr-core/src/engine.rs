@@ -4,6 +4,7 @@ use crate::{
     Settings,
     config::{atomic_write, identifier, no_symlinks, overlaps, relative},
     git::{ProjectStatus, project_status},
+    protection::{self, Protection},
     template::{render, selectors_match},
 };
 use anyhow::{Context, Result, ensure};
@@ -57,6 +58,7 @@ pub struct Plan {
     pub conflicts: Vec<String>,
     pub conflict_details: Vec<Conflict>,
     pub projects: Vec<ProjectStatus>,
+    pub revision: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -982,6 +984,8 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
 }
 
 fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Result<Plan> {
+    protection::capture(&manifest_path(settings))?;
+    let mut revision = Sha256::new();
     let mut conflicts = Vec::new();
     let mut conflict_details = Vec::new();
     let mut changes = Vec::new();
@@ -1021,6 +1025,8 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
     let paths: BTreeSet<_> = desired.files.keys().chain(manifest.files.keys()).collect();
     for path in paths {
         no_symlinks(path)?;
+        revision.update(path.to_string_lossy().as_bytes());
+        revision.update(serde_json::to_vec(&protection::capture(path)?)?);
         let existing = if path.try_exists()? {
             Some(fs::read(path).with_context(|| format!("Read output {}", path.display()))?)
         } else {
@@ -1106,6 +1112,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
             .iter()
             .map(|p| project_status(p))
             .collect(),
+        revision: format!("{:x}", revision.finalize()),
     })
 }
 
@@ -1155,16 +1162,9 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
             ensure!(!change.path.try_exists()?, "Output appeared during apply");
         }
         if let Some(file) = desired.files.get(&change.path) {
-            atomic_write(&change.path, &file.bytes)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(
-                    &change.path,
-                    fs::Permissions::from_mode(if file.executable { 0o755 } else { 0o644 }),
-                )?;
-            }
+            write_rendered(&change.path, &file.bytes, file.executable)?;
         } else {
+            protection::capture(&change.path)?;
             fs::remove_file(&change.path)?;
         }
     }
@@ -1232,6 +1232,8 @@ struct Backup {
     absent: BTreeSet<PathBuf>,
     #[serde(default)]
     sources: BTreeMap<PathBuf, SourceBackup>,
+    #[serde(default)]
+    protections: BTreeMap<PathBuf, Protection>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1239,9 +1241,17 @@ struct SourceBackup {
     stored: String,
     fingerprint: Fingerprint,
     after_fingerprint: Fingerprint,
+    #[serde(default)]
+    protection: Option<Protection>,
 }
 
 fn backup(settings: &Settings, manifest: &Manifest) -> Result<PathBuf> {
+    let mut protections = BTreeMap::new();
+    for path in manifest.files.keys() {
+        if let Some(protection) = protection::capture(path)? {
+            protections.insert(path.clone(), protection);
+        }
+    }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
@@ -1251,10 +1261,16 @@ fn backup(settings: &Settings, manifest: &Manifest) -> Result<PathBuf> {
         .join("backups")
         .join(nonce.to_string());
     no_symlinks(&directory)?;
+    protection::capture(&directory.join("snapshot.json"))?;
     let mut files = BTreeMap::new();
     for (index, (path, expected)) in manifest.files.iter().enumerate() {
         no_symlinks(path)?;
         let bytes = fs::read(path)?;
+        ensure!(
+            protection::capture(path)?.as_ref() == protections.get(path),
+            "File protections changed while backing up: {}",
+            path.display()
+        );
         ensure!(
             fingerprint(&bytes, executable(path)?) == *expected,
             "File changed while backing up: {}",
@@ -1272,6 +1288,7 @@ fn backup(settings: &Settings, manifest: &Manifest) -> Result<PathBuf> {
             ownership: None,
             absent: BTreeSet::new(),
             sources: BTreeMap::new(),
+            protections,
         })?,
     )?;
     Ok(directory)
@@ -1381,7 +1398,15 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup source hash does not match"
         );
         crate::content::validate_source_replacement(settings, destination, &bytes)?;
-        source_restore.insert(destination, (bytes, source.fingerprint.executable));
+        let protection = Protection::for_restore(
+            destination,
+            source.protection.as_ref(),
+            source.fingerprint.executable,
+        )?;
+        source_restore.insert(
+            destination,
+            (bytes, source.fingerprint.executable, protection),
+        );
     }
     let mut restore = BTreeMap::new();
     for (destination, expected) in &snapshot.manifest.files {
@@ -1397,29 +1422,28 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup file hash does not match"
         );
         no_symlinks(destination)?;
+        let protection = Protection::for_restore(
+            destination,
+            snapshot.protections.get(destination),
+            expected.executable,
+        )?;
         ensure!(
             !destination.try_exists()? || current.files.contains_key(destination),
             "Backup would overwrite an unmanaged file"
         );
-        restore.insert(destination.clone(), (bytes, expected.executable));
+        restore.insert(
+            destination.clone(),
+            (bytes, expected.executable, protection),
+        );
     }
-    for (path, (bytes, executable)) in source_restore {
-        write_rendered(path, &bytes, executable)?;
+    for path in current.files.keys() {
+        protection::capture(path)?;
     }
-    for (path, (bytes, executable)) in restore {
-        atomic_write(&path, &bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                path,
-                fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
-            )?;
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = executable;
-        }
+    for (path, (bytes, executable, protection)) in source_restore {
+        crate::config::protected_write(path, &bytes, Some(executable), protection.as_ref())?;
+    }
+    for (path, (bytes, executable, protection)) in restore {
+        crate::config::protected_write(&path, &bytes, Some(executable), protection.as_ref())?;
     }
     for path in current
         .files
@@ -1427,6 +1451,7 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
         .filter(|p| !snapshot.manifest.files.contains_key(*p))
     {
         no_symlinks(path)?;
+        protection::capture(path)?;
         fs::remove_file(path)?;
     }
     atomic_write(
