@@ -83,6 +83,7 @@ fn snapshot() -> Reply<Snapshot> {
         changes: vec![],
         conflicts: vec![format!("Preview failed: {error:#}")],
         conflict_details: vec![],
+        revision: String::new(),
         projects: settings
             .projects
             .iter()
