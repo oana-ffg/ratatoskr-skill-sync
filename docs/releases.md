@@ -1,5 +1,10 @@
 # Releases and signed updates
 
+## v0.2.13 release notes
+
+- Add **Only for…** controls to skill descriptions. Edit shared and conditional text, change or remove conditions, and inspect each agent’s rendered description and character count in live preview.
+- Validate description length after rendering, so conditional templates can exceed 1024 source characters when each target stays within the limit. Saving also checks for new failures of the edited skill across all machine profiles, including project skills, while allowing incremental repairs of existing remote errors.
+
 ## v0.2.12 security patch
 
 - Preserve existing Unix file modes and group ownership during updates and restores; refuse native ACL and other protection cases that cannot be preserved safely. This includes macOS. Old backups without protection metadata restore with owner-only permissions. Windows security-descriptor preservation remains separate work.
@@ -30,7 +35,7 @@ The official trust root is compiled into the helper (`crates/ratatoskr-core/src/
 
 `https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest/download/latest.json`
 
-`scripts/release-manifest.mjs` publishes that manifest with all seven desktop/helper platform entries. Users do not configure signing keys. No public release is created by this change.
+`scripts/release-manifest.mjs` publishes that manifest with all six desktop/helper platform entries. Users do not configure signing keys. No public release is created by this change.
 
 ## Signing and release operations
 
@@ -43,7 +48,7 @@ Load each value directly from gopass into `gh secret set` over stdin. Never prin
 
 1. Set matching versions in workspace `Cargo.toml`, `desktop/package.json`, and `desktop/src-tauri/tauri.conf.json`; refresh the lockfiles. Version changes require the normal PR, green CI, and approval from an agent on another harness. The author merges after approval unless Oana grants a specific bypass.
 2. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles and standalone helper executables. The bundled helper is prepared from the same source version.
-3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all seven platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
+3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all six platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
 
 The workflow signs artifacts using Tauri/Minisign. Windows uses the signed NSIS installer directly; macOS uses signed `.app.tar.gz` updater bundles. Apple Developer ID signing/notarization and Microsoft publisher signing remain separate, unconfigured integrations. An update signature authenticates the update without establishing an OS publisher identity.
 
