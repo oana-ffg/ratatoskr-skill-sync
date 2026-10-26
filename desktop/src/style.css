@@ -830,6 +830,10 @@ nav button.active {
   margin-bottom: 16px;
   padding-bottom: 12px;
 }
+.preview-description .eyebrow {
+  display: flex;
+  justify-content: space-between;
+}
 .description-field textarea {
   max-height: 16rem;
   overflow-y: auto;

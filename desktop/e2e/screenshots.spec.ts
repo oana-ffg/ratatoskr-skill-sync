@@ -317,7 +317,7 @@ test("all main screens", async ({ page }) => {
 
 test("description conditions preview, save and reopen per agent", async ({
   page,
-}) => {
+}, testInfo) => {
   let saved = structuredClone(fixture.document);
   await installFixture(page, (cmd, args) => {
     if (cmd === "read_source_skill") return saved;
@@ -328,6 +328,17 @@ test("description conditions preview, save and reopen per agent", async ({
         metadata: String(args.metadata),
       };
       return fixture.workspace;
+    }
+    const edit = args.edit as
+      { kind?: string; edit?: { kind?: string } } | undefined;
+    if (
+      cmd === "edit_skill_draft" &&
+      edit?.kind === "description-section" &&
+      edit.edit?.kind === "remove-only"
+    ) {
+      return new Promise((resolve) =>
+        setTimeout(() => resolve(fixtureIPC(cmd, args)), 300),
+      );
     }
     return fixtureIPC(cmd, args);
   });
@@ -359,7 +370,7 @@ test("description conditions preview, save and reopen per agent", async ({
   await page.getByLabel("Preview agent").selectOption("codex");
   await expect(page.getByLabel("Rendered description")).toContainText(sentence);
   await page.screenshot({
-    path: "/private/tmp/ratatoskr-description-conditions.png",
+    path: testInfo.outputPath("description-conditions.png"),
     fullPage: true,
   });
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -397,6 +408,7 @@ test("description conditions preview, save and reopen per agent", async ({
   await page
     .getByRole("button", { name: "Remove condition", exact: true })
     .click();
+  await expect(conditional).toHaveAttribute("readonly");
   await expect(page.getByLabel("Description", { exact: true })).toHaveValue(
     /Updated Luna guidance/,
   );

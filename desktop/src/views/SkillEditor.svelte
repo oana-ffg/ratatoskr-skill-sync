@@ -79,6 +79,7 @@
   let descriptionIndex = $state<number | null>(null);
   let descriptionText = $state("");
   let activeDescriptionIndex = $state<number | null>(null);
+  let pendingDescriptionStructure = $state(0);
   function growDescription(node: HTMLTextAreaElement, _value: string) {
     let active = true;
     let width = 0;
@@ -321,7 +322,13 @@
     picker = "only";
   }
   function descriptionEdit(operation: Record<string, unknown>) {
-    return edit({ kind: "description-section", edit: operation });
+    const structural = operation.kind !== "text";
+    if (structural) pendingDescriptionStructure++;
+    return edit({ kind: "description-section", edit: operation }).finally(
+      () => {
+        if (structural) pendingDescriptionStructure--;
+      },
+    );
   }
   function openDescriptionOnly(index: number | null = null) {
     descriptionIndex = index;
@@ -487,6 +494,7 @@
                     ? "Description"
                     : `Shared description ${index + 1}`}
                 rows="2"
+                readonly={pendingDescriptionStructure > 0}
                 use:growDescription={section.text}
                 bind:value={section.text}
                 onfocus={() => (activeDescriptionIndex = index)}
@@ -694,7 +702,11 @@
             class="preview-description"
             aria-label="Rendered description"
           >
-            <span class="eyebrow">DESCRIPTION</span>
+            <span class="eyebrow"
+              >DESCRIPTION <small
+                >{[...renderedDescription].length} / 1024</small
+              ></span
+            >
             <p>{renderedDescription}</p>
           </div>
           {#each (preview.find((f) => f.path === "SKILL.md")?.body ?? "").split("\n") as line, index}<div

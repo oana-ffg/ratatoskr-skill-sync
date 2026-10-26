@@ -49,7 +49,7 @@ fn description_sections(description: &str) -> Result<Vec<DescriptionSection>> {
             range,
         });
         sections.push(DescriptionSection {
-            text: description[block.body.clone()].into(),
+            text: description[block.body.clone()].trim_start().into(),
             selectors: Some(block.selectors),
             range: block.opening.start..block.closing.end,
             body: block.body,
@@ -93,7 +93,7 @@ fn edit_description(description: &str, edit: DescriptionEdit) -> Result<String> 
         DescriptionEdit::Append { value, selectors } => {
             ensure!(!value.trim().is_empty(), "Enter description text");
             result.push_str(&format!(
-                " {}{value}<!-- /only -->",
+                "{} {value}<!-- /only -->",
                 only_opening(&selectors)?
             ));
         }
@@ -101,7 +101,14 @@ fn edit_description(description: &str, edit: DescriptionEdit) -> Result<String> 
             let section = sections
                 .get(index)
                 .context("Description section changed; try again")?;
-            result.replace_range(section.body.clone(), &value);
+            // Conditional leading whitespace separates sentences and belongs inside
+            // the condition. Keep it when the field edits only the visible text.
+            let start = if section.selectors.is_some() {
+                section.body.end - section.text.len()
+            } else {
+                section.body.start
+            };
+            result.replace_range(start..section.body.end, &value);
         }
         DescriptionEdit::Only { index, selectors } => {
             let section = sections
@@ -124,7 +131,8 @@ fn edit_description(description: &str, edit: DescriptionEdit) -> Result<String> 
                 section.selectors.is_some(),
                 "Select a conditional description section"
             );
-            result.replace_range(section.range.clone(), &section.text);
+            let text = description[section.body.clone()].to_owned();
+            result.replace_range(section.range.clone(), &text);
         }
     }
     // Reject pasted nested or unbalanced tags before changing the source.
@@ -956,6 +964,9 @@ mod tests {
                 yaml["description"].as_str().unwrap().contains("Luna"),
                 harness == "codex"
             );
+            if harness == "claude" {
+                assert_eq!(yaml["description"].as_str(), Some("Review 🐿"));
+            }
             assert!(!rendered.contains("<!--"));
         }
         // Typing repeatedly into a section addresses the current section, not stale offsets.
@@ -965,7 +976,7 @@ mod tests {
             DraftEdit::DescriptionSection {
                 edit: DescriptionEdit::Text {
                     index: 0,
-                    value: "Longer shared text: \"quoted\" 🐿 ".into(),
+                    value: "Longer shared text: \"quoted\" 🐿".into(),
                 },
             },
         )?;
