@@ -1,4 +1,4 @@
-name: Build signed draft release
+name: Build release candidates
 on:
   workflow_dispatch:
 permissions:
@@ -39,94 +39,38 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: npm ci
         working-directory: desktop
-      - name: Prepare temporary Apple signing credentials
+      - name: Build unsigned macOS candidate
         if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: python3 scripts/macos-signing.py prepare
-      - name: Build and sign desktop bundle
+        run: node scripts/build-release.mjs ${{ matrix.target }} app
+      - name: Build signed Windows updater
+        if: runner.os == 'Windows'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          APPLE_API_KEY: ${{ vars.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}
-        run: node scripts/build-release.mjs ${{ matrix.target }} ${{ matrix.bundle }}
-      - name: Verify macOS bundle signature
-        env:
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: node scripts/build-release.mjs ${{ matrix.target }} nsis
+      - name: Stage macOS candidate for local publisher signing
         if: runner.os == 'macOS'
-        run: |
-          app="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app"
-          python3 scripts/macos-signing.py verify "$app" com.firefungames.ratatoskr
-          python3 scripts/macos-signing.py verify "$app/Contents/MacOS/ratatoskr" ratatoskr
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose=2 "$app"
-      - name: Stage and sign standalone helper
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          APPLE_API_KEY: ${{ vars.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}
         shell: bash
         run: |
           mkdir -p artifacts
-          extension=''
-          if [[ '${{ matrix.platform }}' == windows-* ]]; then extension='.exe'; fi
-          helper_source="target/${{ matrix.target }}/release/ratatoskr${extension}"
-          helper_artifact="artifacts/ratatoskr-${{ matrix.platform }}${extension}"
-          if [[ '${{ matrix.platform }}' == darwin-* ]]; then
-            helper_source="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app/Contents/MacOS/ratatoskr"
-          fi
-          cp "$helper_source" "$helper_artifact"
-          if [[ '${{ matrix.platform }}' == darwin-* ]]; then
-            python3 scripts/macos-signing.py verify "$helper_artifact" ratatoskr
-            ditto -c -k --keepParent "$helper_artifact" "$RUNNER_TEMP/ratatoskr-cli.zip"
-            xcrun notarytool submit "$RUNNER_TEMP/ratatoskr-cli.zip" \
-              --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" \
-              --wait --timeout 15m --output-format json > "$RUNNER_TEMP/ratatoskr-notary-result.json"
-            python3 scripts/macos-signing.py accepted "$RUNNER_TEMP/ratatoskr-notary-result.json"
-          fi
-          cd desktop
-          npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" "../artifacts/ratatoskr-${{ matrix.platform }}${extension}"
-      - name: Collect desktop artifacts
+          app="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app"
+          ditto -c -k --keepParent "$app" "artifacts/Ratatoskr-candidate-${{ matrix.platform }}.zip"
+      - name: Stage signed Windows updater and helper
+        if: runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
+          mkdir -p artifacts
+          cp 'target/${{ matrix.target }}/release/ratatoskr.exe' artifacts/ratatoskr-windows-x86_64.exe
+          cd desktop
+          npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" ../artifacts/ratatoskr-windows-x86_64.exe
+          cd ..
           version=$(node -p "require('./desktop/package.json').version")
-          node scripts/collect-release.mjs "target/${{ matrix.target }}/release/bundle" artifacts '${{ matrix.platform }}' "$version"
-      - name: Remove temporary Apple signing credentials
-        if: always() && runner.os == 'macOS'
-        run: python3 scripts/macos-signing.py cleanup
+          node scripts/collect-release.mjs 'target/${{ matrix.target }}/release/bundle' artifacts windows-x86_64 "$version"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.platform }}
           path: artifacts/*
           if-no-files-found: error
-  draft:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - name: Create manifest and draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(node -p "JSON.parse(require('fs').readFileSync('desktop/package.json')).version")
-          node scripts/release-manifest.mjs artifacts "$version" "$GITHUB_REPOSITORY"
-          gh release create "v$version" artifacts/* --draft --target "$GITHUB_SHA" --title "Ratatoskr Skill Sync $version" --generate-notes

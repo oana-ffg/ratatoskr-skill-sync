@@ -35,7 +35,7 @@ test('a valid ad-hoc signature is never accepted as a publisher signature', { sk
       env: { ...process.env, APPLE_TEAM_ID: 'ABCDE12345' },
     });
     assert.equal(result.status, 1);
-    assert.match(result.stderr.toString(), /signing command failed/);
+    assert.match(result.stderr.toString(), /codesign failed/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
