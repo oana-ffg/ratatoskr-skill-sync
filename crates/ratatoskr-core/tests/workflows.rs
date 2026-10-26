@@ -1874,6 +1874,96 @@ fn adding_agent_definition_preserves_existing_text_and_comments() {
 }
 
 #[test]
+fn structured_save_limits_each_rendered_description_instead_of_the_template() {
+    let f = Fixture::new();
+    let harnesses = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();
+    f.write(
+        "harnesses.toml",
+        &format!("{harnesses}{}", harnesses.replace("codex", "claude")),
+    );
+    let profile = fs::read_to_string(f.settings.source.join("machines/test.toml")).unwrap();
+    f.write(
+        "machines/test.toml",
+        &profile.replace("harnesses=['codex']", "harnesses=['codex','claude']"),
+    );
+    let markdown = |codex: usize, claude: usize| {
+        format!(
+            "---\nname: review-code\ndescription: \"{}<!-- only harness=codex --> {}<!-- /only --><!-- only harness=claude --> {}<!-- /only -->\"\n---\nReview the changes.\n",
+            "s".repeat(600),
+            "c".repeat(codex),
+            "a".repeat(claude)
+        )
+    };
+    let valid = markdown(400, 400);
+    assert!(
+        ratatoskr_core::editor_view(&valid, "")
+            .unwrap()
+            .description
+            .chars()
+            .count()
+            > 1024
+    );
+    for harness in ["codex", "claude"] {
+        let files = ratatoskr_core::preview_skill(
+            &f.settings,
+            None,
+            "review-code",
+            &valid,
+            "",
+            "test",
+            harness,
+        )
+        .unwrap();
+        let rendered = files
+            .iter()
+            .find(|file| file.path == Path::new("SKILL.md"))
+            .unwrap()
+            .text
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            ratatoskr_core::editor_view(rendered, "")
+                .unwrap()
+                .description
+                .chars()
+                .count(),
+            1001
+        );
+    }
+    let before = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    ratatoskr_core::save_skill_draft(
+        &f.settings,
+        None,
+        "review-code",
+        &valid,
+        &before.metadata,
+        &before.markdown_hash,
+        &before.metadata_hash,
+    )
+    .unwrap();
+    let saved = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    assert_eq!(saved.markdown, valid);
+    // Reject an overlong result for either agent, including one other than the
+    // first preview target, without changing either source file.
+    for invalid in [markdown(424, 400), markdown(400, 424)] {
+        let error = ratatoskr_core::save_skill_draft(
+            &f.settings,
+            None,
+            "review-code",
+            &invalid,
+            &saved.metadata,
+            &saved.markdown_hash,
+            &saved.metadata_hash,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("Invalid skill description"));
+        let unchanged = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+        assert_eq!(unchanged.markdown, saved.markdown);
+        assert_eq!(unchanged.metadata, saved.metadata);
+    }
+}
+
+#[test]
 fn structured_combined_skill_saves_validate_both_files_and_reject_stale_hashes() {
     let f = Fixture::new();
     let before = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();

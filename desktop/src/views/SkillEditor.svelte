@@ -242,7 +242,7 @@
         );
         if (markdown !== originalMarkdown || metadata !== originalMetadata) {
           if (
-            !["description", "description-section", "metadata"].includes(
+            !["description-section", "metadata"].includes(
               String(operation.kind),
             )
           )

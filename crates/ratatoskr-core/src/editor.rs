@@ -619,8 +619,19 @@ pub fn save_skill_draft(
         "Source changed; reload before saving"
     );
     let normalized = markdown.replace("\r\n", "\n");
-    let (_, body) = crate::template::skill_frontmatter(&normalized, name)?;
-    ensure!(!body.trim().is_empty(), "Skill body is empty");
+    let (header, yaml) = frontmatter(&normalized)?;
+    ensure!(
+        yaml["name"].as_str() == Some(name),
+        "Skill name must match directory {name}"
+    );
+    ensure!(
+        yaml["description"].as_str().is_some(),
+        "Skill description must be a string"
+    );
+    ensure!(
+        !normalized[header.end..].trim().is_empty(),
+        "Skill body is empty"
+    );
     let (_, diagnostics) = crate::template::parse_blocks(markdown)?;
     ensure!(
         diagnostics.is_empty(),
@@ -631,6 +642,8 @@ pub fn save_skill_draft(
     let root = candidate.source.join("skills").join(name);
     atomic_write(&root.join("SKILL.md"), markdown.as_bytes())?;
     atomic_write(&root.join("skill.toml"), metadata.as_bytes())?;
+    // Description limits apply after conditions and variables are rendered for
+    // each target, rather than to the combined template text above.
     crate::engine::validate_sources(&candidate)?;
     let root = selected.join("skills").join(name);
     if markdown != current.markdown {
