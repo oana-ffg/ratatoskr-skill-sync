@@ -61,24 +61,44 @@
     </div>
     <button class="primary" onclick={choose}>＋ Add project…</button>
   </div>
+  {#if workspace.skills_error}<p role="alert" class="error-message">
+      {workspace.skills_error}
+    </p>{/if}
   <div class="project-grid">
-    {#each workspace.plan.projects as project}<article
-        class="panel project-card"
-      >
+    {#each workspace.plan.projects as project}
+      {@const skillCount = workspace.skills.filter(
+        (s) => s.project === project.root,
+      ).length}
+      <article class="panel project-card">
         <div class="project-symbol">▱</div>
         <div class="section-heading">
           <h2>{basename(project.root)}</h2>
-          <span class="status-pill {project.error ? 'warning' : 'success'}"
-            >{project.error ? "Needs attention" : "Connected"}</span
+          <span
+            class="status-pill {project.error || workspace.skills_error
+              ? 'warning'
+              : 'success'}"
+            >{project.error || workspace.skills_error
+              ? "Needs attention"
+              : "Connected"}</span
           >
         </div>
+        <p class="project-skill-count">
+          {workspace.skills_error
+            ? "Skill count unavailable"
+            : `${skillCount} ${skillCount === 1 ? "skill" : "skills"}`}
+        </p>
         <p class="muted">
-          {project.changed_files} uncommitted skill {project.changed_files === 1
-            ? "file"
-            : "files"} · {project.outgoing_commits ?? "Unknown"} unpushed {project.outgoing_commits ===
-          1
-            ? "commit"
-            : "commits"}
+          {#if project.changed_files === 0 && project.outgoing_commits === 0}
+            No uncommitted or unpushed changes
+          {:else}
+            {project.changed_files} uncommitted skill {project.changed_files ===
+            1
+              ? "file"
+              : "files"} · {project.outgoing_commits ?? "Unknown"} unpushed {project.outgoing_commits ===
+            1
+              ? "commit"
+              : "commits"}
+          {/if}
         </p>
         {#if project.error}<p role="alert" class="error-message">
             {project.error}

@@ -1,6 +1,6 @@
 {
   "name": "ratatoskr-skill-sync-desktop",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,8 +12,8 @@
     "format": "prettier --write src scripts tests e2e \"*.json\" \"*.ts\"",
     "format:check": "prettier --check src scripts tests e2e \"*.json\" \"*.ts\"",
     "test": "node --experimental-strip-types --test tests/*.test.mjs && npm run prepare:fixtures && vitest run",
-    "test:screenshots": "npm run prepare:fixtures && playwright test screenshots.spec.ts windows-tray.spec.ts --project=chromium",
-    "test:ui": "npm run prepare:fixtures && playwright test editor.spec.ts",
+    "test:screenshots": "npm run prepare:fixtures && playwright test screenshots.spec.ts windows-tray.spec.ts --project=chromium --output=test-results/screenshots",
+    "test:ui": "npm run prepare:fixtures && playwright test editor.spec.ts projects.spec.ts --output=test-results/ui",
     "prepare:fixtures": "node scripts/prepare-fixtures.mjs"
   },
   "dependencies": {

@@ -129,6 +129,7 @@ export interface Legacy {
 export interface Snapshot {
   plan: Plan;
   skills: Skill[];
+  skills_error: string | null;
   helper: string | null;
   helper_error: string | null;
   jobs: Jobs;

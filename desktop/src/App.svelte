@@ -284,7 +284,7 @@
               dirty = false;
             })}
           ><span class="nav-icon">{item.icon}</span
-          >{item.name}{#if item.name === "Skills" && workspace}<span
+          >{item.name}{#if item.name === "Skills" && workspace && !workspace.skills_error}<span
               class="nav-count">{workspace.skills.length}</span
             >{:else if item.name === "Review changes" && workspace && reviewSummary(workspace).total}<span
               class="nav-count review-count"

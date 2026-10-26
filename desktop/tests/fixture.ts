@@ -43,6 +43,18 @@ export const fixture = oracle("fixture") as {
   statuses: Record<string, Record<string, boolean>>;
   local_settings: LocalSettings;
 };
+
+export function projectWorkspace(): Snapshot {
+  const workspace = structuredClone(fixture.workspace);
+  const project = workspace.plan.projects[0];
+  project.changed_files = 0;
+  project.outgoing_commits = 0;
+  workspace.skills.push(
+    { name: "mix-audio", enabled: true, project: project.root },
+    { name: "archive-audio", enabled: false, project: project.root },
+  );
+  return workspace;
+}
 export function fixtureIPC(
   cmd: string,
   args: Record<string, unknown> = {},

@@ -88,7 +88,11 @@
 <section class="page">
   <div class="page-heading">
     <div>
-      <h1>Skills <span class="count">{workspace.skills.length}</span></h1>
+      <h1>
+        Skills{#if !workspace.skills_error}{" "}<span class="count"
+            >{visible.length}</span
+          >{/if}
+      </h1>
     </div>
     <button class="primary" onclick={() => (creating = true)}
       >＋ New skill</button
@@ -112,6 +116,9 @@
       ></label
     >
   </div>
+  {#if workspace.skills_error}<p role="alert" class="error-message">
+      {workspace.skills_error}
+    </p>{/if}
   {#if statusError}<p role="alert" class="error-message">
       Target status unavailable: {statusError}
     </p>{/if}
@@ -158,7 +165,7 @@
         >
       </div>{/each}
   </div>
-  {#if !visible.length}<div class="empty-state">
+  {#if !workspace.skills_error && !visible.length}<div class="empty-state">
       <h2>
         {workspace.skills.length ? "No matching skills" : "No skills yet"}
       </h2>
