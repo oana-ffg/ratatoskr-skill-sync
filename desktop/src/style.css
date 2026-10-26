@@ -799,12 +799,40 @@ nav button.active {
 .description-field {
   margin-bottom: 20px;
 }
-.description-field > span {
+.description-heading,
+.description-condition-heading {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
   color: var(--muted);
   margin-bottom: 6px;
+}
+.description-heading {
+  align-items: center;
+}
+.description-condition {
+  border-left: 2px solid var(--blue);
+  padding-left: 10px;
+  margin: 10px 0;
+}
+.description-condition-heading {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  color: var(--blue);
+}
+.description-condition-heading button {
+  padding: 3px;
+  font-size: 10px;
+}
+.preview-description {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+}
+.preview-description .eyebrow {
+  display: flex;
+  justify-content: space-between;
 }
 .description-field textarea {
   max-height: 16rem;

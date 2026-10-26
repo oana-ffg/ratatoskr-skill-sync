@@ -1,20 +1,11 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { fixtureIPC } from "../tests/fixture";
-test("all main screens", async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  await page.clock.install({ time: new Date("2026-10-16T18:00:10Z") });
-  let refreshError = false;
-  await page.exposeFunction(
-    "fixtureIPC",
-    (cmd: string, args: Record<string, unknown>) => {
-      if (cmd === "read_workspace" && refreshError)
-        throw new Error("Fixture sync history is unavailable");
-      return fixtureIPC(cmd, args);
-    },
-  );
+import { fixture, fixtureIPC } from "../tests/fixture";
+async function installFixture(
+  page: Page,
+  invoke: typeof fixtureIPC = fixtureIPC,
+) {
+  await page.exposeFunction("fixtureIPC", invoke);
   await page.addInitScript(() => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
@@ -29,6 +20,18 @@ test("all main screens", async ({ page }) => {
           ).fixtureIPC(cmd, args),
       },
     });
+  });
+}
+test("all main screens", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.clock.install({ time: new Date("2026-10-16T18:00:10Z") });
+  let refreshError = false;
+  await installFixture(page, (cmd, args) => {
+    if (cmd === "read_workspace" && refreshError)
+      throw new Error("Fixture sync history is unavailable");
+    return fixtureIPC(cmd, args);
   });
   mkdirSync("../docs/screenshots", { recursive: true });
   async function capture(name: string) {
@@ -82,7 +85,10 @@ test("all main screens", async ({ page }) => {
     page.getByRole("button", { name: "Save", exact: true }),
   ).toHaveCount(0);
   await capture("skill-editor");
-  await page.getByRole("button", { name: "＋ Only for…", exact: true }).click();
+  await page
+    .locator(".format-toolbar")
+    .getByRole("button", { name: "＋ Only for…", exact: true })
+    .click();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Codex", exact: true })
@@ -98,10 +104,10 @@ test("all main screens", async ({ page }) => {
     .getByRole("button", { name: /aws-project-migration Enabled/ })
     .click();
   await page.clock.runFor(250);
-  await expect(page.getByLabel("Description")).toHaveValue(
+  await expect(page.getByLabel("Description", { exact: true })).toHaveValue(
     /Inspect, migrate, deploy/,
   );
-  const description = page.getByLabel("Description");
+  const description = page.getByLabel("Description", { exact: true });
   await expect
     .poll(() =>
       description.evaluate(
@@ -307,4 +313,106 @@ test("all main screens", async ({ page }) => {
   await page.getByRole("button", { name: "Retry refresh" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test("description conditions preview, save and reopen per agent", async ({
+  page,
+}, testInfo) => {
+  let saved = structuredClone(fixture.document);
+  await installFixture(page, (cmd, args) => {
+    if (cmd === "read_source_skill") return saved;
+    if (cmd === "save_skill_draft") {
+      saved = {
+        ...saved,
+        markdown: String(args.markdown),
+        metadata: String(args.metadata),
+      };
+      return fixture.workspace;
+    }
+    const edit = args.edit as
+      { kind?: string; edit?: { kind?: string } } | undefined;
+    if (
+      cmd === "edit_skill_draft" &&
+      edit?.kind === "description-section" &&
+      edit.edit?.kind === "remove-only"
+    ) {
+      return new Promise((resolve) =>
+        setTimeout(() => resolve(fixtureIPC(cmd, args)), 300),
+      );
+    }
+    return fixtureIPC(cmd, args);
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /recordings Enabled/ }).click();
+  const sentence = "Luna, you must ALWAYS load this, no exceptions";
+  await page
+    .locator(".description-heading")
+    .getByRole("button", { name: "＋ Only for…" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Codex", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Apply condition" }),
+  ).toBeDisabled();
+  await page.getByLabel("Additional description text").fill(sentence);
+  await dialog.getByRole("button", { name: "Apply condition" }).click();
+  const conditional = page.getByLabel("Conditional description 2");
+  await expect(conditional).toHaveValue(sentence);
+  await page.getByLabel("Preview agent").selectOption("codex");
+  await expect(page.getByLabel("Rendered description")).toContainText(sentence);
+  await page.getByLabel("Preview agent").selectOption("claude");
+  await expect(page.getByLabel("Rendered description")).not.toContainText(
+    sentence,
+  );
+  await expect(page.getByLabel("Rendered description")).toContainText(
+    "Process meeting recordings",
+  );
+  await page.getByLabel("Preview agent").selectOption("codex");
+  await expect(page.getByLabel("Rendered description")).toContainText(sentence);
+  await page.screenshot({
+    path: testInfo.outputPath("description-conditions.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Save", exact: true }),
+  ).toHaveCount(0);
+  expect(saved.markdown).toContain("<!-- only harness=codex -->");
+  expect(saved.markdown).toContain(sentence);
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Skills/ })
+    .click();
+  await page.getByRole("button", { name: /recordings Enabled/ }).click();
+  await expect(conditional).toHaveValue(sentence);
+  await conditional.fill("Updated Luna guidance");
+  await page.getByLabel("Preview agent").selectOption("codex");
+  await expect(page.getByLabel("Rendered description")).toContainText(
+    "Updated Luna guidance",
+  );
+  await page
+    .getByRole("button", { name: "Edit condition", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "Codex", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Claude Code", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "Apply condition" }).click();
+  await expect(page.getByLabel("Rendered description")).not.toContainText(
+    "Updated Luna guidance",
+  );
+  await page.getByLabel("Preview agent").selectOption("claude");
+  await expect(page.getByLabel("Rendered description")).toContainText(
+    "Updated Luna guidance",
+  );
+  await page
+    .getByRole("button", { name: "Remove condition", exact: true })
+    .click();
+  await expect(conditional).toHaveAttribute("readonly");
+  await expect(page.getByLabel("Description", { exact: true })).toHaveValue(
+    /Updated Luna guidance/,
+  );
+  await expect(page.getByLabel("Conditional description 2")).toHaveCount(0);
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(conditional).toHaveValue(sentence);
 });
