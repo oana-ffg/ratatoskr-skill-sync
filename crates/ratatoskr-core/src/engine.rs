@@ -323,9 +323,9 @@ fn render_skill_file(
 ) -> Result<Rendered> {
     let original = fs::read(source)?;
     let reversible = std::str::from_utf8(&original).is_ok_and(|text| {
-        !text.contains("{{af:")
-            && !text.contains("<!--")
-            && !(path == Path::new("SKILL.md") && metadata.contains_key("frontmatter"))
+        !(text.contains("{{af:")
+            || text.contains("<!--")
+            || path == Path::new("SKILL.md") && metadata.contains_key("frontmatter"))
     });
     let bytes = original;
     let required_text = matches!(

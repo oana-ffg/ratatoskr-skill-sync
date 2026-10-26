@@ -1,10 +1,13 @@
-name: Build signed draft release
+name: Build release candidates
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
+    environment: release
+    timeout-minutes: 60
     strategy:
       matrix:
         include:
@@ -21,75 +24,53 @@ jobs:
             platform: windows-x86_64
             bundle: nsis
     runs-on: ${{ matrix.os }}
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: npm ci
         working-directory: desktop
-      - name: Build and sign desktop bundle
-        run: node scripts/build-release.mjs ${{ matrix.target }} ${{ matrix.bundle }}
-      - name: Verify macOS bundle signature
+      - name: Build unsigned macOS candidate
         if: runner.os == 'macOS'
-        run: |
-          app="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/ratatoskr"
-      - name: Stage and sign standalone helper
+        run: node scripts/build-release.mjs ${{ matrix.target }} app
+      - name: Build signed Windows updater
+        if: runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/build-release.mjs ${{ matrix.target }} nsis
+      - name: Stage macOS candidate for local publisher signing
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir -p artifacts
-          extension=''
-          if [[ '${{ matrix.platform }}' == windows-* ]]; then extension='.exe'; fi
-          helper_source="target/${{ matrix.target }}/release/ratatoskr${extension}"
-          helper_artifact="artifacts/ratatoskr-${{ matrix.platform }}${extension}"
-          if [[ '${{ matrix.platform }}' == darwin-* ]]; then
-            helper_source="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app/Contents/MacOS/ratatoskr"
-          fi
-          cp "$helper_source" "$helper_artifact"
-          if [[ '${{ matrix.platform }}' == darwin-* ]]; then
-            codesign --verify --strict --verbose=2 "$helper_artifact"
-          fi
-          cd desktop
-          npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" "../artifacts/ratatoskr-${{ matrix.platform }}${extension}"
-      - name: Collect desktop artifacts
+          app="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app"
+          ditto --norsrc --noextattr --noacl -c -k --keepParent "$app" "artifacts/Ratatoskr-candidate-${{ matrix.platform }}.zip"
+      - name: Stage signed Windows updater and helper
+        if: runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
+          mkdir -p artifacts
+          cp 'target/${{ matrix.target }}/release/ratatoskr.exe' artifacts/ratatoskr-windows-x86_64.exe
+          cd desktop
+          npm run tauri -- signer sign --app-version "$(node -p "require('./package.json').version")" ../artifacts/ratatoskr-windows-x86_64.exe
+          cd ..
           version=$(node -p "require('./desktop/package.json').version")
-          node scripts/collect-release.mjs "target/${{ matrix.target }}/release/bundle" artifacts '${{ matrix.platform }}' "$version"
-      - uses: actions/upload-artifact@v4
+          node scripts/collect-release.mjs 'target/${{ matrix.target }}/release/bundle' artifacts windows-x86_64 "$version"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.platform }}
           path: artifacts/*
           if-no-files-found: error
-  draft:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - name: Create manifest and draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(node -p "JSON.parse(require('fs').readFileSync('desktop/package.json')).version")
-          node scripts/release-manifest.mjs artifacts "$version" "$GITHUB_REPOSITORY"
-          gh release create "v$version" artifacts/* --draft --target "$GITHUB_SHA" --title "Ratatoskr Skill Sync $version" --generate-notes

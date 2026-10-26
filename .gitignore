@@ -8,3 +8,12 @@
 
 /desktop/test-results/
 /desktop/playwright-report/
+
+# Signing credentials belong in a secret manager, never in source or artifacts.
+*.p12
+*.p8
+*.key
+*.keychain-db
+.signing/
+/scripts/__pycache__/
+/scripts/tests/__pycache__/

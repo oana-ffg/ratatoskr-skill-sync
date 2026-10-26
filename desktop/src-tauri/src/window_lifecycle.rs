@@ -46,23 +46,23 @@ fn refresh_login_with(
     Ok(enabled)
 }
 
-fn launch_mode_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf> {
-    Ok(app.path().app_data_dir()?.join("restart-background.json"))
+fn launch_mode_path() -> Result<std::path::PathBuf> {
+    Ok(ratatoskr_core::updates::desktop_data_dir()?.join("restart-background.json"))
 }
 pub(crate) fn prepare_restart(app: &tauri::AppHandle) -> Result<()> {
     let hidden = !app
         .get_webview_window("main")
         .context("Main window missing")?
         .is_visible()?;
-    let result = ratatoskr_core::tray::save_restart_mode(&launch_mode_path(app)?, hidden);
+    let result = ratatoskr_core::tray::save_restart_mode(&launch_mode_path()?, hidden);
     #[cfg(windows)]
     crate::tray::restart_outcome(app, &result)?;
     result
 }
-pub(crate) fn cancel_restart(app: &tauri::AppHandle) -> Result<()> {
-    let result = ratatoskr_core::tray::clear_restart_mode(&launch_mode_path(app)?);
+pub(crate) fn cancel_restart(_app: &tauri::AppHandle) -> Result<()> {
+    let result = ratatoskr_core::tray::clear_restart_mode(&launch_mode_path()?);
     #[cfg(windows)]
-    crate::tray::restart_outcome(app, &result)?;
+    crate::tray::restart_outcome(_app, &result)?;
     result
 }
 
@@ -111,7 +111,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) -> Result<()> {
         }
     });
     let hidden = match ratatoskr_core::tray::consume_restart_mode(
-        &launch_mode_path(app)?,
+        &launch_mode_path()?,
         std::env::args_os().any(|arg| arg == "--background"),
     ) {
         Ok(hidden) => hidden,

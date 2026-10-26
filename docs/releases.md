@@ -1,5 +1,11 @@
 # Releases and signed updates
 
+## v0.2.16 release notes
+
+- Require Apple Developer ID signing and notarization for official macOS release builds, including verification of the desktop app and bundled helper. Release automation stops if publisher credentials or notarization acceptance are missing.
+- Use `com.firefungames.ratatoskr` as the macOS bundle identifier while preserving existing configuration, update history, restart intent and background-job continuity. Windows identity and the update-signature trust root remain unchanged.
+- Build candidates in CI, then sign and notarize the Mac artifacts on a local publisher Mac. Apple private keys stay in the local encrypted secret manager. Real signed-artifact and old-install update acceptance are still required before publication.
+
 ## v0.2.15 release notes
 
 - Show the actual number of skills on each project card, independently of uncommitted files and unpushed commits. Clean projects say “No uncommitted or unpushed changes”. Counts include disabled skills.
@@ -60,12 +66,25 @@ The official key pair was generated with the Tauri signer. Its private key and p
 Load each value directly from gopass into `gh secret set` over stdin. Never print secrets or write them to local files. The release build reads the committed public key from `tauri.conf.json`; no repository public-key variable is required. A release build verifies that the private and public keys agree.
 
 1. Set matching versions in workspace `Cargo.toml`, `desktop/package.json`, and `desktop/src-tauri/tauri.conf.json`; refresh the lockfiles. Version changes require the normal PR, green CI, and approval from an agent on another harness. The author merges after approval unless Oana grants a specific bypass.
-2. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles and standalone helper executables. The bundled helper is prepared from the same source version.
-3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all six platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
+2. Dispatch **Build release candidates** from `main`. It builds Apple Silicon and Intel Mac app candidates without Apple credentials, plus the Windows x64 updater and helper with their existing update signatures. The bundled helper is prepared from the same source version. The workflow uploads candidates and cannot create or publish a release.
+3. On the local publisher Mac, install the locked desktop dependencies and check out the reviewed commit at `origin/main`. Run `python3 scripts/macos-signing.py release --help` for the required run ID, public certificate, team and gopass-entry options. The command refuses a dirty checkout or a candidate run that is not a successful main-branch dispatch for that exact commit. It signs and notarizes both Mac architectures, verifies every update signature against the existing trust root, and creates `latest.json` with all six platforms. `--draft` additionally creates a GitHub draft using only the verified distributables.
+4. Test the draft artifacts on actual Macs and Windows, including an older installed version updating to the candidate. Publish only after owner approval. The local command cannot publish a release.
 
-The workflow signs artifacts using Tauri/Minisign. Windows uses the signed NSIS installer directly; macOS uses signed `.app.tar.gz` updater bundles. Apple Developer ID signing/notarization and Microsoft publisher signing remain separate, unconfigured integrations. An update signature authenticates the update without establishing an OS publisher identity.
+Final macOS distributables require Apple Developer ID Application signing and notarization, in addition to the existing Tauri/Minisign update signatures. Windows uses the signed NSIS installer directly; Microsoft publisher signing remains unconfigured. macOS uses notarized `.app.tar.gz` updater bundles. Candidate builds are not evidence that a publisher-signed release has shipped.
 
-## Windows helper pair
+### Apple publisher signing
+
+The macOS bundle identifier is `com.firefungames.ratatoskr`. The Windows bundle/installer identity, configuration paths and background job labels remain stable. Desktop update history and restart intent deliberately retain their existing storage directory on both platforms; the desktop and CLI watchdog share its path. Existing skill sources, schedules and backups are not migrated or deleted. The first transition from the old ad-hoc signature to Developer ID may require a one-time macOS permission grant. Later releases must preserve the publisher, executable identifiers and signing requirements.
+
+Apple signing authority stays off GitHub entirely. Keep the certificate's private key and the notarization API key only in the local encrypted secret manager. Do not configure Apple secrets in GitHub Actions. The main-only `release` environment holds only the existing Tauri update-signing credentials needed by the Windows job. Pin release actions to reviewed commits.
+
+The local publisher requires macOS 27 or later (for the encrypted `diskutil image` API), full Xcode, Python 3.9 or later, OpenSSL, gopass, Node, Cargo and the GitHub CLI. It reads the certificate key from a gopass PEM entry. The notary entry is one encrypted JSON document containing `private_key` (the downloaded PKCS#8 PEM), `key_id` and `issuer_id`. Entry names, the public DER certificate path and team are supplied as command options; private machine profiles and actual credentials do not belong in this repository.
+
+The certificate is matched to its private key in memory, then imported into a temporary encrypted Keychain. Its encrypted PKCS#12 transport uses Keychain-compatible algorithms and a fresh random password; it is removed immediately after import. Password-bearing Keychain commands travel over stdin rather than process arguments. Both Mac candidates are signed before the temporary Keychain is deleted; it does not remain open during notarization waits. `check-identity` verifies this path on a disposable compiled probe without creating a release.
+
+Apple's notarization tool requires a regular key file and rejects pipes. The local command therefore exposes the key only inside a temporary AES-256 encrypted disk image, with an owner-only mount and key file. The image password stays in memory. The key file is removed before detaching the image; a failed detach is retried with force for this owned temporary volume only. Cleanup failures retain the original error. SIGTERM and SIGHUP trigger cleanup as well. No unencrypted `.p8` is written to the host filesystem. Unlocked local credential containers remain accessible to the signing process and other processes running as that user, so signing requires a trusted local Mac.
+
+Verification checks the Apple Developer ID chain, team, app/helper identifiers, hardened runtime and secure timestamp. Both the app and standalone helper must be accepted by Apple. Rejections preserve their nonsecret notary diagnostics. Candidates reject links, special files and AppleDouble metadata; CI strips macOS metadata from their ZIPs. The app is stapled before Python creates the updater tarball, without synthesizing `._*` entries. The tarball's member paths and types are validated before Python extraction; the extracted copy must pass publisher-signature, stapled-ticket and Gatekeeper checks. Every update signature is checked against the existing Rust trust root and its authenticated release version, including downloaded Windows artifacts. Existing tags or draft releases stop the operation before credential use and are checked again before creating a draft. No Keychain, image, secret-manager entry, candidate ZIP or diagnostic log is uploaded to the draft.
 
 ## Windows tray migration
 

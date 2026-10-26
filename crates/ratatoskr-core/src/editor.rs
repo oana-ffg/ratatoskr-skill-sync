@@ -352,8 +352,8 @@ pub fn edit_draft(markdown: &str, metadata: &str, edit: DraftEdit) -> Result<Dra
                 ensure!(
                     !blocks
                         .iter()
-                        .any(|b| from < b.closing.end && to > b.opening.start
-                            || from >= b.opening.start && from < b.closing.end),
+                        .any(|b| (from >= b.opening.start || to > b.opening.start)
+                            && from < b.closing.end),
                     "Nested or overlapping conditions are not supported"
                 );
                 let nl = if markdown.contains("\r\n") {

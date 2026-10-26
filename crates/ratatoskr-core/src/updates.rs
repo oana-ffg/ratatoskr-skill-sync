@@ -262,25 +262,30 @@ impl DesktopUpdateState {
 
 pub const DESKTOP_OVERDUE: &str =
     "Desktop update overdue: two nightly windows passed without a successful check";
+
+/// Storage identity stays stable when the macOS publisher/bundle identity changes.
+/// The desktop and helper must read the same ledger, including during an update.
+pub fn desktop_data_dir() -> Result<std::path::PathBuf> {
+    Ok(directories::BaseDirs::new()
+        .context("Find desktop app-data directory")?
+        .data_dir()
+        .join("io.github.oana-ffg.ratatoskr-skill-sync"))
+}
 #[cfg(any(target_os = "macos", test))]
 const MONITORING_FAILED: &str = "Desktop update monitoring failed:";
 
 #[cfg(target_os = "macos")]
 pub(crate) fn desktop_watchdog(settings: &crate::Settings) -> Result<()> {
     let executable = std::env::current_exe()?;
-    if !executable
+    if executable
         .file_stem()
-        .is_some_and(|name| name == "ratatoskr")
+        .is_none_or(|name| name != "ratatoskr")
     {
         // In-process desktop/library calls do not own the helper watchdog.
         return Ok(());
     }
-    // Match Tauri's app_data_dir: data_dir / bundle identifier. No installed
-    // application, launch agent, or desktop-owned state is modified here.
-    let data = directories::BaseDirs::new()
-        .context("Find desktop app-data directory")?
-        .data_dir()
-        .join("io.github.oana-ffg.ratatoskr-skill-sync");
+    // No installed application, launch agent, or desktop-owned state is modified.
+    let data = desktop_data_dir()?;
     let state = data.join("desktop-update.json");
     let grace = settings
         .state_dir
