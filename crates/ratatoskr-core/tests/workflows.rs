@@ -1874,6 +1874,106 @@ fn adding_agent_definition_preserves_existing_text_and_comments() {
 }
 
 #[test]
+fn structured_save_checks_remote_profiles_for_global_and_project_skills() {
+    for project_scoped in [false, true] {
+        let f = Fixture::new();
+        let harnesses = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();
+        f.write(
+            "harnesses.toml",
+            &format!("{harnesses}{}", harnesses.replace("codex", "claude")),
+        );
+        // The foreign live profile must be rendered without touching its home.
+        f.write(
+            "machines/other.toml",
+            "os='windows'\nmode='live'\nhome='C:/Users/remote'\nharnesses=['claude']\n",
+        );
+        let mut settings = f.settings.clone();
+        let project = if project_scoped {
+            let root = f.root.join("project");
+            fs::create_dir_all(&root).unwrap();
+            git(&root, &["init", "-b", "main"]);
+            fs::write(root.join(".ratatoskr.toml"), "source='agent-skills'\n").unwrap();
+            settings.projects.push(root.clone());
+            Some(root)
+        } else {
+            None
+        };
+        let selected = project
+            .as_ref()
+            .map(|root| root.join("agent-skills"))
+            .unwrap_or_else(|| settings.source.clone());
+        let skill = selected.join("skills/review-code");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("skill.toml"), "").unwrap();
+        let initial = "---\nname: review-code\ndescription: Review changes\n---\nReview changes.\n";
+        fs::write(skill.join("SKILL.md"), initial).unwrap();
+        // An unrelated, already broken remote-only skill must not block saves.
+        let unrelated = selected.join("skills/unrelated");
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::write(
+            unrelated.join("skill.toml"),
+            "[target]\nharnesses=['claude']\n",
+        )
+        .unwrap();
+        fs::write(
+            unrelated.join("SKILL.md"),
+            "---\nname: unrelated\ndescription: ''\n---\nBody\n",
+        )
+        .unwrap();
+        let markdown = |remote: usize| {
+            format!(
+                "---\nname: review-code\ndescription: \"{}<!-- only harness=codex --> {}<!-- /only --><!-- only harness=claude --> {}<!-- /only -->\"\n---\nReview changes.\n",
+                "s".repeat(600),
+                "c".repeat(400),
+                "a".repeat(remote)
+            )
+        };
+        let save_draft = |markdown: &str| {
+            let current =
+                ratatoskr_core::read_skill(&settings, project.as_deref(), "review-code").unwrap();
+            ratatoskr_core::save_skill_draft(
+                &settings,
+                project.as_deref(),
+                "review-code",
+                markdown,
+                &current.metadata,
+                &current.markdown_hash,
+                &current.metadata_hash,
+            )
+        };
+        let overflow = markdown(424);
+        let empty_remote_body = markdown(400).replace(
+            "Review changes.",
+            "<!-- only harness=codex -->Review changes.<!-- /only -->",
+        );
+        for (invalid, message) in [
+            (&overflow, "Invalid skill description"),
+            (&empty_remote_body, "Skill body is empty"),
+        ] {
+            let error = format!("{:#}", save_draft(invalid).unwrap_err());
+            assert!(error.contains("other/claude"), "{error}");
+            assert!(error.contains(message), "{error}");
+            assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), initial);
+            assert_eq!(fs::read_to_string(skill.join("skill.toml")).unwrap(), "");
+        }
+        let valid = markdown(400);
+        save_draft(&valid).unwrap();
+        assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), valid);
+        // A pre-existing error in this skill on the other machine can be left
+        // unchanged during a partial repair, and then fixed in a later save.
+        fs::write(skill.join("SKILL.md"), &overflow).unwrap();
+        let partial_repair = overflow.replace("Review changes.", "Review carefully.");
+        save_draft(&partial_repair).unwrap();
+        assert_eq!(
+            fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            partial_repair
+        );
+        save_draft(&valid).unwrap();
+        assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), valid);
+    }
+}
+
+#[test]
 fn structured_save_limits_each_rendered_description_instead_of_the_template() {
     let f = Fixture::new();
     let harnesses = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();

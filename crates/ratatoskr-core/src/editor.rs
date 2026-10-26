@@ -639,12 +639,45 @@ pub fn save_skill_draft(
     );
     let selected = crate::content::source(settings, project)?;
     let (_temp, candidate) = crate::content::draft_workspace(settings, &selected)?;
+    let before = crate::engine::validate_source(&candidate.source)?;
     let root = candidate.source.join("skills").join(name);
     atomic_write(&root.join("SKILL.md"), markdown.as_bytes())?;
     atomic_write(&root.join("skill.toml"), metadata.as_bytes())?;
     // Description limits apply after conditions and variables are rendered for
     // each target, rather than to the combined template text above.
     crate::engine::validate_sources(&candidate)?;
+    let after = crate::engine::validate_source(&candidate.source)?;
+    let prefix = format!("skills/{name}/");
+    let mut regressions = Vec::new();
+    // Existing remote problems must not block incremental repairs, while new
+    // failures of this skill must be checked on every machine and harness.
+    for problem in after
+        .problems
+        .iter()
+        .filter(|p| p.path.starts_with(&prefix))
+    {
+        for context in &problem.contexts {
+            let existing = before.problems.iter().any(|old| {
+                old.path == problem.path
+                    && old.message == problem.message
+                    && old.contexts.contains(context)
+            });
+            if !existing {
+                regressions.push(format!(
+                    "{} ({}/{}): {}",
+                    problem.path,
+                    context.machine,
+                    context.harness.as_deref().unwrap_or("profile"),
+                    problem.message
+                ));
+            }
+        }
+    }
+    ensure!(
+        regressions.is_empty(),
+        "Skill change introduces validation errors: {}",
+        regressions.join("; ")
+    );
     let root = selected.join("skills").join(name);
     if markdown != current.markdown {
         atomic_write(&root.join("SKILL.md"), markdown.as_bytes())?;
