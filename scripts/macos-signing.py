@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify publisher signatures or finish release candidates on a local Mac."""
+"""Check a local publisher identity or sign and notarize release candidates."""
 from macos_signing import main
 
 if __name__ == "__main__":
