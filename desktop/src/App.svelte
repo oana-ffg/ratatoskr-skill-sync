@@ -151,6 +151,7 @@
   }
   async function save() {
     busy = true;
+    error = "";
     try {
       if (skill) await editor?.save();
       else if (screen === "Agents & machines") await agents?.save();
@@ -310,11 +311,9 @@
       <div class="sync-indicator">
         <span
           class="live-dot"
-          class:failing={!!workspace?.jobs.current_error ||
-            !!refreshError ||
-            deferred}
+          class:failing={!!workspace?.jobs.current_error || !!refreshError}
         ></span><span
-          >{refreshError || deferred
+          >{refreshError
             ? "Status may be out of date"
             : !workspace
               ? "Status unavailable"
@@ -352,19 +351,11 @@
           >{/if}
       </div>
     </header>
-    {#if refreshError || deferred}<div
-        class="global-error"
-        role={refreshError ? "alert" : "status"}
-      >
+    {#if refreshError}<div class="global-error" role="alert">
         <div>
-          <strong
-            >{refreshError
-              ? "Workspace refresh failed"
-              : "Refresh paused while editing"}</strong
-          >
+          <strong>Workspace refresh failed</strong>
           <p>
-            {refreshError ||
-              "Save or discard your changes to refresh. The displayed data may be out of date."}
+            {refreshError}
             {snapshotAge}.{#if snapshotAt !== null}{" "}Last good snapshot: {new Date(
                 snapshotAt,
               ).toLocaleString()}.{/if}

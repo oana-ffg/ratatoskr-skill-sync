@@ -275,14 +275,8 @@
   export async function save() {
     if (!document || busy) return;
     await editQueue;
-    if (
-      validating ||
-      previewError ||
-      analysis.diagnostics.some((d) => d.severity === "error")
-    ) {
-      onerror("Fix validation errors before saving.");
-      return;
-    }
+    // The core validates this exact draft across targets before writing. Live
+    // preview may still be pending or describe text from an earlier edit.
     busy = true;
     try {
       const w = await api.command<Snapshot>("save_skill_draft", {
@@ -715,14 +709,16 @@
               {line || " "}
             </div>{/each}{/if}
       </div>
-      <p class="install-path">
-        ✓ {workspace.plan.mode === "staging" ? "Staged for" : "Installs for"}
-        {agentName(harness)} on {title(machine)}
-      </p>
-      <details>
-        <summary>Installation details</summary>
-        <p class="path">{installPath}</p>
-      </details>
+      {#if !validating && !previewError && preview.length}<p
+          class="install-path"
+        >
+          ✓ {workspace.plan.mode === "staging" ? "Staged for" : "Installs for"}
+          {agentName(harness)} on {title(machine)}
+        </p>
+        <details>
+          <summary>Installation details</summary>
+          <p class="path">{installPath}</p>
+        </details>{/if}
       <p class="muted small">
         Highlighted lines differ from the other agents’ versions.
       </p>

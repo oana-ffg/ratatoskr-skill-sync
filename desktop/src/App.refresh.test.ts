@@ -166,7 +166,7 @@ test("polls every minute only while natively visible, including minimized and bl
   expect(native.stopShown).toHaveBeenCalledOnce();
 });
 test.each(["Settings", "Agents & machines", "Skill editor"])(
-  "preserves %s edits and selection, warns, and catches up after discard",
+  "preserves %s edits quietly and catches up after discard",
   async (editor) => {
     await start();
     let input: HTMLElement;
@@ -193,7 +193,8 @@ test.each(["Settings", "Agents & machines", "Skill editor"])(
     await focus();
     await vi.advanceTimersByTimeAsync(120_000);
     expect(reads).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Refresh paused while editing")).toBeVisible();
+    expect(screen.queryByText("Refresh paused while editing")).toBeNull();
+    expect(screen.queryByText("Status may be out of date")).toBeNull();
     if (editor === "Settings") expect(input).toBeChecked();
     else
       expect(input).toHaveValue(
@@ -239,7 +240,7 @@ test("coalesces slow focus/show/timer refreshes and rejects a response if editin
     await screen.findByLabelText("Open Ratatoskr at login"),
   );
   finish({ ...current, plan: { ...current.plan, mode: "live" } });
-  expect(await screen.findByText("Refresh paused while editing")).toBeVisible();
+  expect(screen.queryByText("Refresh paused while editing")).toBeNull();
   expect(screen.getByText("Staging")).toBeVisible();
   expect(screen.getByLabelText("Open Ratatoskr at login")).toBeChecked();
   await fireEvent.click(screen.getByRole("button", { name: "Discard" }));
@@ -265,7 +266,7 @@ test("deferred catch-up waits until the hidden window is shown", async () => {
   );
   await screen.findByRole("button", { name: "Save" });
   await focus();
-  expect(await screen.findByText("Refresh paused while editing")).toBeVisible();
+  expect(screen.queryByText("Refresh paused while editing")).toBeNull();
   native.visible = false;
   native.shown.forEach((callback) => callback({ payload: false }));
   await fireEvent.click(screen.getByRole("button", { name: "Discard" }));

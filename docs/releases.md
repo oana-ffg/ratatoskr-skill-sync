@@ -1,5 +1,12 @@
 # Releases and signed updates
 
+## v0.2.14 release notes
+
+- Defer workspace refresh quietly during editing. Ordinary edits no longer trigger a red freshness warning; actual refresh failures still show the reason and Retry.
+- Save the current draft through the Rust core's validation even while live preview is pending. Failed saves show the actual reason and retain the draft; retrying clears the previous save error.
+- Show preview installation details only when the rendered skill applies to the selected agent and machine.
+- Add an editor UI CI job in Chromium and WebKit covering delayed previews, long edits, invalid-save recovery, source conflicts, target selection, and conditional description editing. Saves exercise Rust validation and filesystem writes in disposable public fixtures; failures retain screenshots and traces.
+
 ## v0.2.13 release notes
 
 - Add **Only for…** controls to skill descriptions. Edit shared and conditional text, change or remove conditions, and inspect each agent’s rendered description and character count in live preview.

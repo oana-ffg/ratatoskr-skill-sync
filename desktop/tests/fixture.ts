@@ -84,3 +84,21 @@ export function fixtureIPC(
       return oracle(cmd, args);
   }
 }
+
+/** Stateful editor bridge; save goes through the Rust core and reads disk back. */
+export function editorFixture() {
+  let document = structuredClone(fixture.document);
+  return {
+    get document() {
+      return document;
+    },
+    invoke(cmd: string, args: Record<string, unknown> = {}): unknown {
+      if (cmd === "read_source_skill") return document;
+      if (cmd === "save_skill_draft") {
+        document = oracle(cmd, { ...args, current: document }) as SkillDocument;
+        return fixture.workspace;
+      }
+      return fixtureIPC(cmd, args);
+    },
+  };
+}

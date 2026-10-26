@@ -7,6 +7,8 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:1420",
     viewport: { width: 1380, height: 960 },
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   webServer: {
     command: "npm run dev",
@@ -14,4 +16,8 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
   },
   reporter: "list",
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    { name: "webkit", use: { browserName: "webkit" } },
+  ],
 });

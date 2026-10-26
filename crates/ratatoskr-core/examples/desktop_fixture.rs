@@ -102,6 +102,28 @@ fn main() -> anyhow::Result<()> {
     let m = args["machine"].as_str().unwrap_or("brunnr");
     let h = args["harness"].as_str().unwrap_or("codex");
     let result = match request["cmd"].as_str().unwrap_or("fixture") {
+        "save_skill_draft" => {
+            // Rehydrate the test bridge's last saved bytes into this disposable
+            // workspace, then exercise the real validation, hashes and writes.
+            if let Some(current) = args["current"].as_object() {
+                for (key, file) in [("markdown", "SKILL.md"), ("metadata", "skill.toml")] {
+                    fs::write(
+                        settings.source.join("skills/recordings").join(file),
+                        current[key].as_str().unwrap(),
+                    )?;
+                }
+            }
+            core::save_skill_draft(
+                &settings,
+                None,
+                "recordings",
+                text,
+                metadata,
+                args["markdownHash"].as_str().unwrap(),
+                args["metadataHash"].as_str().unwrap(),
+            )?;
+            serde_json::to_value(core::read_skill(&settings, None, "recordings")?)?
+        }
         "preview_install_path" => serde_json::to_value(core::preview_install_path(
             &settings,
             None,

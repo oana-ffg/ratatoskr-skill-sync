@@ -28,9 +28,16 @@ npm run format:check
 npm test
 npm run check
 npm run build
-npx playwright install chromium
+npx playwright install chromium webkit
+npm run test:ui
 npm run test:screenshots
 ```
+
+`test:ui` drives the real Svelte/CodeMirror editor in Chromium and WebKit, with
+the Rust core validating and saving public fixtures in disposable directories.
+CI runs it as `editor-ui` and retains screenshots and traces on failure. Cover
+user-visible failure and recovery paths when changing editor behavior, including
+pending preview, invalid drafts, source conflicts, refresh and target selection.
 
 `cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
