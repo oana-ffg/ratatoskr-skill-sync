@@ -1970,6 +1970,33 @@ fn structured_save_checks_remote_profiles_for_global_and_project_skills() {
         );
         save_draft(&valid).unwrap();
         assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), valid);
+        // Skill-level diagnostics must also be checked when targeting changes
+        // enable another machine with conflicting variants.
+        let restricted = "[target]\nharnesses=['codex']\n";
+        fs::write(skill.join("skill.toml"), restricted).unwrap();
+        for variant in ["harness=claude", "machine=other"] {
+            let path = skill.join("variants").join(variant);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("notes.txt"), "Conflicting variant\n").unwrap();
+        }
+        let current =
+            ratatoskr_core::read_skill(&settings, project.as_deref(), "review-code").unwrap();
+        let error = ratatoskr_core::save_skill_draft(
+            &settings,
+            project.as_deref(),
+            "review-code",
+            &valid,
+            "",
+            &current.markdown_hash,
+            &current.metadata_hash,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("skills/review-code (other/claude)"));
+        assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), valid);
+        assert_eq!(
+            fs::read_to_string(skill.join("skill.toml")).unwrap(),
+            restricted
+        );
     }
 }
 

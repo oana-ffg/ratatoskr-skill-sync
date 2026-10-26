@@ -647,14 +647,15 @@ pub fn save_skill_draft(
     // each target, rather than to the combined template text above.
     crate::engine::validate_sources(&candidate)?;
     let after = crate::engine::validate_source(&candidate.source)?;
-    let prefix = format!("skills/{name}/");
+    let skill_path = format!("skills/{name}");
+    let prefix = format!("{skill_path}/");
     let mut regressions = Vec::new();
     // Existing remote problems must not block incremental repairs, while new
     // failures of this skill must be checked on every machine and harness.
     for problem in after
         .problems
         .iter()
-        .filter(|p| p.path.starts_with(&prefix))
+        .filter(|p| p.path == skill_path || p.path.starts_with(&prefix))
     {
         for context in &problem.contexts {
             let existing = before.problems.iter().any(|old| {
