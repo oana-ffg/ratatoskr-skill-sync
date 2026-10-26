@@ -9,7 +9,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
 static MUTATION: Mutex<()> = Mutex::new(());
@@ -424,7 +423,7 @@ pub(crate) async fn automatic_update(
         } else {
             None
         };
-        let context = update_context(&app)?;
+        let context = update_context()?;
         let mut installed = false;
         let result = (|| -> anyhow::Result<_> {
             let mut nightly = NIGHTLY.lock().map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -483,14 +482,14 @@ pub(crate) async fn automatic_update(
     .map_err(|e| e.to_string())?
 }
 
-fn update_context(app: &tauri::AppHandle) -> Reply<UpdateContext> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+fn update_context() -> Reply<UpdateContext> {
+    let data_dir = core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
     UpdateContext::load(&config()?, &data_dir).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
-pub(crate) fn read_update_settings(app: tauri::AppHandle) -> Reply<UpdateStatus> {
-    let context = update_context(&app)?;
+pub(crate) fn read_update_settings() -> Reply<UpdateStatus> {
+    let context = update_context()?;
     let settings = context.settings();
     Ok(UpdateStatus {
         endpoint: settings.endpoint().into(),
@@ -507,7 +506,7 @@ pub(crate) async fn update_desktop(
 ) -> Reply<crate::desktop_updates::DesktopUpdateResult> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-        let context = update_context(&app)?;
+        let context = update_context()?;
         let mut nightly = NIGHTLY.lock().map_err(|e| e.to_string())?;
         nightly.pending = None;
         let result = manual_update_with(

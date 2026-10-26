@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest"><img src="https://img.shields.io/github/v/release/oana-ffg/ratatoskr-skill-sync?color=6f9a62" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/oana-ffg/ratatoskr-skill-sync?color=6f9a62" alt="MIT license"></a>
+  <a href="https://ratatoskr.firefungames.com">Website</a>
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-6f9a62" alt="macOS and Windows">
 </p>
 

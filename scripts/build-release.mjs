@@ -10,7 +10,17 @@ const version = JSON.parse(readFileSync('desktop/package.json')).version;
 const tauriVersion = JSON.parse(readFileSync('desktop/src-tauri/tauri.conf.json')).version;
 const cargoVersion = readFileSync('Cargo.toml', 'utf8').match(/^version = "([^"]+)"$/m)?.[1];
 if (version !== tauriVersion || version !== cargoVersion) throw new Error('Workspace, desktop package, and Tauri versions must match');
-const configuration = JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: publicKey } } });
+const macOS = target.endsWith('-apple-darwin');
+if (macOS) {
+  for (const name of ['APPLE_SIGNING_IDENTITY', 'APPLE_TEAM_ID', 'APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH']) {
+    if (!process.env[name]) throw new Error(`Configure ${name} before building a macOS release`);
+  }
+  if (!process.env.APPLE_SIGNING_IDENTITY.startsWith('Developer ID Application: ')) throw new Error('A Developer ID Application identity is required');
+}
+const configuration = JSON.stringify({ bundle: {
+  createUpdaterArtifacts: true,
+  ...(macOS ? { macOS: { signingIdentity: process.env.APPLE_SIGNING_IDENTITY, hardenedRuntime: true } } : {}),
+}, plugins: { updater: { pubkey: publicKey } } });
 const result = spawnSync(process.execPath, [resolve('desktop/node_modules/@tauri-apps/cli/tauri.js'), 'build', '--target', target, '--bundles', bundle, '--config', configuration], { cwd: 'desktop', stdio: 'inherit' });
 if (result.error) throw result.error;
 process.exit(result.status ?? 1);

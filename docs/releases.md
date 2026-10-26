@@ -63,7 +63,32 @@ Load each value directly from gopass into `gh secret set` over stdin. Never prin
 2. Dispatch **Build signed draft release**. It builds Apple Silicon, Intel Mac, and Windows x64 desktop bundles and standalone helper executables. The bundled helper is prepared from the same source version.
 3. Download and test artifacts on actual Macs and Windows before publishing the draft. Inspect `latest.json`, including all six platforms, and test an older installed version updating to the candidate. Publish only after approval; the workflow itself leaves the release as a draft.
 
-The workflow signs artifacts using Tauri/Minisign. Windows uses the signed NSIS installer directly; macOS uses signed `.app.tar.gz` updater bundles. Apple Developer ID signing/notarization and Microsoft publisher signing remain separate, unconfigured integrations. An update signature authenticates the update without establishing an OS publisher identity.
+The workflow requires Apple Developer ID Application signing and notarization for macOS, in addition to the existing Tauri/Minisign update signatures. Windows uses the signed NSIS installer directly; Microsoft publisher signing remains unconfigured. macOS uses notarized `.app.tar.gz` updater bundles. These changes are not evidence that a publisher-signed release has already shipped: verify the actual draft artifacts before publishing.
+
+### Apple publisher signing
+
+The macOS bundle identifier is `com.firefungames.ratatoskr`. The Windows bundle/installer identity, configuration paths and background job labels remain stable. Desktop update history and restart intent deliberately retain their existing storage directory on both platforms; the desktop and CLI watchdog share its path. Existing skill sources, schedules and backups are not migrated or deleted. The first transition from the old ad-hoc signature to Developer ID may require a one-time macOS permission grant. Later releases must preserve the publisher, executable identifiers and signing requirements.
+
+Create a GitHub environment named `release` and restrict deployment branches to `main` only. The workflow also refuses non-main dispatches. Only reviewed main-branch code may use the environment. Public fork pull requests and normal CI receive no Apple signing credentials. Pin every action in this secret-bearing workflow to its reviewed commit.
+
+Environment secrets:
+
+- `APPLE_CERTIFICATE`: base64 PKCS#12 containing the Developer ID Application certificate and private key.
+- `APPLE_CERTIFICATE_PASSWORD`: the PKCS#12 password.
+- `KEYCHAIN_PASSWORD`: an independent random password for disposable runner keychains.
+- `APPLE_API_KEY_CONTENT`: the downloaded App Store Connect API private key used for notarization. Use the least role Apple permits for notarization, not an Apple Account password.
+
+Environment variables (public identity, not signing authority):
+
+- `APPLE_SIGNING_IDENTITY`: the actual certificate's `Developer ID Application: …` identity.
+- `APPLE_TEAM_ID`: the issuing developer team.
+- `APPLE_API_KEY` and `APPLE_API_ISSUER`: the notarization key ID and issuer ID.
+
+Transfer credentials directly from the secret manager into GitHub over stdin. Never paste them into issues, PRs or workflow logs. Keep the recovery copy in the secret manager, outside the public tool and private skill-content repositories. A public certificate, Team ID or update public key cannot be used to sign software without the corresponding private key.
+
+On a disposable macOS runner, the preparation step imports the certificate into a temporary keychain and writes the notarization key with owner-only permissions under `RUNNER_TEMP`. The temporary PKCS#12 is removed immediately after import. An `always()` cleanup removes the notarization key and keychain. Only explicit distributable files under `artifacts/` are uploaded; keychains, credentials and runner directories are never uploaded or cached. Credential values are scoped to the steps that need them.
+
+The build requires the real signing identity and notarization configuration. Verification checks the Apple Developer ID certificate chain, configured team, app/helper identifiers, hardened runtime and secure timestamp. It also validates the app's stapled notarization ticket and Gatekeeper assessment. The standalone helper is separately submitted to Apple and must return `Accepted` before it is signed for the updater. Missing credentials, ad-hoc signing, a wrong team or rejected notarization stop release creation.
 
 ## Windows helper pair
 
