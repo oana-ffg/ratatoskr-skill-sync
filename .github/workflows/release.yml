@@ -54,7 +54,7 @@ jobs:
         run: |
           mkdir -p artifacts
           app="target/${{ matrix.target }}/release/bundle/macos/Ratatoskr Skill Sync.app"
-          ditto -c -k --keepParent "$app" "artifacts/Ratatoskr-candidate-${{ matrix.platform }}.zip"
+          ditto --norsrc --noextattr --noacl -c -k --keepParent "$app" "artifacts/Ratatoskr-candidate-${{ matrix.platform }}.zip"
       - name: Stage signed Windows updater and helper
         if: runner.os == 'Windows'
         env:

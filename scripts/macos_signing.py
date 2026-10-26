@@ -6,15 +6,16 @@ import json
 import os
 from pathlib import Path
 import plistlib
-import posixpath
 import re
 import secrets
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import tarfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +35,7 @@ def run(*args, data=None, sensitive=False, pass_fds=(), env=None):
 
 
 def gopass(entry):
-    return run("gopass", "show", entry, sensitive=True)
+    return run("gopass", "show", "--noparsing", "--nofuzzysearch", entry, sensitive=True)
 
 
 @contextmanager
@@ -53,19 +54,43 @@ def input_pipe(data):
             os.close(write_fd)
 
 
-def security(*args):
+def security(*args, redactions=()):
     # Interactive mode keeps password-bearing commands on stdin, out of argv.
     result = subprocess.run(["/usr/bin/security", "-i"],
                             input=(shlex.join(map(str, args)) + "\n").encode(), capture_output=True)
     if result.returncode:
         diagnostic = result.stderr.decode(errors="replace")
-        for argument in args[1:]:
-            if str(argument) and not str(argument).startswith("-"):
-                diagnostic = diagnostic.replace(str(argument), "[redacted]")
+        for value in redactions:
+            diagnostic = diagnostic.replace(value, "[redacted]")
         error = re.search(r"(?:Sec[A-Za-z]+|CSSM[A-Z_]+): [^\r\n]+", diagnostic)
         detail = ": " + error.group() if error else "; credential output suppressed"
         raise ValueError(f"security {args[0]} failed (exit {result.returncode}){detail}")
     return result.stdout
+
+
+def cleanup_preserving_error(action):
+    original = sys.exc_info()[1]
+    try:
+        action()
+    except (ValueError, OSError) as error:
+        prefix = f"{original}; " if original else ""
+        raise ValueError(f"{prefix}credential cleanup failed: {error}") from error
+
+
+def remove_keychain(root, keychain):
+    if keychain.exists():
+        try:
+            run("/usr/bin/security", "delete-keychain", keychain)
+        except (ValueError, OSError) as error:
+            try:
+                run("/usr/bin/security", "lock-keychain", keychain)
+            except (ValueError, OSError) as lock_error:
+                raise ValueError(f"{error}; could not lock retained keychain: {lock_error}") from error
+            raise
+        if keychain.exists():
+            run("/usr/bin/security", "lock-keychain", keychain)
+            raise ValueError(f"Signing keychain remains after deletion: {keychain}")
+    shutil.rmtree(root)
 
 
 def public_key(data, *args):
@@ -91,29 +116,27 @@ def signing_identity(certificate, key_entry):
                      "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-inkey", f"/dev/fd/{key_fd}",
                      "-passout", f"fd:{password_fd}", data=pem, sensitive=True,
                      pass_fds=(key_fd, password_fd))
-    with tempfile.TemporaryDirectory(prefix="ratatoskr-signing-") as directory:
-        root = Path(directory)
-        keychain = root / "publisher.keychain-db"
+    root = Path(tempfile.mkdtemp(prefix="ratatoskr-signing-"))
+    keychain = root / "publisher.keychain-db"
+    try:
         encrypted_bundle = root / "publisher.p12"
-        try:
-            with os.fdopen(os.open(encrypted_bundle, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
-                file.write(bundle)
-            security("create-keychain", "-p", keychain_password, keychain)
-            keychain.chmod(0o600)
-            security("set-keychain-settings", "-lut", "3600", keychain)
-            security("unlock-keychain", "-p", keychain_password, keychain)
-            security("import", encrypted_bundle, "-k", keychain, "-P", password.decode(),
-                     "-T", "/usr/bin/codesign")
-            security("set-key-partition-list", "-S", "apple-tool:,apple:,codesign:",
-                     "-s", "-k", keychain_password, keychain)
-            encrypted_bundle.unlink()
-            identities = run("/usr/bin/security", "find-identity", "-v", "-p", "codesigning", keychain).decode()
-            if fingerprint not in identities or "Developer ID Application:" not in identities:
-                raise ValueError("Temporary keychain lacks the expected Developer ID identity")
-            yield keychain, fingerprint
-        finally:
-            if keychain.exists():
-                run("/usr/bin/security", "delete-keychain", keychain)
+        with os.fdopen(os.open(encrypted_bundle, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+            file.write(bundle)
+        security("create-keychain", "-p", keychain_password, keychain, redactions=(keychain_password,))
+        keychain.chmod(0o600)
+        security("set-keychain-settings", "-lut", "3600", keychain)
+        security("unlock-keychain", "-p", keychain_password, keychain, redactions=(keychain_password,))
+        security("import", encrypted_bundle, "-k", keychain, "-P", password.decode(),
+                 "-T", "/usr/bin/codesign", redactions=(password.decode(),))
+        security("set-key-partition-list", "-S", "apple-tool:,apple:,codesign:",
+                 "-s", "-k", keychain_password, keychain, redactions=(keychain_password,))
+        encrypted_bundle.unlink()
+        identities = run("/usr/bin/security", "find-identity", "-v", "-p", "codesigning", keychain).decode()
+        if fingerprint not in identities or "Developer ID Application:" not in identities:
+            raise ValueError("Temporary keychain lacks the expected Developer ID identity")
+        yield keychain, fingerprint
+    finally:
+        cleanup_preserving_error(lambda: remove_keychain(root, keychain))
 
 
 def verify(path, identifier, team):
@@ -161,6 +184,31 @@ def notary_credentials(entry):
     return value, key
 
 
+def remove_notary_container(root, mount, path):
+    failures = []
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        failures.append(str(error))
+    if os.path.ismount(mount):
+        try:
+            run("/usr/bin/hdiutil", "detach", mount)
+        except (ValueError, OSError) as error:
+            try:
+                run("/usr/bin/hdiutil", "detach", "-force", mount)
+            except (ValueError, OSError) as force_error:
+                failures.append(f"{error}; forced detach also failed: {force_error}")
+    if not os.path.ismount(mount):
+        try:
+            shutil.rmtree(root)
+        except OSError as error:
+            failures.append(str(error))
+    else:
+        failures.append(f"Credential volume remains mounted: {mount}")
+    if failures:
+        raise ValueError("; ".join(failures))
+
+
 def notary_command(entry, *args):
     metadata, key = notary_credentials(entry)
     tool = run("xcrun", "--find", "notarytool").decode().strip()
@@ -169,6 +217,7 @@ def notary_command(entry, *args):
     root = Path(tempfile.mkdtemp(prefix="ratatoskr-notary-"))
     image = root / "credential.dmg"
     mount = root / "mounted"
+    path = mount / "credential.p8"
     password = secrets.token_urlsafe(48).encode() + b"\n"
     try:
         run("/usr/sbin/diskutil", "image", "create", "blank", "--encrypt", "--stdinpassphrase",
@@ -181,16 +230,13 @@ def notary_command(entry, *args):
         mount.chmod(0o700)
         (mount / ".metadata_never_index").touch(mode=0o600)
         run("/usr/bin/xattr", "-w", "com.apple.metadata:com_apple_backup_excludeItem", "com.apple.backupd", mount)
-        path = mount / "credential.p8"
         with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
             file.write(key)
         return subprocess.run([tool, *map(str, args), "--key", str(path),
                                "--key-id", metadata["key_id"], "--issuer", metadata["issuer_id"]],
                               capture_output=True, cwd=ROOT)
     finally:
-        if os.path.ismount(mount):
-            run("/usr/bin/hdiutil", "detach", mount)
-        shutil.rmtree(root)
+        cleanup_preserving_error(lambda: remove_notary_container(root, mount, path))
 
 
 def notarize(path, entry, log_path):
@@ -222,13 +268,44 @@ def validate_candidate_archive(path):
             name = info.filename
             if name.startswith("/") or ".." in name.split("/") or "\\" in name:
                 raise ValueError("Unsafe candidate archive path")
-            if not (name == APP or name.startswith(APP + "/") or name.startswith("__MACOSX/")):
+            if not (name == APP or name.startswith(APP + "/")):
                 raise ValueError("Candidate archive contains files outside the app")
-            if stat.S_ISLNK(info.external_attr >> 16):
-                target = archive.read(info).decode()
-                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
-                if target.startswith("/") or not resolved.startswith(APP + "/"):
-                    raise ValueError("Candidate archive symlink escapes the app")
+            if any(part.startswith("._") for part in name.split("/")):
+                raise ValueError("Candidate archive contains AppleDouble metadata")
+            if stat.S_IFMT(info.external_attr >> 16) not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                raise ValueError("Candidate archive contains a link or special file")
+
+
+def validate_updater_member(member):
+    parts = member.name.split("/")
+    if (parts[0] != APP or ".." in parts or "\\" in member.name
+            or any(part.startswith("._") for part in parts)
+            or not (member.isdir() or member.isfile())
+            or (member.name == APP and not member.isdir())):
+        raise ValueError("Unsafe updater member or AppleDouble metadata")
+    return member
+
+
+def pack_updater(app, path):
+    def portable(member):
+        validate_updater_member(member)
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        return member
+    # Python's tar implementation does not synthesize macOS ._* metadata entries.
+    with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        archive.add(app, arcname=APP, filter=portable)
+
+
+def extract_updater(path, destination):
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive.getmembers():
+            validate_updater_member(member)
+        if hasattr(tarfile, "data_filter"):
+            archive.extractall(destination, filter="data")
+        else:
+            # Python 3.9: the validation above allows only app directories/files.
+            archive.extractall(destination)
 
 
 def validate_run(metadata, commit):
@@ -238,18 +315,29 @@ def validate_run(metadata, commit):
         raise ValueError("Expected a successful main-branch candidate run for the checked-out commit")
 
 
-def sign_update(path, version, args):
-    env = os.environ.copy()
-    env["TAURI_SIGNING_PRIVATE_KEY"] = gopass(args.update_key_entry).decode().strip()
-    env["TAURI_SIGNING_PRIVATE_KEY_PASSWORD"] = gopass(args.update_password_entry).decode().rstrip("\r\n")
+def update_credentials(args):
+    return {"TAURI_SIGNING_PRIVATE_KEY": gopass(args.update_key_entry).decode().strip(),
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD": gopass(args.update_password_entry).decode().rstrip("\r\n")}
+
+
+def sign_update(path, version, credentials):
+    env = {**os.environ, **credentials}
     run("node", ROOT / "desktop/node_modules/@tauri-apps/cli/tauri.js", "signer", "sign",
         "--app-version", version, path, env=env, sensitive=True)
 
 
-def verify_updates(directory):
+def verify_updates(directory, version):
     verifier = ROOT / "target/debug/examples/verify_release_artifact"
     for signature in directory.glob("*.sig"):
-        run(verifier, str(signature)[:-4], signature)
+        run(verifier, str(signature)[:-4], signature, version)
+
+
+def require_new_version(version):
+    if run("git", "ls-remote", "--tags", "--refs", "origin", f"refs/tags/v{version}").strip():
+        raise ValueError(f"Release tag v{version} already exists")
+    pages = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{REPOSITORY}/releases"))
+    if any(release.get("tag_name") == f"v{version}" for page in pages for release in page):
+        raise ValueError(f"Release v{version} already exists, including drafts")
 
 
 def release(args):
@@ -270,6 +358,7 @@ def release(args):
                              "--json", "event,headBranch,headSha,conclusion,workflowName"))
     validate_run(metadata, commit)
     version = json.loads((ROOT / "desktop/package.json").read_text())["version"]
+    require_new_version(version)
     run("cargo", "build", "--locked", "-p", "ratatoskr-core", "--example", "verify_release_artifact")
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -281,50 +370,61 @@ def release(args):
     for name in [f"Ratatoskr-Skill-Sync-{version}-windows-x86_64-setup.exe", "ratatoskr-windows-x86_64.exe"]:
         for suffix in ["", ".sig"]:
             shutil.copyfile(windows / (name + suffix), artifacts / (name + suffix))
-    verify_updates(artifacts)
+    verify_updates(artifacts, version)
+    prepared = []
+    for platform, architecture in [("darwin-aarch64", "arm64"), ("darwin-x86_64", "x86_64")]:
+        candidate = downloads / platform / f"Ratatoskr-candidate-{platform}.zip"
+        validate_candidate_archive(candidate)
+        destination = output / platform
+        run("ditto", "-x", "-k", candidate, destination)
+        app = destination / APP
+        info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != BUNDLE_ID or info.get("CFBundleShortVersionString") != version:
+            raise ValueError("Candidate bundle identity/version mismatch")
+        helper = app / "Contents/MacOS/ratatoskr"
+        for binary in [helper, app / "Contents/MacOS" / info["CFBundleExecutable"]]:
+            if run("lipo", "-archs", binary).decode().split() != [architecture]:
+                raise ValueError("Candidate architecture mismatch")
+        prepared.append((platform, app))
+    # Close the signing keychain before any potentially long notarization wait.
     with signing_identity(args.certificate, args.signing_key_entry) as identity:
-        for platform, architecture in [("darwin-aarch64", "arm64"), ("darwin-x86_64", "x86_64")]:
-            candidate = downloads / platform / f"Ratatoskr-candidate-{platform}.zip"
-            validate_candidate_archive(candidate)
-            destination = output / platform
-            run("ditto", "-x", "-k", candidate, destination)
-            app = destination / APP
-            info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-            if info.get("CFBundleIdentifier") != BUNDLE_ID or info.get("CFBundleShortVersionString") != version:
-                raise ValueError("Candidate bundle identity/version mismatch")
+        for platform, app in prepared:
             helper = app / "Contents/MacOS/ratatoskr"
-            for binary in [helper, app / "Contents/MacOS" / info["CFBundleExecutable"]]:
-                if run("lipo", "-archs", binary).decode().split() != [architecture]:
-                    raise ValueError("Candidate architecture mismatch")
             sign(helper, "ratatoskr", args.team_id, identity)
             sign(app, BUNDLE_ID, args.team_id, identity)
-            app_zip = output / f"{platform}-notary.zip"
-            run("ditto", "-c", "-k", "--keepParent", app, app_zip)
-            notarize(app_zip, args.notary_entry, output / f"{platform}-notary-log.json")
-            run("xcrun", "stapler", "staple", app)
-            run("xcrun", "stapler", "validate", app)
-            run("/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=2", app)
-            archive = artifacts / f"Ratatoskr-Skill-Sync-{version}-{platform}.app.tar.gz"
-            run("tar", "-czf", archive, "-C", destination, APP)
-            extracted = output / f"{platform}-archive-check"
-            extracted.mkdir()
-            run("tar", "-xzf", archive, "-C", extracted)
-            verify(extracted / APP, BUNDLE_ID, args.team_id)
-            verify(extracted / APP / "Contents/MacOS/ratatoskr", "ratatoskr", args.team_id)
-            run("xcrun", "stapler", "validate", extracted / APP)
-            cli = artifacts / f"ratatoskr-{platform}"
-            shutil.copyfile(helper, cli)
-            cli.chmod(0o755)
-            verify(cli, "ratatoskr", args.team_id)
-            cli_zip = output / f"{platform}-cli-notary.zip"
-            run("ditto", "-c", "-k", "--keepParent", cli, cli_zip)
-            notarize(cli_zip, args.notary_entry, output / f"{platform}-cli-notary-log.json")
-            for path in [archive, cli]:
-                sign_update(path, version, args)
-    verify_updates(artifacts)
+    mac_artifacts = []
+    for platform, app in prepared:
+        app_zip = output / f"{platform}-notary.zip"
+        run("ditto", "--norsrc", "--noextattr", "--noacl", "-c", "-k", "--keepParent", app, app_zip)
+        notarize(app_zip, args.notary_entry, output / f"{platform}-notary-log.json")
+        run("xcrun", "stapler", "staple", app)
+        run("xcrun", "stapler", "validate", app)
+        run("/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=2", app)
+        archive = artifacts / f"Ratatoskr-Skill-Sync-{version}-{platform}.app.tar.gz"
+        pack_updater(app, archive)
+        extracted = output / f"{platform}-archive-check"
+        extracted.mkdir()
+        extract_updater(archive, extracted)
+        verify(extracted / APP, BUNDLE_ID, args.team_id)
+        verify(extracted / APP / "Contents/MacOS/ratatoskr", "ratatoskr", args.team_id)
+        run("xcrun", "stapler", "validate", extracted / APP)
+        run("/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=2", extracted / APP)
+        cli = artifacts / f"ratatoskr-{platform}"
+        shutil.copyfile(app / "Contents/MacOS/ratatoskr", cli)
+        cli.chmod(0o755)
+        verify(cli, "ratatoskr", args.team_id)
+        cli_zip = output / f"{platform}-cli-notary.zip"
+        run("ditto", "--norsrc", "--noextattr", "--noacl", "-c", "-k", "--keepParent", cli, cli_zip)
+        notarize(cli_zip, args.notary_entry, output / f"{platform}-cli-notary-log.json")
+        mac_artifacts.extend([archive, cli])
+    credentials = update_credentials(args)
+    for path in mac_artifacts:
+        sign_update(path, version, credentials)
+    verify_updates(artifacts, version)
     run("node", "scripts/release-manifest.mjs", artifacts, version, REPOSITORY)
     print(f"Verified signed release artifacts: {artifacts}")
     if args.draft:
+        require_new_version(version)
         run("gh", "release", "create", f"v{version}", *sorted(artifacts.iterdir()),
             "--repo", REPOSITORY, "--draft", "--target", commit,
             "--title", f"Ratatoskr Skill Sync {version}", "--generate-notes")
@@ -334,13 +434,9 @@ def release(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    check = commands.add_parser("verify")
-    check.add_argument("path", type=Path)
-    check.add_argument("identifier")
-    commands.add_parser("accepted").add_argument("result", type=Path)
     for name in ["release", "check-identity"]:
         command = commands.add_parser(name)
-        command.add_argument("--certificate", type=Path, required=True)
+        command.add_argument("--certificate", type=lambda value: Path(value).expanduser().resolve(), required=True)
         command.add_argument("--signing-key-entry", required=True)
         command.add_argument("--team-id", required=True)
         if name == "release":
@@ -351,12 +447,13 @@ def main():
             command.add_argument("--output", type=Path, required=True)
             command.add_argument("--draft", action="store_true")
     args = parser.parse_args()
+    handlers = {}
+    for name in ["SIGTERM", "SIGHUP"]:
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            handlers[signum] = signal.signal(signum, interrupted)
     try:
-        if args.command == "verify":
-            verify(args.path, args.identifier, os.environ.get("APPLE_TEAM_ID", ""))
-        elif args.command == "accepted":
-            accepted(json.loads(args.result.read_text()))
-        elif args.command == "check-identity":
+        if args.command == "check-identity":
             with tempfile.TemporaryDirectory(prefix="ratatoskr-publisher-probe-") as directory:
                 source = Path(directory) / "probe.c"
                 binary = Path(directory) / "probe"
@@ -368,3 +465,10 @@ def main():
             release(args)
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as error:
         parser.exit(1, f"{error}\n")
+    finally:
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+
+
+def interrupted(signum, _frame):
+    raise InterruptedError(f"Interrupted by signal {signum}; cleaning up credentials")
