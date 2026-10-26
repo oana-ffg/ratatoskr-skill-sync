@@ -39,6 +39,11 @@ export type Value =
 export type Table = Record<string, Value>;
 export interface EditorView {
   description: string;
+  description_sections: {
+    text: string;
+    selectors: Record<string, string[]> | null;
+  }[];
+  description_error: string | null;
   frontmatter: Range;
   metadata: Table;
 }

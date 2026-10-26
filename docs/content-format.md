@@ -23,6 +23,8 @@ Set `enabled = false` at the top level of `skill.toml` to disable a skill withou
 
 Markdown supports `only` HTML comment blocks: an opening comment starts with `only`, followed by `harness=codex`, `os=windows`, or `machine=brunnr`, and a closing comment contains `/only`. Comma-separated values mean OR and separate keys mean AND. Blocks cannot nest, even in excluded content, and are interpreted inside Markdown code fences too.
 
+Descriptions can contain inline `only` blocks too. For example, `description: "Review code.<!-- only harness=codex --> Include Codex guidance.<!-- /only -->"` renders the extra sentence only for Codex. The desktop description’s **Only for…** control adds conditional text without editing template syntax; each section can be edited or made shared with **Remove condition**. Live preview shows the selected agent’s rendered description. The 1–1024 character limit applies to each rendered description, excluding template markers.
+
 All UTF-8 text supports scalar variables with `{{af:...}}`, including `home`, `machine`, `harness`, and dotted values under `paths`. Undefined variables in included content fail. Substitution is literal: quote correctly for the destination language. Opaque binary files are copied unchanged. Markdown, TOML, Python and `.txt` files require UTF-8.
 
 `variants/harness=codex/`, `variants/os=windows/`, and `variants/machine=brunnr/` add or replace files relative to the skill root. Matching variants cannot both replace the same path. Variants cannot replace `skill.toml`. `[frontmatter.<harness>]` adds YAML fields but cannot replace shared fields or skill identity.

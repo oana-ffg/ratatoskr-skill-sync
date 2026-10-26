@@ -15,8 +15,131 @@ use toml_edit::{DocumentMut, Item};
 #[derive(Serialize)]
 pub struct EditorView {
     pub description: String,
+    pub description_sections: Vec<DescriptionSection>,
+    pub description_error: Option<String>,
     pub frontmatter: crate::TextRange,
     pub metadata: toml::Table,
+}
+
+#[derive(Serialize)]
+pub struct DescriptionSection {
+    pub text: String,
+    pub selectors: Option<BTreeMap<String, Vec<String>>>,
+    #[serde(skip)]
+    range: std::ops::Range<usize>,
+    #[serde(skip)]
+    body: std::ops::Range<usize>,
+}
+
+fn description_sections(description: &str) -> Result<Vec<DescriptionSection>> {
+    let (blocks, errors) = crate::template::parse_blocks(description)?;
+    ensure!(
+        errors.is_empty(),
+        "Fix description template errors in Markdown source"
+    );
+    let mut sections = Vec::new();
+    let mut position = 0;
+    for block in blocks {
+        // Keep empty shared slots so queued typing cannot shift a condition's index.
+        let range = position..block.opening.start;
+        sections.push(DescriptionSection {
+            text: description[range.clone()].into(),
+            selectors: None,
+            body: range.clone(),
+            range,
+        });
+        sections.push(DescriptionSection {
+            text: description[block.body.clone()].into(),
+            selectors: Some(block.selectors),
+            range: block.opening.start..block.closing.end,
+            body: block.body,
+        });
+        position = block.closing.end;
+    }
+    let range = position..description.len();
+    sections.push(DescriptionSection {
+        text: description[range.clone()].into(),
+        selectors: None,
+        body: range.clone(),
+        range,
+    });
+    Ok(sections)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum DescriptionEdit {
+    Text {
+        index: usize,
+        value: String,
+    },
+    Append {
+        value: String,
+        selectors: BTreeMap<String, Vec<String>>,
+    },
+    Only {
+        index: usize,
+        selectors: BTreeMap<String, Vec<String>>,
+    },
+    RemoveOnly {
+        index: usize,
+    },
+}
+
+fn edit_description(description: &str, edit: DescriptionEdit) -> Result<String> {
+    let sections = description_sections(description)?;
+    let mut result = description.to_owned();
+    match edit {
+        DescriptionEdit::Append { value, selectors } => {
+            ensure!(!value.trim().is_empty(), "Enter description text");
+            result.push_str(&format!(
+                " {}{value}<!-- /only -->",
+                only_opening(&selectors)?
+            ));
+        }
+        DescriptionEdit::Text { index, value } => {
+            let section = sections
+                .get(index)
+                .context("Description section changed; try again")?;
+            result.replace_range(section.body.clone(), &value);
+        }
+        DescriptionEdit::Only { index, selectors } => {
+            let section = sections
+                .get(index)
+                .context("Description section changed; try again")?;
+            ensure!(
+                section.selectors.is_some(),
+                "Select a conditional description section"
+            );
+            result.replace_range(
+                section.range.start..section.body.start,
+                &only_opening(&selectors)?,
+            );
+        }
+        DescriptionEdit::RemoveOnly { index } => {
+            let section = sections
+                .get(index)
+                .context("Description section changed; try again")?;
+            ensure!(
+                section.selectors.is_some(),
+                "Select a conditional description section"
+            );
+            result.replace_range(section.range.clone(), &section.text);
+        }
+    }
+    // Reject pasted nested or unbalanced tags before changing the source.
+    description_sections(&result)?;
+    Ok(result)
+}
+
+fn only_opening(selectors: &BTreeMap<String, Vec<String>>) -> Result<String> {
+    let expression = selectors
+        .iter()
+        .map(|(k, v)| format!("{k}={}", v.join(",")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    crate::template::parse_only_selectors(&expression)?;
+    Ok(format!("<!-- only {expression} -->"))
 }
 
 fn frontmatter(source: &str) -> Result<(std::ops::Range<usize>, serde_yaml_ng::Value)> {
@@ -37,8 +160,15 @@ fn frontmatter(source: &str) -> Result<(std::ops::Range<usize>, serde_yaml_ng::V
 
 pub fn editor_view(markdown: &str, metadata: &str) -> Result<EditorView> {
     let (range, yaml) = frontmatter(markdown)?;
+    let description = yaml["description"].as_str().unwrap_or_default();
+    let (sections, description_error) = match description_sections(description) {
+        Ok(sections) => (sections, None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
     Ok(EditorView {
-        description: yaml["description"].as_str().unwrap_or_default().into(),
+        description: description.into(),
+        description_sections: sections,
+        description_error,
         frontmatter: crate::TextRange {
             from: 0,
             to: markdown[..range.end].encode_utf16().count(),
@@ -122,6 +252,9 @@ pub enum DraftEdit {
     Description {
         value: String,
     },
+    DescriptionSection {
+        edit: DescriptionEdit,
+    },
     Metadata {
         path: Vec<String>,
         value: Option<toml::Value>,
@@ -157,6 +290,17 @@ pub fn edit_draft(markdown: &str, metadata: &str, edit: DraftEdit) -> Result<Dra
         DraftEdit::Description { value } => {
             result.markdown = yaml_field(markdown, "description", &value)?
         }
+        DraftEdit::DescriptionSection { edit } => {
+            let (_, yaml) = frontmatter(markdown)?;
+            let description = yaml["description"]
+                .as_str()
+                .context("Description must be a string")?;
+            result.markdown = yaml_field(
+                markdown,
+                "description",
+                &edit_description(description, edit)?,
+            )?;
+        }
         DraftEdit::Metadata { path, value } => {
             result.metadata = patch_toml(metadata, &path, value.as_ref())?
         }
@@ -181,13 +325,7 @@ pub fn edit_draft(markdown: &str, metadata: &str, edit: DraftEdit) -> Result<Dra
             selectors,
             existing,
         } => {
-            let expression = selectors
-                .iter()
-                .map(|(k, v)| format!("{k}={}", v.join(",")))
-                .collect::<Vec<_>>()
-                .join(" ");
-            crate::template::parse_only_selectors(&expression)?;
-            let opening = format!("<!-- only {expression} -->");
+            let opening = only_opening(&selectors)?;
             let from = byte_offset(markdown, from)?;
             let to = byte_offset(markdown, to)?;
             ensure!(from <= to, "Invalid selection");
@@ -783,6 +921,116 @@ mod lossless_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conditional_descriptions_render_per_harness_and_preserve_unrelated_source() -> Result<()> {
+        let original = "---\r\nname: sample\r\ndescription: 'Review 🐿' # keep\r\nlicense: MIT\r\n---\r\nBody unchanged.\r\n";
+        let metadata = "# untouched\nenabled = true\n";
+        let draft = edit_draft(
+            original,
+            metadata,
+            DraftEdit::DescriptionSection {
+                edit: DescriptionEdit::Append {
+                    value: "Luna, you must ALWAYS load this, no exceptions".into(),
+                    selectors: BTreeMap::from([("harness".into(), vec!["codex".into()])]),
+                },
+            },
+        )?;
+        assert_eq!(draft.metadata, metadata);
+        assert!(
+            draft
+                .markdown
+                .ends_with(" # keep\r\nlicense: MIT\r\n---\r\nBody unchanged.\r\n")
+        );
+        let view = editor_view(&draft.markdown, metadata)?;
+        assert_eq!(view.description_sections.len(), 3);
+        assert_eq!(
+            view.description_sections[1].text,
+            "Luna, you must ALWAYS load this, no exceptions"
+        );
+        for harness in ["codex", "claude"] {
+            let context: toml::Table = [("harness".into(), harness.into())].into_iter().collect();
+            let rendered =
+                crate::template::render(&draft.markdown, &context, true)?.replace("\r\n", "\n");
+            let (yaml, _) = crate::template::skill_frontmatter(&rendered, "sample")?;
+            assert_eq!(
+                yaml["description"].as_str().unwrap().contains("Luna"),
+                harness == "codex"
+            );
+            assert!(!rendered.contains("<!--"));
+        }
+        // Typing repeatedly into a section addresses the current section, not stale offsets.
+        let changed = edit_draft(
+            &draft.markdown,
+            metadata,
+            DraftEdit::DescriptionSection {
+                edit: DescriptionEdit::Text {
+                    index: 0,
+                    value: "Longer shared text: \"quoted\" 🐿 ".into(),
+                },
+            },
+        )?;
+        let changed = edit_draft(
+            &changed.markdown,
+            metadata,
+            DraftEdit::DescriptionSection {
+                edit: DescriptionEdit::Text {
+                    index: 1,
+                    value: "Updated: \"Luna\"".into(),
+                },
+            },
+        )?;
+        let changed = edit_draft(
+            &changed.markdown,
+            metadata,
+            DraftEdit::DescriptionSection {
+                edit: DescriptionEdit::Only {
+                    index: 1,
+                    selectors: BTreeMap::from([("harness".into(), vec!["claude".into()])]),
+                },
+            },
+        )?;
+        assert_eq!(
+            editor_view(&changed.markdown, metadata)?.description_sections[1]
+                .selectors
+                .as_ref()
+                .unwrap()["harness"],
+            vec!["claude"]
+        );
+        let unwrapped = edit_draft(
+            &changed.markdown,
+            metadata,
+            DraftEdit::DescriptionSection {
+                edit: DescriptionEdit::RemoveOnly { index: 1 },
+            },
+        )?;
+        assert_eq!(
+            editor_view(&unwrapped.markdown, metadata)?.description,
+            "Longer shared text: \"quoted\" 🐿 Updated: \"Luna\""
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn broken_description_conditions_remain_openable_for_source_repair() -> Result<()> {
+        let source = "---\nname: sample\ndescription: 'Shared <!-- only harness=codex -->broken'\n---\nBody\n";
+        let view = editor_view(source, "")?;
+        assert!(view.description_error.is_some());
+        assert!(view.description_sections.is_empty());
+        assert!(
+            edit_draft(
+                source,
+                "",
+                DraftEdit::DescriptionSection {
+                    edit: DescriptionEdit::Text {
+                        index: 0,
+                        value: "oops".into()
+                    }
+                }
+            )
+            .is_err()
+        );
+        Ok(())
+    }
     #[test]
     fn structured_edits_preserve_unrelated_bytes_and_noops() {
         let md = "---\r\nname: sample\r\ndescription: 'old'\r\n# retained\r\nlicense: MIT\r\n---\r\n🐿 Body\r\n";

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import type { Snippet } from "svelte";
   import Dialog from "./Dialog.svelte";
   import Chips from "./Chips.svelte";
   import { agentName, title } from "../api";
@@ -9,12 +10,16 @@
     initial = {},
     onapply,
     onclose,
+    children,
+    applyDisabled = false,
   }: {
     agents: string[];
     machines: string[];
     initial?: Record<string, string[]>;
     onapply: (selectors: Record<string, string[]>) => void;
     onclose: () => void;
+    children?: Snippet;
+    applyDisabled?: boolean;
   } = $props();
   let selectors = $state<Record<string, string[]>>({});
   onMount(() => (selectors = structuredClone($state.snapshot(initial))));
@@ -29,6 +34,7 @@
 
 <Dialog title="Only include this section for…" {onclose}>
   <p class="muted">Choose where this part of the skill appears.</p>
+  {@render children?.()}
   <Chips
     label="Agents"
     options={agents}
@@ -54,7 +60,7 @@
   <footer class="dialog-actions">
     <button
       class="primary"
-      disabled={!Object.keys(selectors).length}
+      disabled={applyDisabled || !Object.keys(selectors).length}
       onclick={() => onapply(selectors)}>Apply condition</button
     ><button onclick={onclose}>Cancel</button>
   </footer>

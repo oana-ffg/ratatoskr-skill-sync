@@ -50,6 +50,7 @@
   let values = $state<ValueOption[]>([]);
   let resources = $state<Resource[]>([]);
   let previewError = $state("");
+  let renderedDescription = $state("");
   let installPath = $state("");
   let validating = $state(true);
   let busy = $state(false);
@@ -63,7 +64,9 @@
   let harness = $state("");
   let raw = $state(false);
   let selected = $state<Range>({ from: 0, to: 0 });
-  let picker = $state<"only" | "value" | "rename" | "variant" | null>(null);
+  let picker = $state<
+    "only" | "description-only" | "value" | "rename" | "variant" | null
+  >(null);
   let block = $state<Block | null>(null);
   let editor = $state<MarkdownEditor>();
   let newName = $state("");
@@ -72,7 +75,10 @@
   let extraAgent = $state("");
   let extraKey = $state("");
   let extraValue = $state("");
-  let description = $state("");
+  let descriptionSections = $state<EditorView["description_sections"]>([]);
+  let descriptionIndex = $state<number | null>(null);
+  let descriptionText = $state("");
+  let activeDescriptionIndex = $state<number | null>(null);
   function growDescription(node: HTMLTextAreaElement, _value: string) {
     let active = true;
     let width = 0;
@@ -101,9 +107,7 @@
   }
   const dirty = $derived(
     !!document &&
-      (markdown !== document.markdown ||
-        metadata !== document.metadata ||
-        description !== info?.description),
+      (markdown !== document.markdown || metadata !== document.metadata),
   );
   $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
@@ -164,15 +168,21 @@
           (files) => files.find((f) => f.path === "SKILL.md")?.body ?? "",
         ),
       });
-      return { a, v, options, files, changed, error, destination };
+      const renderedSkill = files.find((f) => f.path === "SKILL.md")?.text;
+      const description = renderedSkill
+        ? (await api.view(renderedSkill, input.metadata)).description
+        : "";
+      return { a, v, options, files, changed, error, destination, description };
     },
     (result) => {
       analysis = result.a;
       info = result.v;
-      if (raw) description = result.v.description;
+      if (raw && pendingEdits === 0)
+        descriptionSections = result.v.description_sections;
       installPath = result.destination;
       values = result.options;
       preview = result.files;
+      renderedDescription = result.description;
       changedLines = result.changed;
       previewError = result.error;
       validating = false;
@@ -180,6 +190,7 @@
     (e) => {
       previewError = errorText(e);
       preview = [];
+      renderedDescription = "";
       changedLines = [];
       validating = false;
     },
@@ -208,7 +219,7 @@
       markdown = d.markdown;
       metadata = d.metadata;
       info = v;
-      description = v.description;
+      descriptionSections = v.description_sections;
       resources = await api.resources(skill);
       selected = { from: v.frontmatter.to, to: v.frontmatter.to };
     } catch (e) {
@@ -229,7 +240,11 @@
           operation,
         );
         if (markdown !== originalMarkdown || metadata !== originalMetadata) {
-          if (operation.kind !== "description" && operation.kind !== "metadata")
+          if (
+            !["description", "description-section", "metadata"].includes(
+              String(operation.kind),
+            )
+          )
             throw new Error(
               "The selection changed during the edit. Try the command again.",
             );
@@ -249,6 +264,7 @@
         }
         metadata = result.metadata;
         info = await api.view(markdown, metadata);
+        if (pendingEdits === 1) descriptionSections = info.description_sections;
       })
       .catch(onerror)
       .finally(() => pendingEdits--);
@@ -303,6 +319,14 @@
   function openOnly(b: Block | null = null) {
     block = b;
     picker = "only";
+  }
+  function descriptionEdit(operation: Record<string, unknown>) {
+    return edit({ kind: "description-section", edit: operation });
+  }
+  function openDescriptionOnly(index: number | null = null) {
+    descriptionIndex = index;
+    descriptionText = "";
+    picker = "description-only";
   }
   function onblock(b: Block, remove: boolean) {
     if (remove) void edit({ kind: "remove-only", from: b.opening.from });
@@ -412,17 +436,75 @@
           >
         </div>
       </div>
-      <label class="description-field"
-        ><span>Description <small>{[...description].length} / 1024</small></span
-        ><textarea
-          aria-label="Description"
-          rows="2"
-          use:growDescription={description}
-          bind:value={description}
-          oninput={(e) => {
-            void edit({ kind: "description", value: e.currentTarget.value });
-          }}></textarea></label
-      >
+      <div class="description-field">
+        <div class="description-heading">
+          <span>Description</span><button
+            class="accent-text"
+            disabled={pendingEdits > 0 || !!info.description_error}
+            onclick={() => openDescriptionOnly()}>＋ Only for…</button
+          >
+        </div>
+        {#if info.description_error}<p role="alert" class="error-message">
+            {info.description_error}
+          </p>{/if}
+        {#each descriptionSections as section, index}
+          {#if index === 0 || section.selectors || section.text.trim() || activeDescriptionIndex === index}
+            <div class:description-condition={!!section.selectors}>
+              {#if section.selectors}
+                <div class="description-condition-heading">
+                  <span
+                    >{Object.entries(section.selectors)
+                      .map(([key, values]) =>
+                        values
+                          .map((v) =>
+                            key === "harness" ? agentName(v) : title(v),
+                          )
+                          .join(" or "),
+                      )
+                      .join(" · ")} only</span
+                  >
+                  <button
+                    class="subtle"
+                    disabled={pendingEdits > 0}
+                    onclick={() => openDescriptionOnly(index)}
+                    >Edit condition</button
+                  >
+                  <button
+                    class="subtle"
+                    disabled={pendingEdits > 0}
+                    onclick={() =>
+                      descriptionEdit({ kind: "remove-only", index })}
+                    >Remove condition</button
+                  >
+                </div>
+              {:else if index > 0}<span class="muted small"
+                  >Shared continuation</span
+                >{/if}
+              <textarea
+                aria-label={section.selectors
+                  ? `Conditional description ${index + 1}`
+                  : index === 0
+                    ? "Description"
+                    : `Shared description ${index + 1}`}
+                rows="2"
+                use:growDescription={section.text}
+                bind:value={section.text}
+                onfocus={() => (activeDescriptionIndex = index)}
+                onblur={() => (activeDescriptionIndex = null)}
+                oninput={(e) => {
+                  void descriptionEdit({
+                    kind: "text",
+                    index,
+                    value: e.currentTarget.value,
+                  });
+                }}></textarea>
+            </div>
+          {/if}
+        {/each}
+        <small class="muted"
+          >Each agent’s rendered description must be 1–1024 characters.</small
+        >
+      </div>
       <div class="targeting">
         <p class="eyebrow">
           APPLIES TO <span>Leave a group empty for everyone</span>
@@ -497,7 +579,8 @@
       <details class="advanced">
         <summary>Advanced <span>Per-agent frontmatter</span></summary>
         <p class="muted">
-          Extra fields for one agent. Identity and description stay shared.
+          Extra fields for one agent. Use the description’s “Only for…” control
+          for conditional text.
         </p>
         {#each Object.entries(extras) as [agent, entries]}{#each Object.entries(entries) as [key, value]}<div
               class="key-value-row"
@@ -607,7 +690,14 @@
             Preview will return when the errors are fixed.
           </p>{:else if !preview.length}<p class="muted">
             This skill does not apply to this agent and machine.
-          </p>{:else}{#each (preview.find((f) => f.path === "SKILL.md")?.body ?? "").split("\n") as line, index}<div
+          </p>{:else}<div
+            class="preview-description"
+            aria-label="Rendered description"
+          >
+            <span class="eyebrow">DESCRIPTION</span>
+            <p>{renderedDescription}</p>
+          </div>
+          {#each (preview.find((f) => f.path === "SKILL.md")?.body ?? "").split("\n") as line, index}<div
               class:changed-line={!!line.trim() && changedLines.includes(index)}
             >
               {line || " "}
@@ -647,6 +737,31 @@
       picker = null;
     }}
   />{/if}
+{#if picker === "description-only"}<OnlyPicker
+    {agents}
+    {machines}
+    applyDisabled={descriptionIndex === null && !descriptionText.trim()}
+    initial={descriptionIndex === null
+      ? {}
+      : (descriptionSections[descriptionIndex].selectors ?? {})}
+    onclose={() => (picker = null)}
+    onapply={(selectors) => {
+      if (descriptionIndex === null && !descriptionText.trim()) return;
+      void descriptionEdit(
+        descriptionIndex === null
+          ? { kind: "append", value: descriptionText, selectors }
+          : { kind: "only", index: descriptionIndex, selectors },
+      );
+      picker = null;
+    }}
+  >
+    {#if descriptionIndex === null}<label
+        >Additional description text<textarea
+          aria-label="Additional description text"
+          bind:value={descriptionText}
+          rows="3"></textarea></label
+      >{/if}
+  </OnlyPicker>{/if}
 {#if picker === "value"}<Dialog
     title="Insert a value"
     onclose={() => (picker = null)}
