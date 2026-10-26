@@ -165,7 +165,7 @@
         >
       </div>{/each}
   </div>
-  {#if !visible.length}<div class="empty-state">
+  {#if !workspace.skills_error && !visible.length}<div class="empty-state">
       <h2>
         {workspace.skills.length ? "No matching skills" : "No skills yet"}
       </h2>

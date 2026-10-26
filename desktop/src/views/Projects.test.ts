@@ -56,7 +56,5 @@ test("reports an unavailable list instead of claiming zero skills", () => {
   render(Projects, { workspace, ...callbacks() });
   expect(screen.getAllByText("Skill count unavailable")).toHaveLength(2);
   expect(screen.queryByText("0 skills", { exact: true })).toBeNull();
-  expect(screen.getAllByRole("alert")[0]).toHaveTextContent(
-    workspace.skills_error,
-  );
+  expect(screen.getByRole("alert")).toHaveTextContent(workspace.skills_error);
 });

@@ -61,6 +61,9 @@
     </div>
     <button class="primary" onclick={choose}>＋ Add project…</button>
   </div>
+  {#if workspace.skills_error}<p role="alert" class="error-message">
+      {workspace.skills_error}
+    </p>{/if}
   <div class="project-grid">
     {#each workspace.plan.projects as project}
       {@const skillCount = workspace.skills.filter(
@@ -84,9 +87,6 @@
             ? "Skill count unavailable"
             : `${skillCount} ${skillCount === 1 ? "skill" : "skills"}`}
         </p>
-        {#if workspace.skills_error}<p role="alert" class="error-message">
-            {workspace.skills_error}
-          </p>{/if}
         <p class="muted">
           {#if project.changed_files === 0 && project.outgoing_commits === 0}
             No uncommitted or unpushed changes

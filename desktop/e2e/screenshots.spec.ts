@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { fixtureIPC } from "../tests/fixture";
+import { fixtureIPC, projectWorkspace } from "../tests/fixture";
 import { installFixture } from "./helpers";
 test("all main screens", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -261,7 +261,8 @@ test("all main screens", async ({ page }) => {
         .getByLabel("User key gopass entry")
         .fill("pushover/codex-approvals/user-key");
     }
-    await capture(file);
+    // Project counts use a dedicated populated fixture below.
+    if (screen !== "Projects") await capture(file);
     if (screen === "Review changes" || screen === "Agents & machines") {
       await captureOverview(file);
     }
@@ -293,4 +294,23 @@ test("all main screens", async ({ page }) => {
   await page.getByRole("button", { name: "Retry refresh" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test("project cards with source skills", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-10-16T18:00:10Z") });
+  const workspace = projectWorkspace();
+  await installFixture(page, (cmd, args) =>
+    cmd === "read_workspace" ? workspace : fixtureIPC(cmd, args),
+  );
+  await page.goto("/");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Projects/ })
+    .click();
+  await expect(page.getByText("2 skills", { exact: true })).toBeVisible();
+  mkdirSync("../docs/screenshots", { recursive: true });
+  await page.screenshot({
+    path: "../docs/screenshots/projects-dark.png",
+    fullPage: true,
+  });
 });

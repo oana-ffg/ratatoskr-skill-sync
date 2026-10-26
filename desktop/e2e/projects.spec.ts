@@ -43,25 +43,39 @@ test("project cards show skill totals and View skills opens the matching count",
   ).toBeVisible();
 });
 
-test("a failed skill read never masquerades as an empty project or library", async ({
-  page,
-}) => {
-  const workspace = projectWorkspace();
-  workspace.skills = [];
-  workspace.skills_error =
-    "Cannot list source skills: source folder is unreadable";
-  await installFixture(page, (cmd, args) =>
-    cmd === "read_workspace" ? workspace : fixtureIPC(cmd, args),
-  );
-  await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "Skills", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("alert")).toContainText(workspace.skills_error);
-  await page
-    .getByRole("navigation")
-    .getByRole("button", { name: /Projects/ })
-    .click();
-  await expect(page.getByText("Skill count unavailable")).toHaveCount(2);
-  await expect(page.getByText("0 skills", { exact: true })).toHaveCount(0);
-});
+for (const projectCount of [0, 2]) {
+  test(`a failed skill read never masquerades as an empty library (${projectCount} projects)`, async ({
+    page,
+  }) => {
+    const workspace = projectWorkspace();
+    workspace.plan.projects = workspace.plan.projects.slice(0, projectCount);
+    workspace.skills = [];
+    workspace.skills_error =
+      "Cannot list source skills: source folder is unreadable";
+    await installFixture(page, (cmd, args) =>
+      cmd === "read_workspace" ? workspace : fixtureIPC(cmd, args),
+    );
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", { name: "Skills", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText(workspace.skills_error);
+    await expect(page.getByText("No skills yet", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByText(
+        "Add a skill to share it across your agents and machines.",
+      ),
+    ).toHaveCount(0);
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: /Projects/ })
+      .click();
+    await expect(page.getByText("Skill count unavailable")).toHaveCount(
+      projectCount,
+    );
+    await expect(page.getByText("0 skills", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("alert")).toContainText(workspace.skills_error);
+  });
+}
