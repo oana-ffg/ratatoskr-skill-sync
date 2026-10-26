@@ -1,5 +1,11 @@
 # Releases and signed updates
 
+## v0.2.16 release notes
+
+- Require Apple Developer ID signing and notarization for official macOS release builds, including verification of the desktop app and bundled helper. Release automation stops if publisher credentials or notarization acceptance are missing.
+- Use `com.firefungames.ratatoskr` as the macOS bundle identifier while preserving existing configuration, update history, restart intent and background-job continuity. Windows identity and the update-signature trust root remain unchanged.
+- Prepare reviewable draft releases using credentials restricted to the main-branch `release` environment. Real signed-artifact and old-install update acceptance are still required before publication.
+
 ## v0.2.15 release notes
 
 - Show the actual number of skills on each project card, independently of uncommitted files and unpushed commits. Clean projects say “No uncommitted or unpushed changes”. Counts include disabled skills.
