@@ -1169,6 +1169,11 @@ nav button.active {
 .project-card {
   margin: 0;
 }
+.project-skill-count {
+  font-size: 20px;
+  font-weight: 650;
+  margin: 8px 0;
+}
 .project-symbol {
   font-size: 32px;
   color: var(--accent);

@@ -38,6 +38,7 @@ pub(crate) struct Snapshot {
     config_text: String,
     plan: Plan,
     skills: Vec<SkillEntry>,
+    skills_error: Option<String>,
     helper: Option<PathBuf>,
     helper_error: Option<String>,
     jobs: core::JobStatus,
@@ -90,11 +91,14 @@ fn snapshot() -> Reply<Snapshot> {
             .map(|root| core::project_status(root))
             .collect(),
     });
-    let skills = core::list_skills(&settings).unwrap_or_else(|error| {
-        plan.conflicts
-            .push(format!("Cannot list source skills: {error:#}"));
-        vec![]
-    });
+    let (skills, skills_error) = match core::list_skills(&settings) {
+        Ok(skills) => (skills, None),
+        Err(error) => {
+            let message = format!("Cannot list source skills: {error:#}");
+            plan.conflicts.push(message.clone());
+            (vec![], Some(message))
+        }
+    };
     let source_files = core::source_files(&settings).unwrap_or_else(|error| {
         plan.conflicts
             .push(format!("Cannot list source configuration: {error:#}"));
@@ -117,6 +121,7 @@ fn snapshot() -> Reply<Snapshot> {
         config_path: path,
         plan,
         skills,
+        skills_error,
         helper: helper.as_ref().ok().cloned(),
         helper_error: helper.err().map(|e| format!("{e:#}")),
         jobs: core::job_status(&settings).map_err(|e| format!("{e:#}"))?,

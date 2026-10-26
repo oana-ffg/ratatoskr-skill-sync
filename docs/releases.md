@@ -1,5 +1,11 @@
 # Releases and signed updates
 
+## v0.2.15 release notes
+
+- Show the actual number of skills on each project card, independently of uncommitted files and unpushed commits. Clean projects say “No uncommitted or unpushed changes”. Counts include disabled skills.
+- Make the library heading count follow the selected project and search filter, matching “View skills”. Report an unreadable skill list as unavailable instead of displaying a false zero.
+- Extend Chromium/WebKit UI regression tests to cover project totals, scoped browsing, search counts, and failed skill reads.
+
 ## v0.2.14 release notes
 
 - Defer workspace refresh quietly during editing. Ordinary edits no longer trigger a red freshness warning; actual refresh failures still show the reason and Retry.

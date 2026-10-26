@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { fixture, fixtureIPC } from "../tests/fixture";
+import { fixtureIPC } from "../tests/fixture";
 import { installFixture } from "./helpers";
 test("all main screens", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });

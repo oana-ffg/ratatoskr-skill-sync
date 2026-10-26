@@ -6,6 +6,8 @@ PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for 
 
 `read_workspace()` rebuilds the snapshot from current on-disk settings, machine mode, plan, job history and legacy copies; it has no resident snapshot cache. The frontend serializes automatic reads, records their start time for the header, defers them while drafts or mutations are active, and visibly retains the last good time on failure. Activity consumes this shared snapshot rather than a separate jobs read.
 
+The snapshot's `skills_error` is null when its skill list was read successfully. A non-null message means `skills` is unavailable, not an empty list; the UI shows the error and suppresses numeric skill counts.
+
 `workspace-window-visible` is a native window event with a boolean payload. The shared native open path emits `true` after show/unminimize/focus; macOS close-to-hide and Windows close-to-tray emit `false` after hiding. Native focus and resize events additionally cover ordinary focus and minimize/restore. The frontend confirms native visibility before refreshing.
 
 ## Conflict review and recovery
