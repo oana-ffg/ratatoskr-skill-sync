@@ -41,6 +41,7 @@ test("long edits survive refresh ticks and refocus without error banners", async
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByText("Refresh paused while editing")).toHaveCount(0);
   await expect(page.getByText("Status may be out of date")).toHaveCount(0);
+  expect(reads).toBe(before);
   await page.getByRole("button", { name: "Discard", exact: true }).click();
   await expect.poll(() => reads).toBeGreaterThan(before);
   await expect(
@@ -101,7 +102,7 @@ test("invalid saves explain the actual error, preserve the draft, and recover af
   );
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText(
-    /conditional|unclosed|closing/i,
+    "Fix conditional-block errors before saving",
   );
   expect(backend.document.markdown).toBe(original);
   await expect(
