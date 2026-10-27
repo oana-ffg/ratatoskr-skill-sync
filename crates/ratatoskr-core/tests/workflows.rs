@@ -1170,9 +1170,21 @@ fn windows_project_lookup_and_removal_accept_equivalent_path_spellings() {
         )
         .unwrap_or_else(|error| panic!("{spelling}: {error:#}"));
     }
+    apply(&settings).unwrap();
+    assert_eq!(owned_project_roots(&settings), 1);
     let removal = PathBuf::from(spellings.last().unwrap());
     ratatoskr_core::remove_project(&config, &removal).unwrap();
     assert!(load(&config).unwrap().projects.is_empty());
+    assert_eq!(owned_project_roots(&settings), 0);
+}
+
+fn owned_project_roots(settings: &Settings) -> usize {
+    let manifest = settings
+        .state_dir
+        .join(&settings.machine)
+        .join("manifest.json");
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
+    value["project_roots"].as_object().unwrap().len()
 }
 
 #[test]
@@ -1184,7 +1196,12 @@ fn project_removal_refuses_unregistered_roots_and_accepts_deleted_registered_roo
     let config = f.root.join("config.toml");
     save(&config, &f.settings).unwrap();
     add_project(&config, &project, "agent-skills").unwrap();
-    let registered = load(&config).unwrap().projects;
+    let settings = load(&config).unwrap();
+    let registered = settings.projects.clone();
+    let markdown = ratatoskr_core::new_skill_markdown("project-review", "Review project").unwrap();
+    ratatoskr_core::create_skill(&settings, Some(&project), "project-review", &markdown).unwrap();
+    apply(&settings).unwrap();
+    assert_eq!(owned_project_roots(&settings), 1);
     let unregistered = f.root.join("unregistered");
     fs::create_dir(&unregistered).unwrap();
     let error = ratatoskr_core::remove_project(&config, &unregistered)
@@ -1198,6 +1215,7 @@ fn project_removal_refuses_unregistered_roots_and_accepts_deleted_registered_roo
     fs::remove_dir_all(&project).unwrap();
     ratatoskr_core::remove_project(&config, &registered[0]).unwrap();
     assert!(load(&config).unwrap().projects.is_empty());
+    assert_eq!(owned_project_roots(&settings), 0);
 }
 
 #[test]
