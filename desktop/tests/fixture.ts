@@ -8,6 +8,7 @@ import type {
   Resource,
   ValueOption,
   LocalSettings,
+  SourceDocument,
 } from "../src/api";
 const binary = resolve(
   "..",
@@ -108,6 +109,32 @@ export function editorFixture() {
       if (cmd === "read_source_skill") return document;
       if (cmd === "save_skill_draft") {
         document = oracle(cmd, { ...args, current: document }) as SkillDocument;
+        return fixture.workspace;
+      }
+      if (cmd === "archive_source_skill") {
+        const workspace = structuredClone(fixture.workspace);
+        workspace.skills = workspace.skills.filter((s) => s.name !== args.name);
+        return { path: oracle(cmd, args), workspace };
+      }
+      return fixtureIPC(cmd, args);
+    },
+  };
+}
+
+/** Stateful global instructions bridge; save goes through the Rust core and reads disk back. */
+export function instructionsFixture() {
+  let document = oracle("read_global_instructions") as SourceDocument;
+  return {
+    get document() {
+      return document;
+    },
+    invoke(cmd: string, args: Record<string, unknown> = {}): unknown {
+      if (cmd === "read_global_instructions") return document;
+      if (cmd === "save_global_instructions") {
+        document = oracle(cmd, {
+          ...args,
+          current: document.text,
+        }) as SourceDocument;
         return fixture.workspace;
       }
       return fixtureIPC(cmd, args);

@@ -155,6 +155,17 @@ test("all main screens", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Save", exact: true }),
   ).toHaveCount(0);
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Global instructions/ })
+    .click();
+  await page.clock.runFor(250);
+  await expect(page.locator(".status-pill.success")).toHaveText("✓ Valid");
+  await expect(page.locator(".only-header").first()).toBeVisible();
+  await expect(page.getByLabel("Rendered preview")).toContainText(
+    "Run commands inside the sandbox",
+  );
+  await capture("global-instructions");
   for (const [screen, file] of [
     ["Review changes", "review-changes"],
     ["Projects", "projects"],

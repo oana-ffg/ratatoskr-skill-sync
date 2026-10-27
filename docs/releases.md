@@ -2,6 +2,9 @@
 
 ## v0.2.16 release notes
 
+- Add a **Global instructions** screen for the shared `global/AGENTS.md`, with the skill editor's conditions, values and live per-agent × machine preview, including each agent's destination file. Saving checks every machine profile and refuses new problems, blank text or a stale source. The generic source save no longer accepts this file because it checked only the current machine.
+- Restore **Archive** in the skill editor. It moves the skill into `.ratatoskr-archive` without deleting anything and shows the archive path; installed copies are removed on the next Apply. Archiving from the CLI or desktop is now refused while an apply is running.
+- Remove nine unused desktop commands left over from the redesign. Newer commands or the workspace snapshot already cover them.
 - Require Apple Developer ID signing and notarization for official macOS release builds, including verification of the desktop app and bundled helper. Release automation stops if publisher credentials or notarization acceptance are missing.
 - Use `com.firefungames.ratatoskr` as the macOS bundle identifier while preserving existing configuration, update history, restart intent and background-job continuity. Windows identity and the update-signature trust root remain unchanged.
 - Build candidates in CI, then sign and notarize the Mac artifacts on a local publisher Mac. Apple private keys stay in the local encrypted secret manager. Real signed-artifact and old-install update acceptance are still required before publication.

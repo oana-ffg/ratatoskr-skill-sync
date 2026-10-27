@@ -47,6 +47,11 @@ export interface EditorView {
   frontmatter: Range;
   metadata: Table;
 }
+export interface SourceDocument {
+  file: string;
+  text: string;
+  hash: string;
+}
 export interface StructuredSource {
   file: string;
   hash: string;
@@ -240,6 +245,23 @@ export const api = {
       "save_structured_source",
       source as unknown as Record<string, unknown>,
     ),
+  readInstructions: () => invoke<SourceDocument>("read_global_instructions"),
+  saveInstructions: (markdown: string, expectedHash: string) =>
+    invoke<Snapshot>("save_global_instructions", { markdown, expectedHash }),
+  analyzeInstructions: (markdown: string, machine: string, harness: string) =>
+    invoke<Analysis>("analyze_global_instructions", {
+      markdown,
+      machine,
+      harness,
+    }),
+  previewInstructions: (markdown: string, machine: string, harness: string) =>
+    invoke<string>("preview_global_instructions", {
+      markdown,
+      machine,
+      harness,
+    }),
+  instructionsPath: (machine: string, harness: string) =>
+    invoke<string>("preview_global_instructions_path", { machine, harness }),
   folder: () => invoke<string | null>("choose_folder"),
   command: <T>(command: string, args?: Record<string, unknown>) =>
     invoke<T>(command, args),

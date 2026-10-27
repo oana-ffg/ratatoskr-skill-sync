@@ -2,6 +2,7 @@
 use crate::{
     Settings,
     config::{atomic_write, identifier, no_symlinks, relative},
+    content::GLOBAL_INSTRUCTIONS,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -649,14 +650,36 @@ pub fn save_skill_draft(
     let after = crate::engine::validate_source(&candidate.source)?;
     let skill_path = format!("skills/{name}");
     let prefix = format!("{skill_path}/");
-    let mut regressions = Vec::new();
-    // Existing remote problems must not block incremental repairs, while new
-    // failures of this skill must be checked on every machine and harness.
-    for problem in after
-        .problems
-        .iter()
-        .filter(|p| p.path == skill_path || p.path.starts_with(&prefix))
+    ensure_no_new_problems(
+        &before,
+        &after,
+        |path| path == skill_path || path.starts_with(&prefix),
+        "Skill change",
+    )?;
+    let root = selected.join("skills").join(name);
+    if markdown != current.markdown {
+        atomic_write(&root.join("SKILL.md"), markdown.as_bytes())?;
+    }
+    if metadata != current.metadata
+        && let Err(error) = atomic_write(&root.join("skill.toml"), metadata.as_bytes())
     {
+        atomic_write(&root.join("SKILL.md"), current.markdown.as_bytes())
+            .context("Metadata save failed and Markdown rollback failed")?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Existing problems elsewhere must not block incremental repairs, while new
+/// failures in the edited source are checked on every machine and harness.
+fn ensure_no_new_problems(
+    before: &crate::ValidationReport,
+    after: &crate::ValidationReport,
+    edited: impl Fn(&str) -> bool,
+    change: &str,
+) -> Result<()> {
+    let mut regressions = Vec::new();
+    for problem in after.problems.iter().filter(|p| edited(&p.path)) {
         for context in &problem.contexts {
             let existing = before.problems.iter().any(|old| {
                 old.path == problem.path
@@ -676,21 +699,65 @@ pub fn save_skill_draft(
     }
     ensure!(
         regressions.is_empty(),
-        "Skill change introduces validation errors: {}",
+        "{change} introduces validation errors: {}",
         regressions.join("; ")
     );
-    let root = selected.join("skills").join(name);
-    if markdown != current.markdown {
-        atomic_write(&root.join("SKILL.md"), markdown.as_bytes())?;
-    }
-    if metadata != current.metadata
-        && let Err(error) = atomic_write(&root.join("skill.toml"), metadata.as_bytes())
-    {
-        atomic_write(&root.join("SKILL.md"), current.markdown.as_bytes())
-            .context("Metadata save failed and Markdown rollback failed")?;
-        return Err(error);
-    }
     Ok(())
+}
+
+/// Shared global instructions; an absent file reads as empty text.
+pub fn read_global_instructions(settings: &Settings) -> Result<crate::SourceDocument> {
+    crate::read_source_file(settings, GLOBAL_INSTRUCTIONS)
+}
+
+/// Validates the draft against every machine × harness before replacing
+/// `global/AGENTS.md`; a missing file is created when `expected_hash` is the empty hash.
+pub fn save_global_instructions(
+    settings: &Settings,
+    markdown: &str,
+    expected_hash: &str,
+) -> Result<()> {
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    let current = read_global_instructions(settings)?;
+    ensure!(
+        current.hash == expected_hash,
+        "Source changed; reload before saving"
+    );
+    ensure!(!markdown.trim().is_empty(), "Global instructions are empty");
+    let (_, diagnostics) = crate::template::parse_blocks(markdown)?;
+    ensure!(
+        diagnostics.is_empty(),
+        "Fix conditional-block errors before saving"
+    );
+    let (_temp, candidate) = crate::content::draft_workspace(settings, &settings.source)?;
+    let before = crate::engine::validate_source(&candidate.source)?;
+    atomic_write(
+        &candidate.source.join(GLOBAL_INSTRUCTIONS),
+        markdown.as_bytes(),
+    )?;
+    crate::engine::validate_sources(&candidate)?;
+    let after = crate::engine::validate_source(&candidate.source)?;
+    ensure_no_new_problems(
+        &before,
+        &after,
+        |path| path == GLOBAL_INSTRUCTIONS,
+        "Global instructions change",
+    )?;
+    atomic_write(
+        &settings.source.join(GLOBAL_INSTRUCTIONS),
+        markdown.as_bytes(),
+    )
+}
+
+/// Renders a global instructions draft exactly as deployment does for one target.
+pub fn preview_global_instructions(
+    settings: &Settings,
+    markdown: &str,
+    machine: &str,
+    harness: &str,
+) -> Result<String> {
+    let (context, _) = preview_target(settings, machine, harness)?;
+    crate::engine::render_global_instructions(markdown, &context)
 }
 
 pub fn rename_skill(
@@ -852,32 +919,51 @@ pub fn skill_target_statuses(
     Ok(result)
 }
 
-pub fn preview_install_path(
+/// The template context and `harnesses.toml` definition of an enabled machine × harness.
+fn preview_target(
     settings: &Settings,
-    project: Option<&Path>,
-    name: &str,
     machine: &str,
     harness: &str,
-) -> Result<PathBuf> {
-    identifier(name)?;
-    let contexts = crate::engine::template_contexts(settings)?;
-    let (_, _, context) = contexts
-        .iter()
+) -> Result<(toml::Table, toml::Table)> {
+    let (_, _, context) = crate::engine::template_contexts(settings)?
+        .into_iter()
         .find(|(m, h, _)| m == machine && h == harness)
         .context("Select an enabled preview target")?;
     let definitions = crate::structured_source(settings, "harnesses.toml")?;
-    let target = definitions.values.get(harness).context("Unknown agent")?;
-    let text = |key: &str| {
-        target
-            .get(key)
-            .and_then(|v| v.as_str())
-            .with_context(|| format!("Agent lacks {key}"))
-    };
-    let mode = context
+    let target = definitions
+        .values
+        .get(harness)
+        .and_then(|v| v.as_table())
+        .context("Unknown agent")?
+        .clone();
+    Ok((context, target))
+}
+
+fn definition_text<'a>(target: &'a toml::Table, key: &str) -> Result<&'a str> {
+    target
+        .get(key)
+        .and_then(|v| v.as_str())
+        .with_context(|| format!("Agent lacks {key}"))
+}
+
+fn staging(context: &toml::Table) -> bool {
+    context
         .get("mode")
         .and_then(|v| v.as_str())
-        .unwrap_or("staging");
-    let base = if mode == "staging" {
+        .unwrap_or("staging")
+        == "staging"
+}
+
+/// The agent's output root on `machine`, mirroring the deployment renderer.
+fn preview_root(
+    settings: &Settings,
+    project: Option<&Path>,
+    machine: &str,
+    harness: &str,
+    context: &toml::Table,
+    target: &toml::Table,
+) -> Result<PathBuf> {
+    Ok(if staging(context) {
         let staging = settings.state_dir.join(machine).join("staging");
         if let Some(project) = project {
             use sha2::{Digest, Sha256};
@@ -892,7 +978,7 @@ pub fn preview_install_path(
             staging.join(harness)
         }
     } else if let Some(project) = project {
-        project.join(relative(text("project_root")?)?)
+        project.join(relative(definition_text(target, "project_root")?)?)
     } else {
         let os = context
             .get("os")
@@ -904,8 +990,39 @@ pub fn preview_install_path(
             .and_then(|v| v.as_str())
             .context("Agent lacks OS root")?;
         PathBuf::from(crate::template::render(root, context, false)?)
+    })
+}
+
+pub fn preview_install_path(
+    settings: &Settings,
+    project: Option<&Path>,
+    name: &str,
+    machine: &str,
+    harness: &str,
+) -> Result<PathBuf> {
+    identifier(name)?;
+    let (context, target) = preview_target(settings, machine, harness)?;
+    let root = preview_root(settings, project, machine, harness, &context, &target)?;
+    Ok(root
+        .join(relative(definition_text(&target, "skills_dir")?)?)
+        .join(name))
+}
+
+/// Where `machine` installs `harness`'s global instructions file, including a
+/// separate live `global_root` such as Codex's.
+pub fn preview_global_instructions_path(
+    settings: &Settings,
+    machine: &str,
+    harness: &str,
+) -> Result<PathBuf> {
+    let (context, target) = preview_target(settings, machine, harness)?;
+    let root = match target.get("global_root").and_then(|v| v.as_str()) {
+        Some(root) if !staging(&context) => {
+            PathBuf::from(crate::template::render(root, &context, false)?)
+        }
+        _ => preview_root(settings, None, machine, harness, &context, &target)?,
     };
-    Ok(base.join(relative(text("skills_dir")?)?).join(name))
+    Ok(root.join(relative(definition_text(&target, "global_file")?)?))
 }
 
 pub fn new_skill_markdown(name: &str, description: &str) -> Result<String> {

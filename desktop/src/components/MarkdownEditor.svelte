@@ -26,6 +26,7 @@
   import { present, structuredDecorations } from "../editor/decorations";
   import { type Analysis, type Block, type Range } from "../api";
   let {
+    label,
     value,
     analysis,
     frontmatter,
@@ -34,6 +35,7 @@
     onselection,
     onblock,
   }: {
+    label: string;
     value: string;
     analysis: Analysis;
     frontmatter: Range | null;
@@ -108,7 +110,7 @@
           EditorView.lineWrapping,
           structuredDecorations,
           EditorView.contentAttributes.of({
-            "aria-label": "Skill Markdown editor",
+            "aria-label": label,
           }),
           EditorView.updateListener.of((update) => {
             const sourceText = update.state.field(sourceField);

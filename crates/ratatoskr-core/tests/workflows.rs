@@ -1035,9 +1035,19 @@ fn source_editor_validates_before_save_and_preserves_concurrent_edits() {
     assert_eq!(plan(&f.settings).unwrap().skills, 0);
     ratatoskr_core::disable_skill(&f.settings, None, "review-code", false).unwrap();
     assert_eq!(plan(&f.settings).unwrap().skills, 1);
+    apply(&f.settings).unwrap();
     let archived = ratatoskr_core::archive_skill(&f.settings, None, "review-code").unwrap();
     assert!(archived.join("SKILL.md").is_file());
     assert!(!f.settings.source.join("skills/review-code").exists());
+    // Archiving keeps the source but retires the installed copy on the next apply.
+    let retired = plan(&f.settings).unwrap();
+    assert_eq!(retired.skills, 0);
+    assert!(
+        retired
+            .changes
+            .iter()
+            .any(|c| c.action == "remove" && c.path == f.output().join("SKILL.md"))
+    );
     ratatoskr_core::create_skill(&f.settings, None, "review-code", &original.markdown).unwrap();
     assert_eq!(plan(&f.settings).unwrap().skills, 1);
 }
@@ -2678,4 +2688,73 @@ fn source_validation_labels_non_string_harnesses_with_the_profile_and_value() {
     assert_eq!(report.profiles[0].harnesses[0].harness, "codex");
     assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);
     assert!(!f.settings.state_dir.exists());
+}
+
+#[test]
+fn global_instructions_save_validates_every_profile_and_previews_each_target() {
+    use ratatoskr_core::{
+        analyze_global_instructions, preview_global_instructions, preview_global_instructions_path,
+        read_global_instructions, save_global_instructions,
+    };
+    let f = Fixture::new();
+    f.write("harnesses.toml", "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\nglobal_root='{{af:home}}/.codex-home'\n[codex.roots]\nmacos='{{af:home}}/.codex'\nwindows='{{af:home}}/.codex'\nlinux='{{af:home}}/.codex'\n");
+    f.write("machines/test.toml", "os='macos'\nmode='staging'\nharnesses=['codex']\ncapabilities=[]\n[paths]\nvault='/knowledge'\nnotes='/notes'\n");
+    f.write("machines/remote.toml", "os='windows'\nmode='live'\nhome='Z:\\remote-user'\nharnesses=['codex']\n[paths]\nvault='Z:\\knowledge'\n");
+    let global = f.settings.source.join("global/AGENTS.md");
+    let empty = read_global_instructions(&f.settings).unwrap();
+    assert_eq!(empty.text, "");
+
+    let blank = save_global_instructions(&f.settings, " \n", &empty.hash).unwrap_err();
+    assert!(format!("{blank:#}").contains("Global instructions are empty"));
+    // The current machine renders this value; another profile lacks it.
+    let missing = "Notes live in {{af:paths.notes}}.\n";
+    let error = save_global_instructions(&f.settings, missing, &empty.hash).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("global/AGENTS.md (remote/codex)"),
+        "{error:#}"
+    );
+    assert!(!global.exists());
+
+    let text = "Vault: {{af:paths.vault}}.\n<!-- only machine=test -->\nNotes live in {{af:paths.notes}}.\n<!-- /only -->\n";
+    save_global_instructions(&f.settings, text, &empty.hash).unwrap();
+    assert_eq!(fs::read_to_string(&global).unwrap(), text);
+    assert!(save_global_instructions(&f.settings, "Other.\n", &empty.hash).is_err());
+    assert_eq!(fs::read_to_string(&global).unwrap(), text);
+    let saved = read_global_instructions(&f.settings).unwrap();
+    assert!(
+        ratatoskr_core::write_source_file(&f.settings, "global/AGENTS.md", "Other.\n", &saved.hash)
+            .is_err()
+    );
+
+    let local = preview_global_instructions(&f.settings, text, "test", "codex").unwrap();
+    assert!(local.contains("Vault: /knowledge.") && local.contains("Notes live in /notes."));
+    let remote = preview_global_instructions(&f.settings, text, "remote", "codex").unwrap();
+    assert!(remote.contains("Vault: Z:\\knowledge.") && !remote.contains("Notes"));
+    assert!(
+        analyze_global_instructions(&f.settings, text, "remote", "codex")
+            .unwrap()
+            .diagnostics
+            .is_empty()
+    );
+    let analysis = analyze_global_instructions(&f.settings, missing, "remote", "codex").unwrap();
+    assert!(analysis.diagnostics.iter().any(|d| d.severity == "error"
+        && d.message.contains("Undefined variable: paths.notes")));
+
+    assert_eq!(
+        preview_global_instructions_path(&f.settings, "test", "codex").unwrap(),
+        f.settings.state_dir.join("test/staging/codex/AGENTS.md")
+    );
+    assert_eq!(
+        preview_global_instructions_path(&f.settings, "remote", "codex").unwrap(),
+        PathBuf::from("Z:\\remote-user/.codex-home").join("AGENTS.md")
+    );
+    let staged = plan(&f.settings).unwrap();
+    assert!(staged.changes.iter().any(|change| {
+        change.path == f.settings.state_dir.join("test/staging/codex/AGENTS.md")
+            && change
+                .diff
+                .as_deref()
+                .unwrap_or("")
+                .contains("Notes live in /notes.")
+    }));
 }

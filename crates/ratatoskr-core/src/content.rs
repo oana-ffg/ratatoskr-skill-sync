@@ -34,11 +34,14 @@ pub struct SourceDocument {
     pub hash: String,
 }
 
+/// Shared global instructions, rendered to each harness's configured global file.
+pub(crate) const GLOBAL_INSTRUCTIONS: &str = "global/AGENTS.md";
+
 fn config_file(value: &str) -> Result<PathBuf> {
     let path = relative(value)?;
     ensure!(
         value == "harnesses.toml"
-            || value == "global/AGENTS.md"
+            || value == GLOBAL_INSTRUCTIONS
             || (path.parent() == Some(Path::new("machines"))
                 && path.extension().is_some_and(|x| x == "toml")),
         "Choose harnesses.toml, a machine profile, or global/AGENTS.md"
@@ -48,7 +51,7 @@ fn config_file(value: &str) -> Result<PathBuf> {
 
 pub fn source_files(settings: &Settings) -> Result<Vec<String>> {
     settings.validate()?;
-    let mut result = vec!["harnesses.toml".into(), "global/AGENTS.md".into()];
+    let mut result = vec!["harnesses.toml".into(), GLOBAL_INSTRUCTIONS.into()];
     for entry in fs::read_dir(settings.source.join("machines"))? {
         let entry = entry?;
         if entry.path().extension().is_some_and(|x| x == "toml") {
@@ -82,6 +85,11 @@ pub fn write_source_file(
     expected_hash: &str,
 ) -> Result<()> {
     let path = config_file(file)?;
+    // This save only validates the current machine; instructions need every profile.
+    ensure!(
+        file != GLOBAL_INSTRUCTIONS,
+        "Save global instructions with save_global_instructions"
+    );
     if path.extension().is_some_and(|x| x == "toml") {
         let _: toml::Table = toml::from_str(text)?;
     }
@@ -284,6 +292,8 @@ pub fn disable_skill(
 
 pub fn archive_skill(settings: &Settings, project: Option<&Path>, name: &str) -> Result<PathBuf> {
     identifier(name)?;
+    // Keep a concurrent apply from planning against a skill that disappears mid-run.
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let selected = source(settings, project)?;
     let skill = selected.join("skills").join(name);
     no_symlinks(&skill)?;

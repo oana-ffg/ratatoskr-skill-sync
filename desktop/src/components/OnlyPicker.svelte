@@ -33,7 +33,7 @@
 </script>
 
 <Dialog title="Only include this section for…" {onclose}>
-  <p class="muted">Choose where this part of the skill appears.</p>
+  <p class="muted">Choose where this section appears.</p>
   {@render children?.()}
   <Chips
     label="Agents"

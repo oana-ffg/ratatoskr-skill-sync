@@ -734,7 +734,7 @@ fn render_harness(
         }
     }
 
-    let global = content.join("global/AGENTS.md");
+    let global = content.join(crate::content::GLOBAL_INSTRUCTIONS);
     let global_result = render_global(rendering, &global, global_file, result);
     if let Some(rendered) =
         diagnostics.capture(global_result, machine_name, Some(name), None, &global)?
@@ -887,13 +887,19 @@ fn render_global(
                     let text = fs::read_to_string(global)?;
                     !text.contains("{{af:") && !text.contains("<!--")
                 },
-                bytes: render(&fs::read_to_string(global)?, context, true)?.into_bytes(),
+                bytes: render_global_instructions(&fs::read_to_string(global)?, context)?
+                    .into_bytes(),
                 executable: false,
             },
         );
         return Ok(true);
     }
     Ok(false)
+}
+
+/// The single renderer for global instructions, shared by deployment and editor previews.
+pub(crate) fn render_global_instructions(text: &str, context: &toml::Table) -> Result<String> {
+    render(text, context, true)
 }
 
 fn desired(settings: &Settings) -> Result<Desired> {

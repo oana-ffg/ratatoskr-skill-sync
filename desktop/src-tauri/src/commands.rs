@@ -183,25 +183,35 @@ pub(crate) fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
 }
 
 #[tauri::command]
-pub(crate) fn save_configuration(text: String) -> Reply<Snapshot> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    let candidate: Settings = toml::from_str(&text).map_err(|e| e.to_string())?;
-    core::plan(&candidate).map_err(|e| format!("{e:#}"))?;
-    core::save(&config()?, &candidate).map_err(|e| format!("{e:#}"))?;
-    snapshot()
-}
-
-#[tauri::command]
-pub(crate) fn read_source_configuration(file: String) -> Reply<core::SourceDocument> {
-    core::read_source_file(&settings()?, &file).map_err(|e| format!("{e:#}"))
+pub(crate) fn read_global_instructions() -> Reply<core::SourceDocument> {
+    core::read_global_instructions(&settings()?).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn save_source_configuration(
-    file: String,
-    text: String,
-    expected_hash: String,
-) -> Reply<Snapshot> {
-    mutate(|s| core::write_source_file(s, &file, &text, &expected_hash))
+pub(crate) fn save_global_instructions(markdown: String, expected_hash: String) -> Reply<Snapshot> {
+    mutate(|s| core::save_global_instructions(s, &markdown, &expected_hash))
+}
+#[tauri::command]
+pub(crate) fn analyze_global_instructions(
+    markdown: String,
+    machine: String,
+    harness: String,
+) -> Reply<core::TemplateAnalysis> {
+    core::analyze_global_instructions(&settings()?, &markdown, &machine, &harness)
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn preview_global_instructions(
+    markdown: String,
+    machine: String,
+    harness: String,
+) -> Reply<String> {
+    core::preview_global_instructions(&settings()?, &markdown, &machine, &harness)
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+pub(crate) fn preview_global_instructions_path(machine: String, harness: String) -> Reply<PathBuf> {
+    core::preview_global_instructions_path(&settings()?, &machine, &harness)
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -219,24 +229,6 @@ pub(crate) fn read_source_skill(name: String, project: Option<PathBuf>) -> Reply
     core::read_skill(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn save_source_skill(
-    name: String,
-    project: Option<PathBuf>,
-    file: String,
-    text: String,
-    expected_hash: String,
-) -> Reply<Snapshot> {
-    mutate(|s| core::write_skill_file(s, project.as_deref(), &name, &file, &text, &expected_hash))
-}
-#[tauri::command]
-pub(crate) fn new_source_skill(
-    name: String,
-    project: Option<PathBuf>,
-    markdown: String,
-) -> Reply<Snapshot> {
-    mutate(|s| core::create_skill(s, project.as_deref(), &name, &markdown))
-}
-#[tauri::command]
 pub(crate) fn set_skill_enabled(
     name: String,
     project: Option<PathBuf>,
@@ -244,12 +236,19 @@ pub(crate) fn set_skill_enabled(
 ) -> Reply<Snapshot> {
     mutate(|s| core::disable_skill(s, project.as_deref(), &name, !enabled))
 }
+#[derive(Serialize)]
+pub(crate) struct ArchivedSkill {
+    path: PathBuf,
+    workspace: Snapshot,
+}
 #[tauri::command]
-pub(crate) fn archive_source_skill(name: String, project: Option<PathBuf>) -> Reply<String> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    core::archive_skill(&settings()?, project.as_deref(), &name)
-        .map(|p| p.display().to_string())
-        .map_err(|e| format!("{e:#}"))
+pub(crate) fn archive_source_skill(name: String, project: Option<PathBuf>) -> Reply<ArchivedSkill> {
+    let mut path = PathBuf::new();
+    let workspace = mutate(|s| {
+        path = core::archive_skill(s, project.as_deref(), &name)?;
+        Ok(())
+    })?;
+    Ok(ArchivedSkill { path, workspace })
 }
 #[tauri::command]
 pub(crate) fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
@@ -529,15 +528,6 @@ pub(crate) async fn update_desktop(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub(crate) fn save_update_schedule(automatic: bool, time: String) -> Reply<Snapshot> {
-    mutate(|s| {
-        let mut candidate = s.clone();
-        candidate.updates.automatic = automatic;
-        candidate.updates.time = time;
-        core::save(&core::default_config_path()?, &candidate)
-    })
-}
-#[tauri::command]
 pub(crate) fn restart_desktop(app: tauri::AppHandle) -> Reply<()> {
     #[cfg(any(windows, target_os = "macos"))]
     crate::window_lifecycle::prepare_restart(&app).map_err(|e| format!("{e:#}"))?;
@@ -629,23 +619,11 @@ pub(crate) fn analyze_skill(
     markdown: String,
     machine: String,
     harness: String,
-) -> Reply<core::SkillAnalysis> {
+) -> Reply<core::TemplateAnalysis> {
     core::analyze_skill(&settings()?, &name, &markdown, &machine, &harness)
         .map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command]
-pub(crate) fn list_agent_presets() -> Vec<core::AgentPreset> {
-    core::agent_presets()
-}
-#[tauri::command]
-pub(crate) fn list_preview_targets() -> Reply<Vec<core::PreviewTarget>> {
-    core::preview_targets(&settings()?).map_err(|e| format!("{e:#}"))
-}
-#[tauri::command]
-pub(crate) fn detect_helper() -> Reply<PathBuf> {
-    detected_helper().map_err(|e| format!("{e:#}"))
-}
 #[tauri::command]
 pub(crate) fn add_agent_target(
     target: core::AgentTarget,

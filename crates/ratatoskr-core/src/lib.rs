@@ -48,5 +48,6 @@ pub use schedule::{Schedule, install_schedule, remove_schedule, schedule_plan};
 pub use setup::{clone_content, create_content};
 
 pub use template::{
-    SkillAnalysis, SkillBlock, SkillDiagnostic, SkillVariable, TextRange, analyze_skill,
+    TemplateAnalysis, TemplateBlock, TemplateDiagnostic, TemplateVariable, TextRange,
+    analyze_global_instructions, analyze_skill,
 };
