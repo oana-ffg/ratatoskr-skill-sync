@@ -893,16 +893,20 @@ pub fn answer_desktop_request(
     )
 }
 
-/// Run at desktop startup: settle an install that ended with the app restarting.
-/// Returns the settled outcome so the caller can report it like any update result.
+/// Run at desktop startup: settle an install that ended with `app` restarting. Another
+/// copy's request is left untouched. Returns the settled outcome for reporting.
 pub fn finish_desktop_request(
     data: &std::path::Path,
+    app: &std::path::Path,
     running: &str,
     now: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<Option<DesktopRequestOutcome>> {
     let (Some(request), Some(response)) = desktop_request_status(data)? else {
         return Ok(None);
     };
+    if !same_app(&request.app, app) {
+        return Ok(None);
+    }
     let DesktopRequestOutcome::Installing { version } = response.outcome else {
         return Ok(None);
     };
@@ -969,7 +973,10 @@ mod tests {
         assert_eq!(pending_desktop_request(&data, &other).unwrap(), None);
         answer_desktop_request(&data, &first, now, DesktopRequestOutcome::Current).unwrap();
         assert_eq!(pending_desktop_request(&data, &app).unwrap(), None);
-        assert_eq!(finish_desktop_request(&data, "0.2.17", now).unwrap(), None);
+        assert_eq!(
+            finish_desktop_request(&data, &app, "0.2.17", now).unwrap(),
+            None
+        );
 
         // A new request is pending again; the old answer does not satisfy it.
         let second = request_desktop_update(&data, &app, now).unwrap();
@@ -982,11 +989,22 @@ mod tests {
             version: "0.2.17".into(),
         };
         answer_desktop_request(&data, &second, now, installing.clone()).unwrap();
+        // A backup copy starting first never settles this copy's install, whatever its version.
+        for version in ["0.2.17", "0.2.16"] {
+            assert_eq!(
+                finish_desktop_request(&data, &other, version, now).unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            desktop_request_status(&data).unwrap().1.unwrap().outcome,
+            installing
+        );
         let installed = DesktopRequestOutcome::Installed {
             version: "0.2.17".into(),
         };
         assert_eq!(
-            finish_desktop_request(&data, "0.2.17", now).unwrap(),
+            finish_desktop_request(&data, &app, "0.2.17", now).unwrap(),
             Some(installed.clone())
         );
         assert_eq!(
@@ -997,7 +1015,7 @@ mod tests {
         // An installer that left the old version running is reported, not hidden.
         let third = request_desktop_update(&data, &app, now).unwrap();
         answer_desktop_request(&data, &third, now, installing).unwrap();
-        let settled = finish_desktop_request(&data, "0.2.16", now).unwrap();
+        let settled = finish_desktop_request(&data, &app, "0.2.16", now).unwrap();
         assert!(matches!(
             settled,
             Some(DesktopRequestOutcome::Failed { error }) if error.contains("still runs 0.2.16")

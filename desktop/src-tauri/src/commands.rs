@@ -480,7 +480,11 @@ pub(crate) async fn automatic_update(
                 eprintln!("Ratatoskr: {error}");
             }
             if let Err(error) = crate::window_lifecycle::quiet_restart(&app) {
-                return Err(format!("{error:#}"));
+                // The old process keeps running; persist and alert like any update failure.
+                return update_result(
+                    &context,
+                    Err(error.context("Installed the update, but restarting failed")),
+                );
             }
         }
         result
@@ -573,11 +577,31 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
                 (_, Ok(())) => Ok(()),
             },
         );
-        if restart {
+        if let DesktopRequestOutcome::Installing { version } = &outcome {
             if let Err(error) = &reported {
                 eprintln!("Ratatoskr: {error}");
             }
-            crate::window_lifecycle::quiet_restart(&app).map_err(|e| format!("{e:#}"))?;
+            if let Err(error) = crate::window_lifecycle::quiet_restart(&app) {
+                // The old process keeps running: settle the request as failed and alert.
+                let error = format!("Installed {version}, but restarting failed: {error:#}");
+                let answered = core::updates::answer_desktop_request(
+                    &data,
+                    &request,
+                    chrono::Local::now().fixed_offset(),
+                    DesktopRequestOutcome::Failed {
+                        error: error.clone(),
+                    },
+                );
+                return update_result(
+                    &context,
+                    Err(match answered {
+                        Ok(()) => anyhow::anyhow!("{error}"),
+                        Err(write) => anyhow::anyhow!(
+                            "{error}; recording this failure also failed: {write:#}"
+                        ),
+                    }),
+                );
+            }
         }
         reported
     })
@@ -589,8 +613,10 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
 pub(crate) fn settle_requested_update() -> Reply<()> {
     use core::updates::DesktopRequestOutcome;
     let data = core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let settled = core::updates::finish_desktop_request(
         &data,
+        &exe,
         env!("CARGO_PKG_VERSION"),
         chrono::Local::now().fixed_offset(),
     )
