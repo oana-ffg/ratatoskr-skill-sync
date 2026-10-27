@@ -1119,6 +1119,87 @@ fn project_source_lookup_accepts_native_and_simplified_canonical_paths() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_project_lookup_and_removal_accept_equivalent_path_spellings() {
+    let f = Fixture::new();
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    git(&project, &["init", "-b", "main"]);
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    add_project(&config, &project, "agent-skills").unwrap();
+    let settings = load(&config).unwrap();
+    let native = project.canonicalize().unwrap();
+    assert!(native.to_str().unwrap().starts_with("\\\\?\\"));
+    assert_eq!(settings.projects, vec![native.clone()]);
+    let markdown = ratatoskr_core::new_skill_markdown("project-review", "Review project").unwrap();
+    ratatoskr_core::create_skill(&settings, Some(&native), "project-review", &markdown).unwrap();
+    let plain = dunce::canonicalize(&project).unwrap();
+    let plain = plain.to_str().unwrap();
+    let flipped_drive = {
+        let (drive, rest) = plain.split_at(1);
+        let drive = if drive == drive.to_uppercase() {
+            drive.to_lowercase()
+        } else {
+            drive.to_uppercase()
+        };
+        format!("{drive}{rest}")
+    };
+    let spellings = [
+        native.to_str().unwrap().to_owned(),
+        plain.to_owned(),
+        format!("{plain}\\"),
+        flipped_drive.clone(),
+        plain.replace('\\', "/"),
+        format!("{}/", flipped_drive.replace('\\', "/")),
+    ];
+    for spelling in &spellings {
+        let root = PathBuf::from(spelling);
+        let skill = ratatoskr_core::read_skill(&settings, Some(&root), "project-review")
+            .unwrap_or_else(|error| panic!("{spelling}: {error:#}"));
+        assert_eq!(skill.markdown, markdown);
+        ratatoskr_core::preview_skill(
+            &settings,
+            Some(&root),
+            "project-review",
+            &skill.markdown,
+            &skill.metadata,
+            "test",
+            "codex",
+        )
+        .unwrap_or_else(|error| panic!("{spelling}: {error:#}"));
+    }
+    let removal = PathBuf::from(spellings.last().unwrap());
+    ratatoskr_core::remove_project(&config, &removal).unwrap();
+    assert!(load(&config).unwrap().projects.is_empty());
+}
+
+#[test]
+fn project_removal_refuses_unregistered_roots_and_accepts_deleted_registered_roots() {
+    let f = Fixture::new();
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    git(&project, &["init", "-b", "main"]);
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    add_project(&config, &project, "agent-skills").unwrap();
+    let registered = load(&config).unwrap().projects;
+    let unregistered = f.root.join("unregistered");
+    fs::create_dir(&unregistered).unwrap();
+    let error = ratatoskr_core::remove_project(&config, &unregistered)
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("Project is not registered"),
+        "{error:#}"
+    );
+    assert_eq!(load(&config).unwrap().projects, registered);
+    fs::remove_dir_all(&project).unwrap();
+    ratatoskr_core::remove_project(&config, &registered[0]).unwrap();
+    assert!(load(&config).unwrap().projects.is_empty());
+}
+
 #[test]
 fn project_content_renders_with_shared_machine_settings_and_can_be_detached() {
     let f = Fixture::new();

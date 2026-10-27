@@ -58,7 +58,7 @@ From a project's Git root, create an `agent-skills/skills/` source folder, then 
 ratatoskr project add "$PWD"
 ```
 
-`--source` chooses another portable relative source directory. Registration creates `.ratatoskr.toml`; commit it alongside skill sources. Project skills render into each harness's configured `project_root` (default `.<harness>`) and `skills_dir`. Global instructions are not rendered into projects. Staging keeps project output beneath Ratatoskr's state directory. Unregistering preserves the marker, source, and generated output, and releases ownership of that project's output.
+`--source` chooses another portable relative source directory. Registration creates `.ratatoskr.toml`; commit it alongside skill sources. Project skills render into each harness's configured `project_root` (default `.<harness>`) and `skills_dir`. Global instructions are not rendered into projects. Staging keeps project output beneath Ratatoskr's state directory. Unregistering preserves the marker, source, and generated output, and releases ownership of that project's output. `--project` arguments and `project remove` resolve the root the same way as registration, so any spelling of a registered root works, including Windows plain or verbatim `\\?\` forms. Removing a root that is not registered fails; a registered root that no longer exists is removed by its registered path.
 
 ## Desktop saves and content Git state
 

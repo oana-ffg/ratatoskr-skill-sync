@@ -387,8 +387,9 @@ pub fn add_project(config_path: &Path, root: &Path, source: &str) -> Result<Proj
 pub fn remove_project(config_path: &Path, root: &Path) -> Result<()> {
     let mut settings = load(config_path)?;
     ensure!(root.is_absolute(), "Use an absolute project root");
-    crate::engine::detach_project(&settings, root)?;
-    settings.projects.retain(|p| p != root);
+    let root = settings.registered_project(root)?;
+    crate::engine::detach_project(&settings, &root)?;
+    settings.projects.retain(|p| *p != root);
     save(config_path, &settings)
 }
 

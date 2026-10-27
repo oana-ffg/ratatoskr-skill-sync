@@ -1,5 +1,12 @@
 # Releases and signed updates
 
+## v0.2.18 release notes
+
+- **Desktop edits to the central content checkout are now saved, committed and pushed to the deploy branch's upstream automatically.** This applies to global instructions, skills, configuration, agent targets, conflict copy-back and source restoration. Only the changed paths are committed, with your normal Git identity, signing and hooks. A failed commit keeps the saved file. A failed push keeps the local commit and reports **saved and committed locally but NOT pushed**. A persistent warning shows uncommitted and unpushed content, and **Push now** retries. Project edits and all CLI `skill` commands remain write-only.
+- `ratatoskr status` reports central content Git state and exits 1 for uncommitted files, unpushed commits or unknown upstream state. Sync refuses unpushed central commits as an alerted problem instead of deploying unpublished content.
+- Fix "Project is not registered" on Windows for `skill` commands that take `--project`, such as `preview`, `read`, `create` and `write`, and for `project remove`. Registration stores verbatim `\\?\` paths, and these commands now resolve a project the same way. The plain or verbatim form, a trailing separator, either drive-letter case and forward slashes all work.
+- `project remove` now fails for a root that is not registered, instead of reporting success without changing anything. On Windows, a root spelled differently from the registry was previously left registered with its output ownership intact. A registered root that no longer exists can still be removed by its registered path, as shown by `status`.
+
 ## v0.2.17 release notes
 
 - Search skills and global instructions with Ctrl/⌘F or the toolbar's Find button, including next/previous, match case, regular expressions and replace.
