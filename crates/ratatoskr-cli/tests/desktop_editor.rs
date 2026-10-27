@@ -124,7 +124,17 @@ impl Fixture {
             .unwrap()
     }
     fn clone_peer(&self) -> PathBuf {
-        git(&self.root, &["clone", "remote.git", "peer"]);
+        // Set checkout policy before clone writes files, not just afterwards in identity().
+        git(
+            &self.root,
+            &[
+                "clone",
+                "--config",
+                "core.autocrlf=false",
+                "remote.git",
+                "peer",
+            ],
+        );
         let peer = self.root.join("peer");
         Self::identity(&peer);
         peer
@@ -356,6 +366,14 @@ fn clean_checkout_fast_forwards_before_hash_checks_and_keeps_remote_changes() {
     fs::write(peer.join("global/AGENTS.md"), "Changed remotely\n").unwrap();
     git(&peer, &["add", "."]);
     git(&peer, &["commit", "-m", "Remote edit"]);
+    assert_eq!(
+        git(
+            &peer,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+        ),
+        "global/AGENTS.md",
+        "The peer must not change unrelated files through line-ending conversion"
+    );
     git(&peer, &["push"]);
     let error = core::desktop_source_edit(
         &f.settings,
