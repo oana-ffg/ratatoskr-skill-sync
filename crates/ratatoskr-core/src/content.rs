@@ -126,15 +126,10 @@ pub fn write_source_file(
 pub(crate) fn source(settings: &Settings, project: Option<&Path>) -> Result<PathBuf> {
     settings.validate()?;
     if let Some(root) = project {
-        // Registration stores std canonical paths (verbatim paths on Windows).
         // Check the supplied path before canonicalizing so aliases cannot bypass
         // the source tree's symlink and parent-traversal restrictions.
         no_symlinks(root)?;
-        let root = root.canonicalize().context("Resolve project root")?;
-        ensure!(
-            settings.projects.contains(&root),
-            "Project is not registered"
-        );
+        let root = settings.registered_project(root)?;
         let status = crate::project_status(&root);
         ensure!(
             status.error.is_none(),

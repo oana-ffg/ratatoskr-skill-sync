@@ -71,6 +71,23 @@ impl Settings {
         }
         Ok(())
     }
+
+    /// Resolve a user-supplied project root to its registry entry.
+    ///
+    /// Registration stores std canonical paths (verbatim `\\?\` paths on Windows),
+    /// so other spellings of the root are canonicalized the same way. An exact
+    /// entry matches without the filesystem, so a deleted root can still be removed.
+    pub(crate) fn registered_project(&self, root: &Path) -> Result<PathBuf> {
+        if let Some(entry) = self.projects.iter().find(|entry| *entry == root) {
+            return Ok(entry.clone());
+        }
+        let canonical = root.canonicalize().context("Resolve project root")?;
+        self.projects
+            .iter()
+            .find(|entry| **entry == canonical)
+            .cloned()
+            .with_context(|| format!("Project is not registered: {}", root.display()))
+    }
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
