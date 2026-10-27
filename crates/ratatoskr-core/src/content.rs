@@ -291,9 +291,17 @@ pub fn disable_skill(
 }
 
 pub fn archive_skill(settings: &Settings, project: Option<&Path>, name: &str) -> Result<PathBuf> {
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    archive_skill_locked(settings, project, name)
+}
+
+pub(crate) fn archive_skill_locked(
+    settings: &Settings,
+    project: Option<&Path>,
+    name: &str,
+) -> Result<PathBuf> {
     identifier(name)?;
     // Keep a concurrent apply from planning against a skill that disappears mid-run.
-    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let selected = source(settings, project)?;
     let skill = selected.join("skills").join(name);
     no_symlinks(&skill)?;

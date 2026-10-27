@@ -10,6 +10,7 @@
     relativeTime,
     reviewSummary,
     type Snapshot,
+    type ContentStatus,
     type Skill,
   } from "./api";
   import { watchWindow } from "./window-refresh";
@@ -37,6 +38,12 @@
     | "Activity"
     | "Settings";
   let workspace = $state<Snapshot | null>(null);
+  const contentNeedsAttention = $derived(
+    !!workspace &&
+      (workspace.plan.content_status.changed_files !== 0 ||
+        workspace.plan.content_status.outgoing_commits !== 0 ||
+        !!workspace.plan.content_status.error),
+  );
   let ready = $state(false);
   let residentMode = $state(false);
   let screen = $state<Screen>("Skills");
@@ -70,6 +77,34 @@
   ];
   function fail(e: unknown) {
     error = errorText(e);
+    // Failed publication can leave a real local commit while the editor remains
+    // dirty. Refresh only Git state; never replace or discard that draft.
+    if (workspace) {
+      const source = workspace.plan.source;
+      void api
+        .command<ContentStatus>("read_content_status")
+        .then((status) => {
+          if (status && workspace?.plan.source === source)
+            workspace.plan.content_status = status;
+        })
+        .catch((statusError) => {
+          error += `; Cannot refresh content Git status: ${errorText(statusError)}`;
+        });
+    }
+  }
+  async function pushContent() {
+    busy = true;
+    error = "";
+    try {
+      const next = await api.command<Snapshot>("push_content");
+      if (dirty || unsaved) {
+        if (workspace) workspace.plan.content_status = next.plan.content_status;
+      } else update(next);
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
   }
   let snapshotAt = $state<number | null>(null);
   let now = $state(Date.now());
@@ -313,13 +348,15 @@
       <div class="sync-indicator">
         <span
           class="live-dot"
-          class:failing={!!workspace?.jobs.current_error || !!refreshError}
+          class:failing={!!workspace?.jobs.current_error ||
+            !!refreshError ||
+            contentNeedsAttention}
         ></span><span
           >{refreshError
             ? "Status may be out of date"
             : !workspace
               ? "Status unavailable"
-              : workspace.jobs.current_error
+              : workspace.jobs.current_error || contentNeedsAttention
                 ? "Sync needs attention"
                 : workspace?.jobs.last_run?.finished_at
                   ? `Synced ${relativeTime(workspace.jobs.last_run.finished_at).toLowerCase()}`
@@ -353,6 +390,26 @@
           >{/if}
       </div>
     </header>
+    {#if workspace && contentNeedsAttention}
+      <div class="global-error" role="alert">
+        <div>
+          <strong>Content checkout needs attention</strong>
+          <p>
+            {workspace.plan.content_status.changed_files} uncommitted files ·
+            {workspace.plan.content_status.outgoing_commits ?? "Unknown"} unpushed
+            commits
+          </p>
+          {#if workspace.plan.content_status.error}<p>
+              {workspace.plan.content_status.error}
+            </p>{/if}
+        </div>
+        {#if (workspace.plan.content_status.outgoing_commits ?? 0) > 0}
+          <button disabled={busy || !!pending} onclick={pushContent}
+            >Push now</button
+          >
+        {/if}
+      </div>
+    {/if}
     {#if refreshError}<div class="global-error" role="alert">
         <div>
           <strong>Workspace refresh failed</strong>

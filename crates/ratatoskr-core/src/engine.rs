@@ -1,4 +1,5 @@
 mod conflicts;
+pub(crate) use conflicts::resolve_conflict_locked;
 mod validation;
 use crate::{
     Settings,
@@ -58,6 +59,7 @@ pub struct Plan {
     pub conflicts: Vec<String>,
     pub conflict_details: Vec<Conflict>,
     pub projects: Vec<ProjectStatus>,
+    pub content_status: crate::ContentStatus,
     pub revision: String,
 }
 
@@ -1102,6 +1104,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
         }
     }
     Ok(Plan {
+        content_status: crate::content_status(settings),
         source: settings.source.clone(),
         machine: settings.machine.clone(),
         mode: desired.mode.clone(),
@@ -1345,7 +1348,23 @@ pub fn adopt(settings: &Settings) -> Result<PathBuf> {
     Ok(directory)
 }
 
+pub(crate) fn backup_source_paths(settings: &Settings, directory: &Path) -> Result<Vec<PathBuf>> {
+    ensure!(
+        directory.starts_with(settings.state_dir.join(&settings.machine).join("backups")),
+        "Choose a backup from this machine's backup directory"
+    );
+    let path = directory.join("snapshot.json");
+    no_symlinks(&path)?;
+    let snapshot: Backup = serde_json::from_slice(&fs::read(path)?)?;
+    Ok(snapshot.sources.into_keys().collect())
+}
+
 pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    restore_backup_locked(settings, directory)
+}
+
+pub(crate) fn restore_backup_locked(settings: &Settings, directory: &Path) -> Result<Plan> {
     settings.validate()?;
     no_symlinks(directory)?;
     ensure!(
@@ -1376,7 +1395,6 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
             "Backup destination is outside current targets"
         );
     }
-    let lock = crate::config::operation_lock(settings, "apply.lock")?;
     let current = manifest(settings, &desired)?;
     let check = preflight(settings, &desired, &current)?;
     ensure!(
@@ -1464,7 +1482,6 @@ pub fn restore_backup(settings: &Settings, directory: &Path) -> Result<Plan> {
         &manifest_path(settings),
         &serde_json::to_vec_pretty(snapshot.ownership.as_ref().unwrap_or(&snapshot.manifest))?,
     )?;
-    drop(lock);
     plan(settings)
 }
 

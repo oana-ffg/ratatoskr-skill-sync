@@ -184,3 +184,89 @@ test("native startup gates readiness and unsaved editors notify the native sched
     vi.unstubAllGlobals();
   }
 });
+
+test("content checkout warning is visible across screens and Push now refreshes it", async () => {
+  let workspace = structuredClone(fixture.workspace);
+  workspace.plan.content_status = {
+    changed_files: 2,
+    outgoing_commits: 1,
+    upstream: "origin/main",
+    error: null,
+  };
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "read_workspace") return workspace;
+    if (cmd === "push_content") {
+      workspace = structuredClone(workspace);
+      workspace.plan.content_status.outgoing_commits = 0;
+      return workspace;
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  render(App);
+  await screen.findByRole("heading", { name: /Skills/ });
+  expect(screen.getByText("Content checkout needs attention")).toBeVisible();
+  expect(
+    screen.getByText(/2 uncommitted files · 1 unpushed commits/),
+  ).toBeVisible();
+  await fireEvent.click(screen.getByRole("button", { name: /Projects/ }));
+  expect(screen.getByText("Content checkout needs attention")).toBeVisible();
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  const login = await screen.findByLabelText("Open Ratatoskr at login");
+  await fireEvent.click(login);
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  await fireEvent.click(screen.getByRole("button", { name: "Push now" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Push now" })).toBeNull(),
+  );
+  expect(login).toBeChecked();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  expect(
+    screen.getByText(/2 uncommitted files · 0 unpushed commits/),
+  ).toBeVisible();
+  expect(
+    calls.mock.calls.filter(([cmd]) => cmd === "push_content"),
+  ).toHaveLength(1);
+});
+
+test("failed publication refreshes content status and exposes retry", async () => {
+  const status = {
+    changed_files: 0,
+    outgoing_commits: 1,
+    upstream: "origin/main",
+    error: null,
+  };
+  let failPush = true;
+  const calls = vi.fn((cmd: string, args: unknown) => {
+    if (cmd === "set_skill_enabled" || (cmd === "push_content" && failPush))
+      throw new Error("saved and committed locally but NOT pushed: offline");
+    if (cmd === "read_content_status") return status;
+    if (cmd === "push_content") {
+      const next = structuredClone(fixture.workspace);
+      next.plan.content_status = { ...status, outgoing_commits: 0 };
+      return next;
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  mockIPC(calls);
+  render(App);
+  await screen.findByRole("heading", { name: /Skills/ });
+  await fireEvent.click(
+    screen.getByRole("switch", { name: "Enable recordings" }),
+  );
+  await screen.findByText(
+    /saved and committed locally but NOT pushed: offline/,
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Push now" }),
+  );
+  await screen.findByText(
+    /saved and committed locally but NOT pushed: offline/,
+  );
+  expect(screen.getByRole("button", { name: "Push now" })).toBeEnabled();
+  failPush = false;
+  await fireEvent.click(screen.getByRole("button", { name: "Push now" }));
+  await waitFor(() =>
+    expect(screen.queryByText("Content checkout needs attention")).toBeNull(),
+  );
+});

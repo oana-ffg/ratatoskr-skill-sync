@@ -614,6 +614,26 @@ pub fn save_skill_draft(
     metadata_hash: &str,
 ) -> Result<()> {
     let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    save_skill_draft_locked(
+        settings,
+        project,
+        name,
+        markdown,
+        metadata,
+        markdown_hash,
+        metadata_hash,
+    )
+}
+
+pub(crate) fn save_skill_draft_locked(
+    settings: &Settings,
+    project: Option<&Path>,
+    name: &str,
+    markdown: &str,
+    metadata: &str,
+    markdown_hash: &str,
+    metadata_hash: &str,
+) -> Result<()> {
     let current = crate::read_skill(settings, project, name)?;
     ensure!(
         current.markdown_hash == markdown_hash && current.metadata_hash == metadata_hash,
@@ -718,6 +738,14 @@ pub fn save_global_instructions(
     expected_hash: &str,
 ) -> Result<()> {
     let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    save_global_instructions_locked(settings, markdown, expected_hash)
+}
+
+pub(crate) fn save_global_instructions_locked(
+    settings: &Settings,
+    markdown: &str,
+    expected_hash: &str,
+) -> Result<()> {
     let current = read_global_instructions(settings)?;
     ensure!(
         current.hash == expected_hash,
@@ -767,8 +795,18 @@ pub fn rename_skill(
     new_name: &str,
     expected_hash: &str,
 ) -> Result<()> {
-    identifier(new_name)?;
     let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    rename_skill_locked(settings, project, name, new_name, expected_hash)
+}
+
+pub(crate) fn rename_skill_locked(
+    settings: &Settings,
+    project: Option<&Path>,
+    name: &str,
+    new_name: &str,
+    expected_hash: &str,
+) -> Result<()> {
+    identifier(new_name)?;
     let document = crate::read_skill(settings, project, name)?;
     ensure!(
         document.markdown_hash == expected_hash,

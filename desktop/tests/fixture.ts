@@ -71,6 +71,8 @@ export function fixtureIPC(
       return null;
     case "read_update_settings":
       return fixture.workspace.updates;
+    case "read_content_status":
+      return fixture.workspace.plan.content_status;
     case "read_workspace":
       return fixture.workspace;
     case "read_source_skill":

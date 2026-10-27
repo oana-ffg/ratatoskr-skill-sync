@@ -103,6 +103,8 @@ fn main() {
             commands::read_workspace,
             commands::connect_workspace,
             commands::apply_workspace,
+            commands::push_content,
+            commands::read_content_status,
             commands::add_monitored_project,
             commands::remove_monitored_project,
             commands::read_global_instructions,

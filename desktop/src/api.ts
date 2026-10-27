@@ -100,7 +100,14 @@ export interface InstallTarget {
   instructions_file: string;
   project: string | null;
 }
+export interface ContentStatus {
+  changed_files: number;
+  outgoing_commits: number | null;
+  upstream: string | null;
+  error: string | null;
+}
 export interface Plan {
+  content_status: ContentStatus;
   source: string;
   machine: string;
   mode: string;
