@@ -14,7 +14,7 @@ pub(crate) struct UpdateContext {
 }
 
 /// A configured install holds workspace locks; an unconfigured app has no work to lock.
-struct InstallationGuard {
+pub(crate) struct InstallationGuard {
     _workspace: Option<core::updates::UpdateGuard>,
 }
 
@@ -65,7 +65,7 @@ impl UpdateContext {
             .installation_allowed(self.settings(), now, launch)
     }
 
-    fn idle_guard(&self, launch: bool) -> Result<Option<InstallationGuard>> {
+    pub(crate) fn idle_guard(&self, launch: bool) -> Result<Option<InstallationGuard>> {
         match &self.workspace {
             Some(settings) => {
                 Ok(

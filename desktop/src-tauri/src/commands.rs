@@ -481,6 +481,85 @@ pub(crate) async fn automatic_update(
     .map_err(|e| e.to_string())?
 }
 
+/// Carries out an install queued by `ratatoskr update --desktop` with the nightly
+/// path's signed updater and idle checks. Busy work defers to a later tick.
+pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
+    use core::updates::DesktopRequestOutcome;
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
+        let Some(request) =
+            core::updates::pending_desktop_request(&data).map_err(|e| format!("{e:#}"))?
+        else {
+            return Ok(());
+        };
+        if crate::update_scheduler::busy(&app) {
+            return Ok(());
+        }
+        let _guard = match MUTATION.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let context = update_context()?;
+        let result = (|| -> anyhow::Result<Option<DesktopRequestOutcome>> {
+            let checked =
+                tauri::async_runtime::block_on(desktop_updater(&app, context.settings())?.check())?;
+            let Some(update) = checked else {
+                return Ok(Some(DesktopRequestOutcome::Current));
+            };
+            let Some(_idle) = context.idle_guard(false)? else {
+                return Ok(None);
+            };
+            let bytes = tauri::async_runtime::block_on(update.download(|_, _| (), || ()))?;
+            if crate::update_scheduler::busy(&app) {
+                return Ok(None);
+            }
+            let installing = DesktopRequestOutcome::Installing {
+                version: update.version.clone(),
+            };
+            core::updates::answer_desktop_request(
+                &data,
+                &request,
+                chrono::Local::now().fixed_offset(),
+                installing.clone(),
+            )?;
+            install_downloaded_update(&app, &update, bytes)?;
+            // The restarted app confirms its version and records the final outcome.
+            Ok(Some(installing))
+        })();
+        let outcome = match result {
+            Ok(None) => return Ok(()),
+            Ok(Some(outcome)) => outcome,
+            Err(error) => DesktopRequestOutcome::Failed {
+                error: format!("{error:#}"),
+            },
+        };
+        let restart = matches!(outcome, DesktopRequestOutcome::Installing { .. });
+        let answered = core::updates::answer_desktop_request(
+            &data,
+            &request,
+            chrono::Local::now().fixed_offset(),
+            outcome.clone(),
+        );
+        let reported = update_result(
+            &context,
+            match &outcome {
+                DesktopRequestOutcome::Failed { error } => Err(anyhow::anyhow!("{error}")),
+                _ => answered.map_err(|e| e.context("Record requested update")),
+            },
+        );
+        if restart {
+            if let Err(error) = &reported {
+                eprintln!("Ratatoskr: {error}");
+            }
+            app.restart();
+        }
+        reported
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn update_context() -> Reply<UpdateContext> {
     let data_dir = core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
     UpdateContext::load(&config()?, &data_dir).map_err(|e| format!("{e:#}"))

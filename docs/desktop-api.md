@@ -93,6 +93,8 @@ Plans include `install_targets` with the renderer's harness, skill root, instruc
 
 ### Updates without a workspace
 
+`ratatoskr update --desktop` writes `desktop-update-request.json` in the app-data directory. The app polls for it every five seconds, writes its answer to `desktop-update-response.json` (`current`, `installing`, or `failed`), and records the final `installed` or `failed` outcome after restarting. Only the CLI writes the request and only the app writes the response.
+
 `read_update_settings` returns the effective `endpoint`, `override_active`, `automatic`, and `time`. `startup_update` and `update_desktop` work before a workspace is connected, using compiled official defaults. Existing configurations retain their update overrides. `read_local_settings` and `save_local_settings` remain workspace operations; onboarding Settings displays the default schedule and exposes manual check/install/restart without invoking those operations.
 
 ## Windows tray sync

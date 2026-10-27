@@ -126,6 +126,15 @@ The running desktop uses one shared Rust scheduler on macOS and Windows, indepen
 
 Manual **Check** records a successful check but does not open a catch-up hour or queue the discovered update for automatic installation at the next launch. Use **Install** to install it manually; the independent automatic schedule still applies.
 
+Agents and scripts update the desktop app without touching its UI. Use the bundled CLI (`/Applications/Ratatoskr Skill Sync.app/Contents/MacOS/ratatoskr` on macOS, `ratatoskr.exe` beside the Windows app):
+
+```sh
+ratatoskr update --desktop           # queue a signed update; returns immediately
+ratatoskr update --desktop --status  # last request and its result; exit 1 if it failed
+```
+
+The running app picks the request up within seconds. It uses the same signed updater, unsaved-edit wait and apply/sync/schedule locks as nightly installation, but ignores the nightly window and the automatic-updates switch. It then restarts with its window state preserved. If the app is not running, the command starts it hidden; no window opens or takes focus. On Windows the installer shows its usual brief progress bar. The result reads `already up to date`, `installing <version>` (until the restarted app confirms it), `installed <version>` or `failed`. A request waits, with no result yet, while edits or operations are in progress. Failures also appear in `job-status` and alerts.
+
 Two completed nightly windows without a successful check produce a desktop-update error in Activity and `job-status`, delivered through the configured alert transport (including Pushover) with the existing 24-hour dedup/recovery policy. A specific check or installation error takes precedence over the generic overdue message. Attempts and idle ticks do not clear the error; a successful check does. Existing ledgers begin a monitoring grace period because old attempt timestamps do not prove success. Monitoring restarts at app launch so time with the app closed does not count as a resident failure.
 
 The standalone helper records its last attempt and checks at most once per local day, at or after the chosen time, before that run's sync. Its next run uses the new binary. Update failures have separate deduplicated alerts and never prevent content syncing. Bundled helpers update with the desktop.
