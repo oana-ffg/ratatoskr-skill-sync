@@ -22,15 +22,25 @@ The snapshot plan retains human-readable `conflicts` for CLI compatibility and a
 
 ## Rendering and editor analysis
 
-- `list_preview_targets()` returns enabled `{machine, harness}` pairs from all source profiles.
+- The `read_workspace` snapshot's `preview_targets` lists enabled `{machine, harness}` pairs from all source profiles.
 - `preview_skill({name, project, markdown, metadata, machine, harness})` renders an isolated draft with the deployment renderer. Returns resource-relative paths and text, with null text for binary output. Empty results mean the skill is disabled or excluded. Template context preserves the selected profile's values; destinations stay isolated even for a different OS/live profile.
 - `analyze_skill({name, markdown, machine, harness})` returns `blocks`, `variables`, and `diagnostics` using the **same parser, variable resolver and frontmatter validator** as rendering. Every range is half-open `{from, to}` measured in **UTF-16 code units**, suitable for CodeMirror/JavaScript string offsets. Blocks include whole/opening/body/closing ranges, selector arrays, selected-context activity and reachability across enabled machine × harness contexts. Variables include their name, selected-context activity and resolved scalar value or null. Diagnostics include severity (`error` or `warning`), message and range.
 
 Analysis diagnoses parser errors, unknown active variables, malformed substitutions, invalid YAML/identity/description and blocks matching no enabled target. It analyzes the supplied Markdown independently of `skill.toml` targeting; use `preview_skill` to validate metadata, variants and final selection. Frontmatter diagnostics use the frontmatter range; errors without a narrower source location use the document range. Neither analysis nor preview writes the real source or installed output.
 
+## Global instructions
+
+- `read_global_instructions()` returns `{file, text, hash}` for `global/AGENTS.md`. A missing file reads as empty text; its hash creates the file on save.
+- `analyze_global_instructions({markdown, machine, harness})` returns the same `blocks`, `variables` and `diagnostics` shape as `analyze_skill`, without frontmatter checks.
+- `preview_global_instructions({markdown, machine, harness})` renders the draft with the deployment renderer for one enabled target. An empty string means that target receives an empty file.
+- `preview_global_instructions_path({machine, harness})` gives the target's instructions file, including a live `global_root` such as Codex's.
+- `save_global_instructions({markdown, expectedHash})` refuses stale hashes, blank text and conditional-block errors, then validates the draft for every machine × harness under the operation lock. Only problems introduced in `global/AGENTS.md` block the save, matching `save_skill_draft`. Returns a snapshot.
+
+`write_source_file` refuses `global/AGENTS.md` because it validates only the current machine.
+
 ## Agent definitions
 
-- `list_agent_presets()` returns documented defaults with official source URLs.
+- The snapshot's `presets` lists documented defaults with official source URLs.
 - `preview_agent({target})` returns a source document with candidate `harnesses.toml` text and the original content hash. Existing text/comments are preserved, with the new definition appended. Duplicate tags reject.
 - `add_agent_target({target, expectedHash})` validates and saves the definition using the expected source hash, returning a snapshot. Enable its tag in intended machine profiles separately.
 
@@ -39,11 +49,11 @@ Analysis diagnoses parser errors, unknown active variables, malformed substituti
 ## Background work and login
 
 - `read_job_status()` returns `last_run` (start/completion Unix seconds and error), `current_error` from the sync dedup ledger, separate updater errors, and bounded logs/history. A missing completion is explicit. All errors are persisted even without a notifier, and failed notification deliveries remain retryable.
-- `detect_helper()` returns the executable bundled beside the desktop or an executable standalone helper found on absolute PATH entries. Missing helpers reject explicitly.
+- The snapshot's `helper` is the executable bundled beside the desktop or an executable standalone helper found on absolute PATH entries; a missing helper is reported in `helper_error`.
 - `preview_schedule({seconds})` and `enable_schedule({seconds})` detect the helper themselves; clients cannot substitute another helper between preview and installation by submitting a path. `disable_schedule()` preserves existing schedule ownership checks.
 - `login_enabled()` reads the Tauri autostart state. `set_login_enabled({enabled})` changes it explicitly and returns the verified state. Plugin registration never enables autostart by itself; default is off.
 
-Existing `read_workspace`, source editing, configuration, project, sync/apply and update commands remain available. Nightly updates must continue to guard all unsaved editor/form state in the replacement UI.
+Existing `read_workspace`, configuration, project, sync/apply and update commands remain available. Nightly updates must continue to guard all unsaved editor/form state in the replacement UI.
 
 
 ## Structured desktop editing
@@ -52,7 +62,7 @@ Existing `read_workspace`, source editing, configuration, project, sync/apply an
 - It also returns `description_sections` (ordered shared/conditional text with nullable selectors) and `description_error` for malformed description conditions, keeping source mode available for repair. `edit_skill_draft` accepts `description-section` with an `edit` of `text` (`index`, `value`), `append` (`value`, `selectors`), `only` (`index`, `selectors`), or `remove-only` (`index`). Indices address the current decoded description sections; Rust preserves all other source fields and body bytes.
 - `edit_skill_draft({markdown, metadata, edit})` returns draft Markdown/metadata only. `edit.kind` is `description` (`value`), `metadata` (`path`, nullable typed `value`), `only` (`from`, `to`, `selectors`, `existing`), `remove-only` (`from`), or `variable` (`from`, `to`, `name`). Conditions use the shared parser. All offsets are UTF-16 source offsets, before display newline normalization.
 - `save_skill_draft({name, project, markdown, metadata, markdownHash, metadataHash})` validates both drafts together, checks both hashes, and saves only changed files under the operation lock. A second-file failure rolls back the first file when possible; process termination is not a two-file transaction.
-- `create_desktop_skill({name, project, description})` constructs valid frontmatter in Rust. `rename_source_skill({name, project, newName, expectedHash})` explicitly renames the directory and identity.
+- `create_desktop_skill({name, project, description})` constructs valid frontmatter in Rust. `rename_source_skill({name, project, newName, expectedHash})` explicitly renames the directory and identity. `archive_source_skill({name, project})` moves the whole skill directory into `.ratatoskr-archive` under the operation lock, without deleting anything, and returns `{path, workspace}`.
 - `read_structured_source({file})` returns `{file, hash, values}`. `save_structured_source({file, hash, values})` changes only differing fields and validates the candidate content before saving. Existing comments, unrelated values and separators are preserved.
 - `read_local_settings()` returns `{settings, hash}`. `save_local_settings({candidate, expectedHash})` rejects stale configuration and preserves unrelated source formatting. Workspace/project locations require their dedicated actions.
 - `list_values({machine, harness})`, `list_skill_resources({name, project})` and `skill_target_statuses()` provide the pickers, file panel and library inclusion indicators.

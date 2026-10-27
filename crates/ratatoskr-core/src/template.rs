@@ -188,14 +188,14 @@ pub struct TextRange {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct SkillDiagnostic {
+pub struct TemplateDiagnostic {
     pub range: TextRange,
     pub severity: String,
     pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct SkillBlock {
+pub struct TemplateBlock {
     pub range: TextRange,
     pub opening: TextRange,
     pub body: TextRange,
@@ -206,7 +206,7 @@ pub struct SkillBlock {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct SkillVariable {
+pub struct TemplateVariable {
     pub range: TextRange,
     pub name: String,
     pub value: Option<String>,
@@ -214,11 +214,11 @@ pub struct SkillVariable {
 }
 
 #[derive(Serialize)]
-pub struct SkillAnalysis {
+pub struct TemplateAnalysis {
     /// Half-open UTF-16 code-unit offsets, directly usable by JavaScript editors.
-    pub blocks: Vec<SkillBlock>,
-    pub variables: Vec<SkillVariable>,
-    pub diagnostics: Vec<SkillDiagnostic>,
+    pub blocks: Vec<TemplateBlock>,
+    pub variables: Vec<TemplateVariable>,
+    pub diagnostics: Vec<TemplateDiagnostic>,
 }
 
 type OnlySelectors = BTreeMap<String, Vec<String>>;
@@ -274,8 +274,8 @@ fn diagnostic(
     range: std::ops::Range<usize>,
     severity: &str,
     message: String,
-) -> SkillDiagnostic {
-    SkillDiagnostic {
+) -> TemplateDiagnostic {
+    TemplateDiagnostic {
         range: utf16_range(source, range),
         severity: severity.into(),
         message,
@@ -283,7 +283,7 @@ fn diagnostic(
 }
 
 /// One parser serves deployment and editor analysis; ranges internally use UTF-8 bytes.
-pub(crate) fn parse_blocks(source: &str) -> Result<(Vec<ParsedBlock>, Vec<SkillDiagnostic>)> {
+pub(crate) fn parse_blocks(source: &str) -> Result<(Vec<ParsedBlock>, Vec<TemplateDiagnostic>)> {
     let tags = Regex::new(r"<!--\s*(only\b.*?)-->|<!--\s*(/only)\s*-->")?;
     let mut blocks = Vec::new();
     let mut diagnostics = Vec::new();
@@ -364,8 +364,51 @@ pub fn analyze_skill(
     markdown: &str,
     machine: &str,
     harness: &str,
-) -> Result<SkillAnalysis> {
+) -> Result<TemplateAnalysis> {
     super::config::identifier(name)?;
+    let (mut analysis, rendered) = analyze_template(settings, markdown, machine, harness)?;
+    if let Some(rendered) = rendered {
+        // Reuse the deployment frontmatter validation instead of inventing an editor grammar.
+        let header_end = markdown
+            .find("\n---\n")
+            .map_or(markdown.len(), |end| end + 5);
+        match skill_frontmatter(&rendered, name) {
+            Ok((_, body)) if body.trim().is_empty() => analysis.diagnostics.push(diagnostic(
+                markdown,
+                0..markdown.len(),
+                "error",
+                "Skill body is empty".into(),
+            )),
+            Ok(_) => (),
+            Err(error) => analysis.diagnostics.push(diagnostic(
+                markdown,
+                0..header_end,
+                "error",
+                error.to_string(),
+            )),
+        }
+    }
+    Ok(analysis)
+}
+
+/// Global instructions use the same conditions and values as skills, without frontmatter.
+pub fn analyze_global_instructions(
+    settings: &crate::Settings,
+    markdown: &str,
+    machine: &str,
+    harness: &str,
+) -> Result<TemplateAnalysis> {
+    analyze_template(settings, markdown, machine, harness).map(|(analysis, _)| analysis)
+}
+
+/// Analyzes conditions and values for one machine × harness. The rendered text
+/// (LF-normalized) is returned only when the template has no errors.
+fn analyze_template(
+    settings: &crate::Settings,
+    markdown: &str,
+    machine: &str,
+    harness: &str,
+) -> Result<(TemplateAnalysis, Option<String>)> {
     let contexts = crate::engine::template_contexts(settings)?;
     let context = contexts
         .iter()
@@ -386,7 +429,7 @@ pub fn analyze_skill(
                 "This section matches no enabled machine × harness".into(),
             ));
         }
-        blocks.push(SkillBlock {
+        blocks.push(TemplateBlock {
             range: utf16_range(markdown, block.opening.start..block.closing.end),
             opening: utf16_range(markdown, block.opening.clone()),
             body: utf16_range(markdown, block.body.clone()),
@@ -419,37 +462,17 @@ pub fn analyze_skill(
                 None
             }
         };
-        variables.push(SkillVariable {
+        variables.push(TemplateVariable {
             range: utf16_range(markdown, tag.range()),
             name: name.into(),
             value,
             active,
         });
     }
+    let mut rendered = None;
     if !diagnostics.iter().any(|d| d.severity == "error") {
-        // Reuse the renderer and frontmatter validation instead of inventing an editor grammar.
         match render(markdown, context, true) {
-            Ok(rendered) => {
-                let rendered = rendered.replace("\r\n", "\n");
-                let header_end = markdown
-                    .find("\n---\n")
-                    .map_or(markdown.len(), |end| end + 5);
-                match skill_frontmatter(&rendered, name) {
-                    Ok((_, body)) if body.trim().is_empty() => diagnostics.push(diagnostic(
-                        markdown,
-                        0..markdown.len(),
-                        "error",
-                        "Skill body is empty".into(),
-                    )),
-                    Ok(_) => (),
-                    Err(error) => diagnostics.push(diagnostic(
-                        markdown,
-                        0..header_end,
-                        "error",
-                        error.to_string(),
-                    )),
-                }
-            }
+            Ok(text) => rendered = Some(text.replace("\r\n", "\n")),
             Err(error) => diagnostics.push(diagnostic(
                 markdown,
                 0..markdown.len(),
@@ -458,11 +481,14 @@ pub fn analyze_skill(
             )),
         }
     }
-    Ok(SkillAnalysis {
-        blocks,
-        variables,
-        diagnostics,
-    })
+    Ok((
+        TemplateAnalysis {
+            blocks,
+            variables,
+            diagnostics,
+        },
+        rendered,
+    ))
 }
 
 pub(crate) fn skill_frontmatter<'a>(

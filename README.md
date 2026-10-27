@@ -83,6 +83,7 @@ More in the [desktop walkthrough](docs/desktop-ui.md) and the [full screenshot s
 ## Features
 
 - **Tailored rendering.** Conditions by machine, OS, agent and capability; per-machine variables; file variants; per-agent frontmatter.
+- **Shared global instructions.** One `global/AGENTS.md`, with the same conditions and values as skills, rendered into each agent's own global file, such as `~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`.
 - **Agent presets.** Claude Code, Codex, Gemini CLI, GitHub Copilot CLI and OpenCode, plus custom targets through a form. See [verified paths and omissions](docs/agent-presets.md).
 - **Desktop editor.** A Markdown editor with condition bands, value pills, targeting chips, validation as you type and a Rust-rendered live preview for any agent × machine. **You never need to edit template tags or TOML by hand.**
 - **Review and conflict handling.** Previews output diffs and identifies hand edits, removals, permission changes and unmanaged collisions. Resolve each one with a reviewed, backed-up copy-back, reinstall or takeover.

@@ -11,12 +11,12 @@
     type Range,
     type Resolution,
     type ValueOption,
-    title,
   } from "../api";
   import { createLivePreview } from "../live-preview";
   import MarkdownEditor from "./MarkdownEditor.svelte";
   import Dialog from "./Dialog.svelte";
   import OnlyPicker from "./OnlyPicker.svelte";
+  import ValuePicker from "./ValuePicker.svelte";
   let {
     conflict,
     workspace,
@@ -157,6 +157,7 @@
     </div>
     <MarkdownEditor
       bind:this={editor}
+      label="Source Markdown editor"
       value={text}
       {analysis}
       frontmatter={info?.frontmatter ?? null}
@@ -193,17 +194,13 @@
     }}
   />{/if}
 
-{#if valuePicker}<Dialog
-    title="Insert a value"
+{#if valuePicker && target}<ValuePicker
+    {values}
+    machine={target.machine}
+    harness={target.harness}
     onclose={() => (valuePicker = false)}
-    ><div class="value-options">
-      {#each values as value}<button
-          onclick={() => {
-            void edit({ kind: "variable", ...selected, name: value.name });
-            valuePicker = false;
-          }}
-          ><strong>{title(value.label)}</strong><span>{value.value}</span
-          ></button
-        >{/each}
-    </div></Dialog
-  >{/if}
+    onpick={(name) => {
+      void edit({ kind: "variable", ...selected, name });
+      valuePicker = false;
+    }}
+  />{/if}

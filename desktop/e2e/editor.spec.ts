@@ -253,3 +253,27 @@ test("description conditions preview, save and reopen per agent", async ({
   await page.getByRole("button", { name: "Discard", exact: true }).click();
   await expect(conditional).toHaveValue(sentence);
 });
+
+test("archive moves the skill out of the library and shows where it went", async ({
+  page,
+}) => {
+  const backend = editorFixture();
+  await installFixture(page, backend.invoke);
+  await openEditor(page);
+  await append(page, "\nUnsaved text blocks archiving.\n");
+  await expect(page.getByRole("button", { name: "Archive" })).toBeDisabled();
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await page.getByRole("button", { name: "Archive" }).click();
+  const dialog = page.getByRole("dialog", { name: "Archive skill" });
+  await expect(dialog).toContainText("Nothing is deleted");
+  await dialog.getByRole("button", { name: "Archive skill" }).click();
+  const done = page.getByRole("dialog", { name: "Skill archived" });
+  await expect(done.locator(".path")).toHaveText(
+    /\.ratatoskr-archive[\\/]recordings-\d+$/,
+  );
+  await done.getByRole("button", { name: "Back to skills" }).click();
+  await expect(page.getByRole("heading", { name: /Skills/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /recordings Enabled/ }),
+  ).toHaveCount(0);
+});

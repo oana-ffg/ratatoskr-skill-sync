@@ -14,6 +14,7 @@ test("the actual editor preserves mixed line endings through typing, structured 
   const analysis = oracle("analyze_skill", { markdown: original }) as Analysis;
   const changed = vi.fn();
   const { container, component } = render(MarkdownEditor, {
+    label: "Skill Markdown editor",
     value: original,
     analysis,
     frontmatter: info.frontmatter,
@@ -58,6 +59,7 @@ test("realistic multi-paragraph skill hides whole frontmatter blocks and enables
   }) as Analysis;
   const changed = vi.fn();
   const { container, rerender } = render(MarkdownEditor, {
+    label: "Skill Markdown editor",
     value: document.markdown,
     analysis,
     frontmatter: info.frontmatter,

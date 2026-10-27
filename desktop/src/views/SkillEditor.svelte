@@ -23,6 +23,9 @@
   import Chips from "../components/Chips.svelte";
   import Dialog from "../components/Dialog.svelte";
   import OnlyPicker from "../components/OnlyPicker.svelte";
+  import ValuePicker from "../components/ValuePicker.svelte";
+  import TemplateToolbar from "../components/TemplateToolbar.svelte";
+  import PreviewTargets from "../components/PreviewTargets.svelte";
   let {
     skill,
     workspace,
@@ -31,6 +34,7 @@
     ondirty,
     onunsaved,
     onrenamed,
+    onarchived,
   }: {
     skill: Skill;
     workspace: Snapshot;
@@ -39,6 +43,7 @@
     ondirty: (v: boolean) => void;
     onunsaved?: (v: boolean) => void;
     onrenamed: (skill: Skill) => void;
+    onarchived: (w: Snapshot) => void;
   } = $props();
   let document = $state<SkillDocument | null>(null);
   let markdown = $state("");
@@ -65,11 +70,18 @@
   let raw = $state(false);
   let selected = $state<Range>({ from: 0, to: 0 });
   let picker = $state<
-    "only" | "description-only" | "value" | "rename" | "variant" | null
+    "only"
+    | "description-only"
+    | "value"
+    | "rename"
+    | "archive"
+    | "variant"
+    | null
   >(null);
   let block = $state<Block | null>(null);
   let editor = $state<MarkdownEditor>();
   let newName = $state("");
+  let archived = $state<{ path: string; workspace: Snapshot } | null>(null);
   let variantFile = $state("");
   let variantSystem = $state("windows");
   let extraAgent = $state("");
@@ -333,17 +345,6 @@
     if (remove) void edit({ kind: "remove-only", from: b.opening.from });
     else openOnly(b);
   }
-  function changeMachine(value: string) {
-    machine = value;
-    if (
-      !workspace.preview_targets.some(
-        (t) => t.machine === machine && t.harness === harness,
-      )
-    )
-      harness =
-        workspace.preview_targets.find((t) => t.machine === machine)?.harness ??
-        "";
-  }
   async function rename() {
     if (!document) return;
     busy = true;
@@ -363,6 +364,24 @@
     } finally {
       busy = false;
     }
+  }
+  async function archive() {
+    busy = true;
+    try {
+      archived = await api.command<{ path: string; workspace: Snapshot }>(
+        "archive_source_skill",
+        { name: skill.name, project: skill.project },
+      );
+    } catch (e) {
+      onerror(e);
+    } finally {
+      busy = false;
+    }
+  }
+  function closeArchive() {
+    // The skill no longer exists; leave the editor before showing the new snapshot.
+    if (archived) onarchived(archived.workspace);
+    else picker = null;
   }
   async function addResource(variant: boolean) {
     try {
@@ -434,6 +453,10 @@
               newName = skill.name;
               picker = "rename";
             }}>Rename</button
+          ><button
+            class="subtle"
+            disabled={dirty}
+            onclick={() => (picker = "archive")}>Archive</button
           >
         </div>
       </div>
@@ -538,33 +561,15 @@
         />
       </div>
       <div class="editor-frame">
-        <div
-          class="format-toolbar"
-          role="toolbar"
-          aria-label="Markdown formatting"
-        >
-          <button aria-label="Bold" onclick={() => editor?.format("bold")}
-            ><b>B</b></button
-          ><button
-            aria-label="Heading"
-            onclick={() => editor?.format("heading")}>H2</button
-          ><button aria-label="List" onclick={() => editor?.format("list")}
-            >☷</button
-          ><button aria-label="Code" onclick={() => editor?.format("code")}
-            >‹/›</button
-          ><span class="toolbar-divider"></span><button
-            class="accent-text"
-            onclick={() => openOnly()}>＋ Only for…</button
-          ><button class="accent-text" onclick={() => (picker = "value")}
-            >＋ Insert value…</button
-          ><button
-            class="source-toggle"
-            aria-pressed={raw}
-            onclick={() => (raw = !raw)}>Markdown source</button
-          >
-        </div>
+        <TemplateToolbar
+          {editor}
+          bind:raw
+          ononly={() => openOnly()}
+          onvalue={() => (picker = "value")}
+        />
         <MarkdownEditor
           bind:this={editor}
+          label="Skill Markdown editor"
           value={markdown}
           {analysis}
           frontmatter={info.frontmatter}
@@ -669,23 +674,11 @@
     </section>
     <aside class="live-preview">
       <p class="eyebrow">LIVE PREVIEW <span class="live-dot"></span></p>
-      <div class="preview-selects">
-        <label
-          >Agent<select aria-label="Preview agent" bind:value={harness}
-            >{#each workspace.preview_targets.filter((t) => t.machine === machine) as t}<option
-                value={t.harness}>{agentName(t.harness)}</option
-              >{/each}</select
-          ></label
-        ><label
-          >Machine<select
-            aria-label="Preview machine"
-            value={machine}
-            onchange={(e) => changeMachine(e.currentTarget.value)}
-            >{#each machines as m}<option value={m}>{title(m)}</option
-              >{/each}</select
-          ></label
-        >
-      </div>
+      <PreviewTargets
+        targets={workspace.preview_targets}
+        bind:machine
+        bind:harness
+      />
       <div class="preview-document" aria-label="Rendered preview">
         {#if validating}<span class="muted">Updating preview…</span
           >{:else if previewError}<p class="muted">
@@ -770,21 +763,16 @@
           rows="3"></textarea></label
       >{/if}
   </OnlyPicker>{/if}
-{#if picker === "value"}<Dialog
-    title="Insert a value"
+{#if picker === "value"}<ValuePicker
+    {values}
+    {machine}
+    {harness}
     onclose={() => (picker = null)}
-    ><p class="muted">Resolved for {title(machine)} · {agentName(harness)}</p>
-    <div class="value-options">
-      {#each values as value}<button
-          onclick={() => {
-            void edit({ kind: "variable", ...selected, name: value.name });
-            picker = null;
-          }}
-          ><strong>▣ {title(value.label)}</strong><span>{value.value}</span
-          ></button
-        >{/each}
-    </div></Dialog
-  >{/if}
+    onpick={(name) => {
+      void edit({ kind: "variable", ...selected, name });
+      picker = null;
+    }}
+  />{/if}
 {#if picker === "rename"}<Dialog
     title="Rename skill"
     onclose={() => (picker = null)}
@@ -800,6 +788,28 @@
         onclick={rename}>Rename skill</button
       ><button onclick={() => (picker = null)}>Cancel</button>
     </footer></Dialog
+  >{/if}
+{#if picker === "archive"}<Dialog
+    title={archived ? "Skill archived" : "Archive skill"}
+    onclose={closeArchive}
+    >{#if archived}<p>{skill.name} was moved to:</p>
+      <p class="path">{archived.path}</p>
+      <p class="muted">
+        Installed copies are removed on the next Apply. To bring it back, move
+        that folder into the skills folder and rename it to {skill.name}.
+      </p>
+      <footer class="dialog-actions">
+        <button class="primary" onclick={closeArchive}>Back to skills</button>
+      </footer>{:else}<p class="muted">
+        Moves {skill.name} into the .ratatoskr-archive folder of its content
+        repository. Nothing is deleted. Installed copies are removed on the next
+        Apply.
+      </p>
+      <footer class="dialog-actions">
+        <button class="primary" disabled={busy} onclick={archive}
+          >Archive skill</button
+        ><button onclick={() => (picker = null)}>Cancel</button>
+      </footer>{/if}</Dialog
   >{/if}
 {#if picker === "variant"}<Dialog
     title="Add a system variant"

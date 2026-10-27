@@ -16,15 +16,12 @@
   import { runStartupUpdate } from "./update-policy";
   import { listen } from "@tauri-apps/api/event";
   import Library from "./views/Library.svelte";
+  import { lazy } from "./lazy";
+  // Both editors load CodeMirror, which stays out of the startup bundle.
   import type SkillEditor from "./views/SkillEditor.svelte";
-  let editorModule: ReturnType<typeof importEditor> | undefined;
-  const importEditor = () => import("./views/SkillEditor.svelte");
-  function loadEditor() {
-    return (editorModule ??= importEditor().catch((e) => {
-      editorModule = undefined;
-      throw e;
-    }));
-  }
+  import type Instructions from "./views/Instructions.svelte";
+  const loadEditor = lazy(() => import("./views/SkillEditor.svelte"));
+  const loadInstructions = lazy(() => import("./views/Instructions.svelte"));
   import Review from "./views/Review.svelte";
   import Projects from "./views/Projects.svelte";
   import Agents from "./views/Agents.svelte";
@@ -33,6 +30,7 @@
   import Dialog from "./components/Dialog.svelte";
   type Screen =
     | "Skills"
+    | "Global instructions"
     | "Review changes"
     | "Projects"
     | "Agents & machines"
@@ -53,6 +51,7 @@
   let pending = $state<(() => void) | null>(null);
   let closeAfterDiscard = $state(false);
   let editor = $state<SkillEditor>();
+  let instructions = $state<Instructions>();
   let agents = $state<Agents>();
   let settings = $state<Settings>();
   let source = $state("");
@@ -62,6 +61,7 @@
   let cloneName = $state("");
   const items: { name: Screen; icon: string }[] = [
     { name: "Skills", icon: "◇" },
+    { name: "Global instructions", icon: "¶" },
     { name: "Review changes", icon: "⇄" },
     { name: "Projects", icon: "▱" },
     { name: "Agents & machines", icon: "◈" },
@@ -141,6 +141,7 @@
   async function discard() {
     try {
       if (skill) await editor?.discard();
+      else if (screen === "Global instructions") await instructions?.discard();
       else if (screen === "Agents & machines") await agents?.discard();
       else if (screen === "Settings") await settings?.discard();
       else epoch++;
@@ -154,6 +155,7 @@
     error = "";
     try {
       if (skill) await editor?.save();
+      else if (screen === "Global instructions") await instructions?.save();
       else if (screen === "Agents & machines") await agents?.save();
       else if (screen === "Settings") await settings?.save();
     } catch (e) {
@@ -342,7 +344,7 @@
         >{#if skill}<span>›</span><strong>{skill.name}</strong>{/if}
       </div>
       <div class="top-actions">
-        {#if unsaved && (skill || screen === "Agents & machines" || screen === "Settings")}<span
+        {#if unsaved && (skill || screen === "Global instructions" || screen === "Agents & machines" || screen === "Settings")}<span
             class="unsaved-indicator">Unsaved changes</span
           ><button disabled={busy} onclick={discard}>Discard</button><button
             class="primary"
@@ -440,6 +442,12 @@
                   onerror={fail}
                   ondirty={(v) => (dirty = v)}
                   onrenamed={(s) => (skill = s)}
+                  onarchived={(w) => {
+                    skill = null;
+                    dirty = false;
+                    unsaved = false;
+                    update(w);
+                  }}
                   onunsaved={(value) => (unsaved = value)}
                 />{:catch e}<p role="alert" class="error-message">
                   Editor failed to load: {errorText(e)}
@@ -450,7 +458,18 @@
               onupdate={update}
               onerror={fail}
               ondirty={(v) => (dirty = v)}
-            />{/if}{:else if screen === "Review changes"}<Review
+            />{/if}{:else if screen === "Global instructions"}{#await loadInstructions()}
+            <p class="empty-state">Opening global instructions…</p>
+          {:then { default: Instructions }}<Instructions
+              bind:this={instructions}
+              onunsaved={(value) => (unsaved = value)}
+              {workspace}
+              onupdate={update}
+              onerror={fail}
+              ondirty={(v) => (dirty = v)}
+            />{:catch e}<p role="alert" class="error-message">
+              Global instructions failed to load: {errorText(e)}
+            </p>{/await}{:else if screen === "Review changes"}<Review
             {workspace}
             onupdate={update}
             onerror={fail}

@@ -72,6 +72,9 @@ fn main() -> anyhow::Result<()> {
         )?;
         fs::write(dir.join("skill.toml"), metadata)?;
     }
+    let global = "# Working agreements\n\n- Keep changes small and explain the reasoning behind them.\n- Meeting recordings are archived in {{af:paths.recordings_archive}}.\n\n<!-- only harness=codex -->\nRun commands inside the sandbox unless a task needs network access.\n<!-- /only -->\n\n<!-- only os=windows -->\nUse PowerShell syntax in command examples.\n<!-- /only -->\n";
+    fs::create_dir_all(source.join("global"))?;
+    fs::write(source.join("global/AGENTS.md"), global)?;
     let realistic = include_str!("../tests/fixtures/realistic-skill.md");
     let realistic_dir = source.join("skills/aws-project-migration");
     fs::create_dir_all(realistic_dir.join("references"))?;
@@ -123,6 +126,42 @@ fn main() -> anyhow::Result<()> {
                 args["metadataHash"].as_str().unwrap(),
             )?;
             serde_json::to_value(core::read_skill(&settings, None, "recordings")?)?
+        }
+        "archive_source_skill" => serde_json::to_value(core::archive_skill(
+            &settings,
+            None,
+            args["name"].as_str().unwrap(),
+        )?)?,
+        "read_global_instructions" => {
+            serde_json::to_value(core::read_global_instructions(&settings)?)?
+        }
+        "save_global_instructions" => {
+            // Like save_skill_draft: rehydrate the bridge's last saved text, then
+            // exercise the real validation, hash check and write.
+            if let Some(current) = args["current"].as_str() {
+                fs::write(settings.source.join("global/AGENTS.md"), current)?;
+            }
+            core::save_global_instructions(
+                &settings,
+                args["markdown"].as_str().unwrap_or(global),
+                args["expectedHash"].as_str().unwrap(),
+            )?;
+            serde_json::to_value(core::read_global_instructions(&settings)?)?
+        }
+        "analyze_global_instructions" => serde_json::to_value(core::analyze_global_instructions(
+            &settings,
+            args["markdown"].as_str().unwrap_or(global),
+            m,
+            h,
+        )?)?,
+        "preview_global_instructions" => serde_json::to_value(core::preview_global_instructions(
+            &settings,
+            args["markdown"].as_str().unwrap_or(global),
+            m,
+            h,
+        )?)?,
+        "preview_global_instructions_path" => {
+            serde_json::to_value(core::preview_global_instructions_path(&settings, m, h)?)?
         }
         "preview_install_path" => serde_json::to_value(core::preview_install_path(
             &settings,
