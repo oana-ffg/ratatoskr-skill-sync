@@ -20,6 +20,7 @@
     historyKeymap,
     indentWithTab,
   } from "@codemirror/commands";
+  import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
   import { markdown } from "@codemirror/lang-markdown";
   import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
   import { tags } from "@lezer/highlight";
@@ -60,6 +61,9 @@
       userEvent: "input",
     });
   }
+  export function find() {
+    if (view) openSearchPanel(view);
+  }
   export function format(kind: string) {
     if (!view) return;
     const s = view.state.selection.main;
@@ -95,7 +99,13 @@
           drawSelection(),
           highlightActiveLine(),
           history(),
-          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          search({ top: true }),
+          keymap.of([
+            ...defaultKeymap,
+            ...historyKeymap,
+            ...searchKeymap,
+            indentWithTab,
+          ]),
           markdown(),
           syntaxHighlighting(
             HighlightStyle.define([

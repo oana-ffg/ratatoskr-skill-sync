@@ -1,7 +1,8 @@
 # Releases and signed updates
 
-## Unreleased
+## v0.2.17 release notes
 
+- Search skills and global instructions with Ctrl/⌘F or the toolbar's Find button, including next/previous, match case, regular expressions and replace.
 - Add `ratatoskr update --desktop` so agents and scripts can update the desktop app without its UI. The bundled CLI queues the request, and the running app installs the signed update with the nightly path's checks, then restarts hidden. `--status` reports the result. The app is started hidden if it isn't running.
 
 ## v0.2.16 release notes

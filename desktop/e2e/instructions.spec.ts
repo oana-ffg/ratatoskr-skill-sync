@@ -78,3 +78,19 @@ test("saves through the core and keeps an invalid draft with its error", async (
     "Prefer small, reviewable pull requests.",
   );
 });
+
+test("Ctrl/Cmd+F searches the instructions from anywhere on the screen", async ({
+  page,
+}) => {
+  const backend = instructionsFixture();
+  await installFixture(page, (cmd, args) => backend.invoke(cmd, args));
+  await openInstructions(page);
+  await page.getByRole("heading", { name: "Global instructions" }).click();
+  await page.keyboard.press("ControlOrMeta+f");
+  const field = page.getByRole("textbox", { name: "Find" });
+  await expect(field).toBeFocused();
+  await field.pressSequentially("sandbox");
+  await expect(page.locator(".cm-searchMatch")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(field).toHaveCount(0);
+});
