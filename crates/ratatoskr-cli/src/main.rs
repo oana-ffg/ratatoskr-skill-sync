@@ -235,6 +235,18 @@ fn show(plan: &Plan, json: bool) -> Result<()> {
     for conflict in &plan.conflicts {
         println!("CONFLICT: {conflict}");
     }
+    let content = &plan.content_status;
+    println!(
+        "Content: {} uncommitted files, {} unpushed commits{}",
+        content.changed_files,
+        content
+            .outgoing_commits
+            .map_or("unknown".into(), |n| n.to_string()),
+        content
+            .error
+            .as_ref()
+            .map_or(String::new(), |e| format!(", ERROR: {e}"))
+    );
     for project in &plan.projects {
         println!(
             "{}: {} changed skill files, {} outgoing skill commits{}",
@@ -648,7 +660,8 @@ fn run() -> Result<i32> {
             if matches!(command, Action::Status)
                 && (!report.changes.is_empty()
                     || !report.conflicts.is_empty()
-                    || report.projects.iter().any(|p| p.needs_attention()))
+                    || report.projects.iter().any(|p| p.needs_attention())
+                    || report.content_status.needs_attention())
             {
                 return Ok(1);
             }

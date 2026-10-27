@@ -26,6 +26,212 @@ impl ProjectStatus {
     }
 }
 
+/// Local content state. Upstream counts use the last fetched reference; desktop
+/// saves, Push now and sync contact the remote before acting on it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ContentStatus {
+    pub changed_files: usize,
+    pub outgoing_commits: Option<usize>,
+    pub upstream: Option<String>,
+    pub error: Option<String>,
+}
+impl ContentStatus {
+    pub fn needs_attention(&self) -> bool {
+        self.changed_files != 0 || self.outgoing_commits != Some(0) || self.error.is_some()
+    }
+}
+
+fn changed_file_count(bytes: &[u8]) -> usize {
+    let mut records = bytes.split(|b| *b == 0).filter(|r| !r.is_empty());
+    let mut count = 0;
+    while let Some(record) = records.next() {
+        count += 1;
+        if record.iter().take(2).any(|b| matches!(b, b'R' | b'C')) {
+            records.next();
+        }
+    }
+    count
+}
+
+pub fn content_status(settings: &Settings) -> ContentStatus {
+    let mut status = ContentStatus {
+        changed_files: 0,
+        outgoing_commits: None,
+        upstream: None,
+        error: None,
+    };
+    let result: Result<()> = (|| {
+        no_symlinks(&settings.source)?;
+        let top = String::from_utf8(git(&settings.source, &["rev-parse", "--show-toplevel"])?)?;
+        ensure!(
+            Path::new(top.trim()).canonicalize()? == settings.source.canonicalize()?,
+            "Content source must be the Git checkout root"
+        );
+        status.changed_files = changed_file_count(&git(
+            &settings.source,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )?);
+        status.upstream = Some(
+            String::from_utf8(git(
+                &settings.source,
+                &[
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
+            )?)?
+            .trim()
+            .into(),
+        );
+        status.outgoing_commits = Some(commit_count(settings, "@{upstream}..HEAD")?);
+        validate_deploy_branch(settings)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        status.error = Some(format!("{error:#}"));
+    }
+    status
+}
+
+fn commit_count(settings: &Settings, range: &str) -> Result<usize> {
+    Ok(
+        String::from_utf8(git(&settings.source, &["rev-list", "--count", range])?)?
+            .trim()
+            .parse()?,
+    )
+}
+
+// Caller holds sync.lock then apply.lock throughout freshness, write and publication.
+fn prepare_source_edit(settings: &Settings) -> Result<String> {
+    let remote = validate_deploy_branch(settings)?;
+    git(&settings.source, &["fetch", "--", &remote])
+        .context("Fetch content before saving; source was not written")?;
+    let clean = git(
+        &settings.source,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?
+    .is_empty();
+    if clean && commit_count(settings, "HEAD..@{upstream}")? != 0 {
+        git(
+            &settings.source,
+            &[
+                "pull",
+                "--ff-only",
+                "--no-rebase",
+                "--",
+                &remote,
+                &settings.deploy_branch,
+            ],
+        )
+        .context("Fast-forward content before saving; source was not written")?;
+    }
+    Ok(remote)
+}
+
+fn source_fingerprints(
+    paths: &[PathBuf],
+) -> Result<std::collections::BTreeMap<PathBuf, (String, bool)>> {
+    let mut files = std::collections::BTreeMap::new();
+    for path in paths {
+        no_symlinks(path)?;
+        let entries = if path.is_dir() {
+            crate::engine::file_paths(path)?.into_values().collect()
+        } else if path.try_exists()? {
+            vec![path.clone()]
+        } else {
+            vec![]
+        };
+        for file in entries {
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt;
+                fs::metadata(&file)?.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let executable = false;
+            files.insert(
+                file.clone(),
+                (crate::content::hash(&fs::read(file)?), executable),
+            );
+        }
+    }
+    Ok(files)
+}
+
+fn git_paths(root: &Path, args: &[&str], paths: &[PathBuf]) -> Result<Vec<u8>> {
+    git_command(root, args, Some(paths))
+}
+
+pub(crate) fn publish_source_edit<T>(
+    settings: &Settings,
+    scopes: &[PathBuf],
+    message: &str,
+    write: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let remote = prepare_source_edit(settings)?;
+    let before = source_fingerprints(scopes)?;
+    let result = write()?;
+    let after = source_fingerprints(scopes)
+        .context("Source saved but inspecting changed paths failed; NOT committed or pushed")?;
+    let paths: std::collections::BTreeSet<_> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|p| before.get(*p) != after.get(*p))
+        .cloned()
+        .collect();
+    let paths: Vec<_> = paths
+        .iter()
+        .map(|p| p.strip_prefix(&settings.source).map(Path::to_path_buf))
+        .collect::<std::result::Result<_, _>>()?;
+    if !paths.is_empty() {
+        let commit: Result<()> = (|| {
+            git_paths(&settings.source, &["add", "-A"], &paths)?;
+            // --only excludes even unrelated entries already in the user's index.
+            // A save that returns a file to HEAD needs no empty commit.
+            if !git_paths(
+                &settings.source,
+                &["diff", "--cached", "--name-only"],
+                &paths,
+            )?
+            .is_empty()
+            {
+                git_paths(
+                    &settings.source,
+                    &["commit", "--only", "-m", message],
+                    &paths,
+                )?;
+            }
+            Ok(())
+        })();
+        commit.context("Source saved in place but Git commit failed; NOT pushed")?;
+    }
+    push_to_upstream(settings, &remote).context("saved and committed locally but NOT pushed")?;
+    Ok(result)
+}
+
+fn push_to_upstream(settings: &Settings, remote: &str) -> Result<()> {
+    // Explicit refspec ignores push.default and remote.*.push customizations.
+    git(
+        &settings.source,
+        &[
+            "push",
+            "--",
+            remote,
+            &format!("HEAD:refs/heads/{}", settings.deploy_branch),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn push_content(settings: &Settings) -> Result<()> {
+    settings.validate()?;
+    let _sync = crate::config::operation_lock(settings, "sync.lock")?;
+    let _apply = crate::config::operation_lock(settings, "apply.lock")?;
+    let remote = validate_deploy_branch(settings)?;
+    push_to_upstream(settings, &remote).context("saved and committed locally but NOT pushed")
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Marker {
@@ -45,12 +251,20 @@ impl std::fmt::Display for GitFailure {
 impl std::error::Error for GitFailure {}
 
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = crate::process::command("git")
+    git_command(root, args, None)
+}
+
+fn git_command(root: &Path, args: &[&str], paths: Option<&[PathBuf]>) -> Result<Vec<u8>> {
+    let mut command = crate::process::command("git");
+    command
+        .arg("--literal-pathspecs")
         .arg("-C")
         .arg(root)
-        .args(args)
-        .output()
-        .context("Run Git")?;
+        .args(args);
+    if let Some(paths) = paths {
+        command.arg("--").args(paths);
+    }
+    let output = command.output().context("Run Git")?;
     if !output.status.success() {
         return Err(GitFailure {
             operation: args.first().copied().unwrap_or("inspect").into(),
@@ -97,18 +311,7 @@ pub fn project_status(root: &Path) -> ProjectStatus {
                 ".ratatoskr.toml",
             ],
         )?;
-        // Rename records include an additional NUL-delimited path, so parse the status prefix.
-        let mut records = changes.split(|b| *b == 0).filter(|r| !r.is_empty());
-        while let Some(record) = records.next() {
-            status.changed_files += 1;
-            if record.first() == Some(&b'R')
-                || record.get(1) == Some(&b'R')
-                || record.first() == Some(&b'C')
-                || record.get(1) == Some(&b'C')
-            {
-                records.next();
-            }
-        }
+        status.changed_files = changed_file_count(&changes);
         if let Ok(upstream) = git(
             root,
             &[
@@ -315,6 +518,16 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
     }
     git(&settings.source, &["rev-parse", "--verify", "@{upstream}"])?;
     git(&settings.source, &["pull", "--ff-only", "--no-rebase"])?;
+    let outgoing = commit_count(settings, "@{upstream}..HEAD")?;
+    if outgoing != 0 {
+        return Err(crate::tray::Problem::message(
+            "Content work pending",
+            format!(
+                "Content checkout has {outgoing} unpushed commits; use Push now in the desktop"
+            ),
+        )
+        .into());
+    }
     let plan = apply(settings)?;
     let pending: Vec<_> = plan
         .projects
@@ -344,7 +557,12 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
     Ok(plan)
 }
 
-fn validate_deploy_branch(settings: &Settings) -> Result<()> {
+fn validate_deploy_branch(settings: &Settings) -> Result<String> {
+    let top = String::from_utf8(git(&settings.source, &["rev-parse", "--show-toplevel"])?)?;
+    ensure!(
+        Path::new(top.trim()).canonicalize()? == settings.source.canonicalize()?,
+        "Content source must be the Git checkout root"
+    );
     git(
         &settings.source,
         &["check-ref-format", "--branch", &settings.deploy_branch],
@@ -391,7 +609,7 @@ fn validate_deploy_branch(settings: &Settings) -> Result<()> {
         upstream.trim(),
         expected
     );
-    Ok(())
+    Ok(remote.trim().into())
 }
 
 #[cfg(test)]

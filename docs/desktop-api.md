@@ -2,6 +2,14 @@
 
 PR #2 provides the Rust implementation, CLI equivalents and Tauri endpoints for the UI redesign. The desktop uses Svelte 5 and CodeMirror 6; structured edits use the same Rust core as the CLI. All command failures propagate as rejected invocations with contextual error text.
 
+## Central source publication
+
+The source-writing commands `save_global_instructions`, `save_skill_draft`, `set_skill_enabled`, `archive_source_skill`, `rename_source_skill`, `create_desktop_skill`, `add_skill_resource`, `save_structured_source`, `add_agent_target`, `resolve_conflict` (source actions), and `restore_workspace` (source restoration) run on a blocking worker and use the shared desktop source transaction. Central edits commit only actually changed paths and push the deploy upstream under `sync.lock` → `apply.lock`; monitored-project edits and CLI writers remain write-only. Setup (`connect_workspace`) initializes/connects/clones before an existing content workspace is available and does not publish edits.
+
+`read_workspace().plan.content_status` and `read_content_status()` expose `{changed_files, outgoing_commits, upstream, error}`. Unknown counts/upstreams remain nullable and inspection errors stay visible. The small status endpoint lets the UI update publication state after a rejected save without replacing a dirty editor. `push_content()` validates the deploy branch/upstream and pushes existing commits under the same locks, returning a snapshot; it never stages or commits files. Commit failures retain source bytes; push failures retain the local commit and reject with `saved and committed locally but NOT pushed: <reason>`.
+
+See [desktop save/freshness behavior](usage.md#desktop-saves-and-content-git-state). Source hashes and serialized conflict previews are revalidated after a successful clean-checkout fast-forward. Fetch/fast-forward failures stop before writing.
+
 ## Workspace reads
 
 `read_workspace()` rebuilds the snapshot from current on-disk settings, machine mode, plan, job history and legacy copies; it has no resident snapshot cache. The frontend serializes automatic reads, records their start time for the header, defers them while drafts or mutations are active, and visibly retains the last good time on failure. Activity consumes this shared snapshot rather than a separate jobs read.

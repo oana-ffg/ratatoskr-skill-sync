@@ -36,6 +36,14 @@ This policy deliberately refuses protections it cannot reproduce: native macOS f
 
 The app keeps configuration and project-removal controls available when source preview fails. The failure remains visible and blocks apply. CLI failures exit nonzero.
 
+## Desktop source publication
+
+Desktop-owned source edits use one typed `DesktopSourceEdit` dispatcher, separate from the write-only core/CLI functions. `desktop_source_edit` acquires OS operation locks in the same order as sync followed by apply: `sync.lock` → `apply.lock`. Internal locked editor/conflict/restore implementations avoid recursive acquisition. Both guards remain alive through fetch/fast-forward, hash/preview validation, source writes, commit, and push. Manual Apply is excluded by `apply.lock`; background sync is excluded by `sync.lock`. Updater idle guards already take these locks in this order. A failed second acquisition releases the first.
+
+The shared Git publisher reuses deployment validation and fingerprints only the selected operation's source scopes before and after writing. It stages individual changed paths with literal pathspecs and `git add -A`, then commits with `--only` so unrelated index entries cannot leak into the commit. Moves include their old and new paths; archive bytes are published alongside source deletions. An unchanged save creates no empty commit. Push uses an explicit deploy-branch refspec on its validated upstream remote, independent of custom `push.default`/remote push mappings. Normal user identity, signing, credentials, and hooks apply.
+
+The snapshot plan and CLI status share `ContentStatus`: all central uncommitted files, outgoing commits against the local upstream reference, upstream name, and inspection error. Publication failures are rejected IPC calls with explicit saved/committed/pushed state. The UI refreshes only this Git status on failure, preserving unsaved drafts, and offers a Push now retry for existing commits. Sync treats outgoing content commits as a persisted/alerted problem before applying. Project edits bypass publication; CLI source writers never invoke the desktop publisher. Configuration/setup/state/output-only commands are outside publication, except conflict resolution and backup restoration when they actually change central source files.
+
 ## Background operation
 
 A dedicated clean deployment checkout avoids scheduled pulls colliding with authoring edits. `sync` holds an OS-backed lock, performs a fast-forward-only pull, applies, handles optional standalone-helper updates, then reports success or failure through a deduplicated notification ledger. It retries apply on every invocation, even if Git has not changed. There is no watcher or per-project CI requirement.

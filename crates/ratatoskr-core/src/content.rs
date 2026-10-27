@@ -126,11 +126,16 @@ pub fn write_source_file(
 pub(crate) fn source(settings: &Settings, project: Option<&Path>) -> Result<PathBuf> {
     settings.validate()?;
     if let Some(root) = project {
+        // Registration stores std canonical paths (verbatim paths on Windows).
+        // Check the supplied path before canonicalizing so aliases cannot bypass
+        // the source tree's symlink and parent-traversal restrictions.
+        no_symlinks(root)?;
+        let root = root.canonicalize().context("Resolve project root")?;
         ensure!(
-            settings.projects.contains(&root.to_path_buf()),
+            settings.projects.contains(&root),
             "Project is not registered"
         );
-        let status = crate::project_status(root);
+        let status = crate::project_status(&root);
         ensure!(
             status.error.is_none(),
             "Project cannot be read: {:?}",
@@ -291,9 +296,17 @@ pub fn disable_skill(
 }
 
 pub fn archive_skill(settings: &Settings, project: Option<&Path>, name: &str) -> Result<PathBuf> {
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    archive_skill_locked(settings, project, name)
+}
+
+pub(crate) fn archive_skill_locked(
+    settings: &Settings,
+    project: Option<&Path>,
+    name: &str,
+) -> Result<PathBuf> {
     identifier(name)?;
     // Keep a concurrent apply from planning against a skill that disappears mid-run.
-    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let selected = source(settings, project)?;
     let skill = selected.join("skills").join(name);
     no_symlinks(&skill)?;

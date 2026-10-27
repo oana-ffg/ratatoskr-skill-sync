@@ -257,6 +257,11 @@ fn resolution_preview(
 }
 
 pub fn resolve_conflict(settings: &Settings, expected: &str) -> Result<PathBuf> {
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    resolve_conflict_locked(settings, expected)
+}
+
+pub(crate) fn resolve_conflict_locked(settings: &Settings, expected: &str) -> Result<PathBuf> {
     settings.validate()?;
     let expected: serde_json::Value = serde_json::from_str(expected)?;
     let path: PathBuf =
@@ -268,7 +273,6 @@ pub fn resolve_conflict(settings: &Settings, expected: &str) -> Result<PathBuf> 
             .clone(),
     )?;
     let source_edit = expected.get("source_edit").and_then(|v| v.as_str());
-    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let desired = desired(settings)?;
     let original = manifest(settings, &desired)?;
     let review = resolution_preview(settings, &path, action, source_edit, &desired, &original)?;

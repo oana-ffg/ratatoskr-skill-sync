@@ -1089,6 +1089,37 @@ fn reviewed_plan_refuses_changed_source_before_writing() {
 }
 
 #[test]
+fn project_source_lookup_accepts_native_and_simplified_canonical_paths() {
+    let f = Fixture::new();
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    git(&project, &["init", "-b", "main"]);
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    add_project(&config, &project, "agent-skills").unwrap();
+    let settings = load(&config).unwrap();
+    let native = project.canonicalize().unwrap();
+    let simplified = dunce::canonicalize(&project).unwrap();
+    assert_eq!(settings.projects, vec![native.clone()]);
+    let markdown = ratatoskr_core::new_skill_markdown("project-review", "Review project").unwrap();
+    ratatoskr_core::create_skill(&settings, Some(&simplified), "project-review", &markdown)
+        .unwrap();
+    for root in [&native, &simplified] {
+        let skill = ratatoskr_core::read_skill(&settings, Some(root), "project-review").unwrap();
+        assert_eq!(skill.markdown, markdown);
+    }
+    let unregistered = f.root.join("unregistered");
+    fs::create_dir(&unregistered).unwrap();
+    let error = ratatoskr_core::read_skill(&settings, Some(&unregistered), "project-review")
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("Project is not registered"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn project_content_renders_with_shared_machine_settings_and_can_be_detached() {
     let f = Fixture::new();
     let project = f.root.join("project");

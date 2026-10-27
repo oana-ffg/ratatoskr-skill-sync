@@ -1,5 +1,7 @@
 use crate::desktop_updates::{UpdateContext, automatic_update_with, manual_update_with};
-use ratatoskr_core::{self as core, Plan, Settings, SkillDocument, SkillEntry};
+use ratatoskr_core::{
+    self as core, DesktopSourceEdit as Edit, Plan, Settings, SkillDocument, SkillEntry,
+};
 use serde::Serialize;
 use std::{
     fs,
@@ -73,6 +75,7 @@ fn snapshot() -> Reply<Snapshot> {
     let path = config()?;
     let settings = settings()?;
     let mut plan = core::plan(&settings).unwrap_or_else(|error| Plan {
+        content_status: core::content_status(&settings),
         source: settings.source.clone(),
         machine: settings.machine.clone(),
         mode: "blocked".into(),
@@ -136,6 +139,16 @@ fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapsho
     snapshot()
 }
 
+// Source publication includes Git network I/O. Keep the UI thread responsive;
+// MUTATION and the core operation locks are acquired inside the worker.
+async fn source_mutation<T: Send + 'static>(
+    action: impl FnOnce() -> Reply<T> + Send + 'static,
+) -> Reply<T> {
+    tauri::async_runtime::spawn_blocking(action)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub(crate) fn read_workspace() -> Reply<Option<Snapshot>> {
     if !config()?.try_exists().map_err(|e| e.to_string())? {
@@ -178,6 +191,16 @@ pub(crate) fn connect_workspace(
 }
 
 #[tauri::command]
+pub(crate) fn read_content_status() -> Reply<core::ContentStatus> {
+    Ok(core::content_status(&settings()?))
+}
+
+#[tauri::command]
+pub(crate) async fn push_content() -> Reply<Snapshot> {
+    source_mutation(move || mutate(core::push_content)).await
+}
+
+#[tauri::command]
 pub(crate) fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
     mutate(|s| core::apply_reviewed(s, &expected_plan).map(|_| ()))
 }
@@ -187,8 +210,24 @@ pub(crate) fn read_global_instructions() -> Reply<core::SourceDocument> {
     core::read_global_instructions(&settings()?).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn save_global_instructions(markdown: String, expected_hash: String) -> Reply<Snapshot> {
-    mutate(|s| core::save_global_instructions(s, &markdown, &expected_hash))
+pub(crate) async fn save_global_instructions(
+    markdown: String,
+    expected_hash: String,
+) -> Reply<Snapshot> {
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                None,
+                Edit::GlobalInstructions {
+                    markdown: &markdown,
+                    expected_hash: &expected_hash,
+                },
+            )
+            .map(|_| ())
+        })
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) fn analyze_global_instructions(
@@ -229,12 +268,25 @@ pub(crate) fn read_source_skill(name: String, project: Option<PathBuf>) -> Reply
     core::read_skill(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn set_skill_enabled(
+pub(crate) async fn set_skill_enabled(
     name: String,
     project: Option<PathBuf>,
     enabled: bool,
 ) -> Reply<Snapshot> {
-    mutate(|s| core::disable_skill(s, project.as_deref(), &name, !enabled))
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                project.as_deref(),
+                Edit::SetEnabled {
+                    name: &name,
+                    enabled,
+                },
+            )
+            .map(|_| ())
+        })
+    })
+    .await
 }
 #[derive(Serialize)]
 pub(crate) struct ArchivedSkill {
@@ -242,17 +294,30 @@ pub(crate) struct ArchivedSkill {
     workspace: Snapshot,
 }
 #[tauri::command]
-pub(crate) fn archive_source_skill(name: String, project: Option<PathBuf>) -> Reply<ArchivedSkill> {
-    let mut path = PathBuf::new();
-    let workspace = mutate(|s| {
-        path = core::archive_skill(s, project.as_deref(), &name)?;
-        Ok(())
-    })?;
-    Ok(ArchivedSkill { path, workspace })
+pub(crate) async fn archive_source_skill(
+    name: String,
+    project: Option<PathBuf>,
+) -> Reply<ArchivedSkill> {
+    source_mutation(move || {
+        let mut path = PathBuf::new();
+        let workspace = mutate(|s| {
+            path = core::desktop_source_edit(s, project.as_deref(), Edit::Archive { name: &name })?
+                .ok_or_else(|| anyhow::anyhow!("Archive returned no path"))?;
+            Ok(())
+        })?;
+        Ok(ArchivedSkill { path, workspace })
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
-    mutate(|s| core::restore_backup(s, &backup).map(|_| ()))
+pub(crate) async fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(s, None, Edit::RestoreBackup { directory: &backup })
+                .map(|_| ())
+        })
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn sync_workspace(app: tauri::AppHandle) -> Reply<Snapshot> {
@@ -692,11 +757,23 @@ pub(crate) fn preview_conflict(
 }
 
 #[tauri::command]
-pub(crate) fn resolve_conflict(expected: String) -> Reply<String> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    core::resolve_conflict(&settings()?, &expected)
+pub(crate) async fn resolve_conflict(expected: String) -> Reply<String> {
+    source_mutation(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        core::desktop_source_edit(
+            &settings()?,
+            None,
+            Edit::ResolveConflict {
+                expected: &expected,
+            },
+        )
+        .and_then(|p| {
+            p.ok_or_else(|| anyhow::anyhow!("Conflict resolution returned no backup path"))
+        })
         .map(|p| p.display().to_string())
         .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -774,11 +851,24 @@ pub(crate) fn analyze_skill(
 }
 
 #[tauri::command]
-pub(crate) fn add_agent_target(
+pub(crate) async fn add_agent_target(
     target: core::AgentTarget,
     expected_hash: String,
 ) -> Reply<Snapshot> {
-    mutate(|s| core::add_agent_target(s, &target, &expected_hash))
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                None,
+                Edit::AddAgentTarget {
+                    target: &target,
+                    expected_hash: &expected_hash,
+                },
+            )
+            .map(|_| ())
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -795,7 +885,7 @@ pub(crate) fn edit_skill_draft(
 }
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn save_skill_draft(
+pub(crate) async fn save_skill_draft(
     name: String,
     project: Option<PathBuf>,
     markdown: String,
@@ -803,29 +893,49 @@ pub(crate) fn save_skill_draft(
     markdown_hash: String,
     metadata_hash: String,
 ) -> Reply<Snapshot> {
-    mutate(|s| {
-        core::save_skill_draft(
-            s,
-            project.as_deref(),
-            &name,
-            &markdown,
-            &metadata,
-            &markdown_hash,
-            &metadata_hash,
-        )
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                project.as_deref(),
+                Edit::SkillDraft {
+                    name: &name,
+                    markdown: &markdown,
+                    metadata: &metadata,
+                    markdown_hash: &markdown_hash,
+                    metadata_hash: &metadata_hash,
+                },
+            )
+            .map(|_| ())
+        })
     })
+    .await
 }
 #[tauri::command]
 pub(crate) fn read_structured_source(file: String) -> Reply<core::StructuredSource> {
     core::structured_source(&settings()?, &file).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn save_structured_source(
+pub(crate) async fn save_structured_source(
     file: String,
     hash: String,
     values: toml::Table,
 ) -> Reply<Snapshot> {
-    mutate(|s| core::save_structured_source(s, &file, &hash, values))
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                None,
+                Edit::StructuredSource {
+                    file: &file,
+                    hash: &hash,
+                    values,
+                },
+            )
+            .map(|_| ())
+        })
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) fn list_values(machine: String, harness: String) -> Reply<Vec<core::ValueOption>> {
@@ -839,22 +949,50 @@ pub(crate) fn list_skill_resources(
     core::skill_resources(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn add_skill_resource(
+pub(crate) async fn add_skill_resource(
     name: String,
     project: Option<PathBuf>,
     file: String,
     from: PathBuf,
 ) -> Reply<Snapshot> {
-    mutate(|s| core::add_skill_resource(s, project.as_deref(), &name, &file, &from))
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                project.as_deref(),
+                Edit::AddResource {
+                    name: &name,
+                    file: &file,
+                    from: &from,
+                },
+            )
+            .map(|_| ())
+        })
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn rename_source_skill(
+pub(crate) async fn rename_source_skill(
     name: String,
     project: Option<PathBuf>,
     new_name: String,
     expected_hash: String,
 ) -> Reply<Snapshot> {
-    mutate(|s| core::rename_skill(s, project.as_deref(), &name, &new_name, &expected_hash))
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                project.as_deref(),
+                Edit::Rename {
+                    name: &name,
+                    new_name: &new_name,
+                    expected_hash: &expected_hash,
+                },
+            )
+            .map(|_| ())
+        })
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn choose_folder(app: tauri::AppHandle) -> Reply<Option<String>> {
@@ -917,19 +1055,25 @@ pub(crate) fn preview_install_path(
         .map_err(|e| format!("{e:#}"))
 }
 #[tauri::command]
-pub(crate) fn create_desktop_skill(
+pub(crate) async fn create_desktop_skill(
     name: String,
     project: Option<PathBuf>,
     description: String,
 ) -> Reply<Snapshot> {
-    mutate(|s| {
-        core::create_skill(
-            s,
-            project.as_deref(),
-            &name,
-            &core::new_skill_markdown(&name, &description)?,
-        )
+    source_mutation(move || {
+        mutate(|s| {
+            core::desktop_source_edit(
+                s,
+                project.as_deref(),
+                Edit::Create {
+                    name: &name,
+                    description: &description,
+                },
+            )
+            .map(|_| ())
+        })
     })
+    .await
 }
 
 #[tauri::command]
