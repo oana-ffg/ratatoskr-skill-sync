@@ -34,7 +34,7 @@ Analysis diagnoses parser errors, unknown active variables, malformed substituti
 - `analyze_global_instructions({markdown, machine, harness})` returns the same `blocks`, `variables` and `diagnostics` shape as `analyze_skill`, without frontmatter checks.
 - `preview_global_instructions({markdown, machine, harness})` renders the draft with the deployment renderer for one enabled target. An empty string means that target receives an empty file.
 - `preview_global_instructions_path({machine, harness})` gives the target's instructions file, including a live `global_root` such as Codex's.
-- `save_global_instructions({markdown, expectedHash})` refuses stale hashes, blank text and conditional-block errors, then validates the draft for every machine × harness under the operation lock. Only problems introduced in `global/AGENTS.md` block the save, matching `save_skill_draft`. Returns a snapshot.
+- `save_global_instructions({markdown, expectedHash})` refuses stale hashes, blank text and conditional-block errors, then validates the draft for every machine × harness under the operation lock. As with `save_skill_draft`, the current machine must render without errors, including in unrelated skills; on other profiles only problems introduced in `global/AGENTS.md` block the save. Returns a snapshot.
 
 `write_source_file` refuses `global/AGENTS.md` because it validates only the current machine.
 
@@ -93,7 +93,7 @@ Plans include `install_targets` with the renderer's harness, skill root, instruc
 
 ### Updates without a workspace
 
-`read_update_settings` returns the effective `endpoint`, `override_active`, `automatic`, and `time`. `startup_update` and `update_desktop` work before a workspace is connected, using compiled official defaults. Existing configurations retain their update overrides. `read_local_settings`, `save_local_settings`, and `save_update_schedule` remain workspace operations; onboarding Settings displays the default schedule and exposes manual check/install/restart without invoking those operations.
+`read_update_settings` returns the effective `endpoint`, `override_active`, `automatic`, and `time`. `startup_update` and `update_desktop` work before a workspace is connected, using compiled official defaults. Existing configurations retain their update overrides. `read_local_settings` and `save_local_settings` remain workspace operations; onboarding Settings displays the default schedule and exposes manual check/install/restart without invoking those operations.
 
 ## Windows tray sync
 

@@ -241,6 +241,8 @@
   }
   let editQueue = Promise.resolve();
   let pendingEdits = $state(0);
+  // Rename and Archive act on the saved files; an in-flight edit can still make the draft dirty.
+  const settled = $derived(!dirty && pendingEdits === 0);
   function edit(operation: Record<string, unknown>): Promise<void> {
     pendingEdits++;
     const next = editQueue
@@ -346,7 +348,9 @@
     else openOnly(b);
   }
   async function rename() {
-    if (!document) return;
+    if (!document || busy) return;
+    await editQueue;
+    if (!settled) return;
     busy = true;
     try {
       onupdate(
@@ -366,6 +370,9 @@
     }
   }
   async function archive() {
+    if (busy) return;
+    await editQueue;
+    if (!settled) return;
     busy = true;
     try {
       archived = await api.command<{ path: string; workspace: Snapshot }>(
@@ -379,6 +386,8 @@
     }
   }
   function closeArchive() {
+    // A pending archive must finish so its result is never lost with the dialog.
+    if (busy) return;
     // The skill no longer exists; leave the editor before showing the new snapshot.
     if (archived) onarchived(archived.workspace);
     else picker = null;
@@ -448,14 +457,14 @@
                   : "✓ Valid"}</span
           ><button
             class="subtle"
-            disabled={dirty}
+            disabled={!settled}
             onclick={() => {
               newName = skill.name;
               picker = "rename";
             }}>Rename</button
           ><button
             class="subtle"
-            disabled={dirty}
+            disabled={!settled}
             onclick={() => (picker = "archive")}>Archive</button
           >
         </div>
@@ -784,7 +793,7 @@
     <footer class="dialog-actions">
       <button
         class="primary"
-        disabled={busy || newName === skill.name || !newName}
+        disabled={busy || !settled || newName === skill.name || !newName}
         onclick={rename}>Rename skill</button
       ><button onclick={() => (picker = null)}>Cancel</button>
     </footer></Dialog
@@ -805,9 +814,9 @@
         Nothing is deleted. Installed copies are removed on the next Apply.
       </p>
       <footer class="dialog-actions">
-        <button class="primary" disabled={busy} onclick={archive}
+        <button class="primary" disabled={busy || !settled} onclick={archive}
           >Archive skill</button
-        ><button onclick={() => (picker = null)}>Cancel</button>
+        ><button disabled={busy} onclick={closeArchive}>Cancel</button>
       </footer>{/if}</Dialog
   >{/if}
 {#if picker === "variant"}<Dialog

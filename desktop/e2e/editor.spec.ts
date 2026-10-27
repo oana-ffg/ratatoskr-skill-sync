@@ -277,3 +277,46 @@ test("archive moves the skill out of the library and shows where it went", async
     page.getByRole("button", { name: /recordings Enabled/ }),
   ).toHaveCount(0);
 });
+
+test("archive waits for queued edits and keeps its result when dismissed mid-request", async ({
+  page,
+}) => {
+  const backend = editorFixture();
+  const gates: Record<string, () => void> = {};
+  const held = new Set(["edit_skill_draft", "archive_source_skill"]);
+  await installFixture(page, async (cmd, args) => {
+    if (held.has(cmd)) {
+      held.delete(cmd);
+      await new Promise<void>((resolve) => (gates[cmd] = resolve));
+    }
+    return backend.invoke(cmd, args);
+  });
+  await openEditor(page);
+  const archiveButton = page.getByRole("button", { name: "Archive" });
+  await page.getByRole("button", { name: "＋ Insert value…" }).click();
+  await page
+    .getByRole("dialog", { name: "Insert a value" })
+    .getByRole("button")
+    .filter({ hasText: "▣" })
+    .first()
+    .click();
+  await expect.poll(() => !!gates.edit_skill_draft).toBe(true);
+  await expect(archiveButton).toBeDisabled();
+  gates.edit_skill_draft();
+  await expect(
+    page.getByText("Unsaved changes", { exact: true }),
+  ).toBeVisible();
+  await expect(archiveButton).toBeDisabled();
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await archiveButton.click();
+  const dialog = page.getByRole("dialog", { name: "Archive skill" });
+  await dialog.getByRole("button", { name: "Archive skill" }).click();
+  await expect.poll(() => !!gates.archive_source_skill).toBe(true);
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  gates.archive_source_skill();
+  await expect(
+    page.getByRole("dialog", { name: "Skill archived" }),
+  ).toBeVisible();
+});
