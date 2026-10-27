@@ -320,3 +320,21 @@ test("archive waits for queued edits and keeps its result when dismissed mid-req
     page.getByRole("dialog", { name: "Skill archived" }),
   ).toBeVisible();
 });
+
+test("the Find button and shortcut search the skill body", async ({ page }) => {
+  const backend = editorFixture();
+  await installFixture(page, backend.invoke);
+  await openEditor(page);
+  await page.getByRole("button", { name: "Find" }).click();
+  const field = page.getByRole("textbox", { name: "Find" });
+  await expect(field).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(field).toHaveCount(0);
+  const editor = page.getByRole("textbox", { name: "Skill Markdown editor" });
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+f");
+  await expect(field).toBeFocused();
+  const word = (await editor.innerText()).match(/[A-Za-z]{6,}/)![0];
+  await field.pressSequentially(word);
+  await expect(page.locator(".cm-searchMatch").first()).toBeVisible();
+});

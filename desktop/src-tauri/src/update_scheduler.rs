@@ -56,8 +56,35 @@ fn report(app: &tauri::AppHandle, result: &Result<bool, String>) {
     }
 }
 
+/// CLI requests are polled on their own task, so request work never delays the
+/// nightly policy's one-minute clock.
+const REQUEST_POLL: Duration = Duration::from_secs(5);
+
+fn poll_requests(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::commands::settle_requested_update() {
+            report(&handle, &Err(error));
+        }
+        let mut last_error = None;
+        loop {
+            tokio::time::sleep(REQUEST_POLL).await;
+            // Report a persistent request failure once, not on every poll.
+            let failure = crate::commands::requested_update(handle.clone())
+                .await
+                .err();
+            if let Some(error) = &failure
+                && failure != last_error
+            {
+                report(&handle, &Err(error.clone()));
+            }
+            last_error = failure;
+        }
+    });
+}
+
 pub(crate) fn setup(app: &tauri::App) {
     let handle = app.handle().clone();
+    poll_requests(handle.clone());
     tauri::async_runtime::spawn(async move {
         report(&handle, &startup(handle.clone()).await);
         loop {

@@ -909,6 +909,55 @@ nav button.active {
   font-size: 10px;
   opacity: 0.7;
 }
+.cm-panels {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+/* CodeMirror's find panel: undo the app's block-level form styles. */
+.cm-search {
+  padding: 6px 10px !important;
+  font-family: inherit;
+  font-size: 12px;
+}
+.cm-search input,
+.cm-search button {
+  width: auto;
+  display: inline-block;
+  margin: 2px 4px 2px 0 !important;
+  padding: 4px 8px;
+  background: var(--surface-2) !important;
+  background-image: none !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 6px;
+}
+.cm-search input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  vertical-align: middle;
+}
+.cm-search .cm-textfield {
+  width: 220px;
+}
+.cm-search label {
+  display: inline-flex;
+  align-items: center;
+  margin: 2px 8px 2px 0;
+  font-weight: 400;
+  color: var(--muted);
+}
+.cm-search label input {
+  margin: 0 4px 0 0 !important;
+}
+.cm-searchMatch {
+  background: color-mix(in srgb, var(--accent) 25%, transparent) !important;
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--accent) 50%, transparent) !important;
+}
 .cm-activeLine,
 .cm-activeLineGutter {
   background: var(--surface-2) !important;

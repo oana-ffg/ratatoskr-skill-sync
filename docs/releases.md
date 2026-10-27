@@ -1,5 +1,11 @@
 # Releases and signed updates
 
+## v0.2.17 release notes
+
+- Search skills and global instructions with Ctrl/⌘F or the toolbar's Find button, including next/previous, match case, regular expressions and replace.
+- Add `ratatoskr update --desktop` so agents and scripts can update the desktop app without its UI. The bundled CLI queues the request, and the running app installs the signed update with the nightly path's checks, then restarts hidden. `--status` reports the result. The app is started hidden if it isn't running.
+- Stop unattended launches from taking focus. Login launches, CLI requests and the restarts after nightly or requested installs no longer activate the app on macOS, and those restarts keep the window hidden. Reopen it from the Dock or tray.
+
 ## v0.2.16 release notes
 
 - Add a **Global instructions** screen for the shared `global/AGENTS.md`, with the skill editor's conditions, values and live per-agent × machine preview, including each agent's destination file. Saving checks every machine profile and refuses new problems, blank text or a stale source. The generic source save no longer accepts this file because it checked only the current machine.

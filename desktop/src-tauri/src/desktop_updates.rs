@@ -14,7 +14,7 @@ pub(crate) struct UpdateContext {
 }
 
 /// A configured install holds workspace locks; an unconfigured app has no work to lock.
-struct InstallationGuard {
+pub(crate) struct InstallationGuard {
     _workspace: Option<core::updates::UpdateGuard>,
 }
 
@@ -56,6 +56,17 @@ impl UpdateContext {
         Ok(state)
     }
 
+    /// An explicit request's check counts toward update health like a manual check,
+    /// without consuming an automatic slot or opening a catch-up window.
+    pub(crate) fn record_explicit_check(
+        &self,
+        now: chrono::DateTime<chrono::FixedOffset>,
+    ) -> Result<()> {
+        let mut state = self.state()?;
+        state.observe(&self.state_path, self.settings(), now, false)?;
+        state.record_success(&self.state_path, now, false)
+    }
+
     pub(crate) fn installation_allowed(
         &self,
         now: chrono::DateTime<chrono::FixedOffset>,
@@ -65,7 +76,7 @@ impl UpdateContext {
             .installation_allowed(self.settings(), now, launch)
     }
 
-    fn idle_guard(&self, launch: bool) -> Result<Option<InstallationGuard>> {
+    pub(crate) fn idle_guard(&self, launch: bool) -> Result<Option<InstallationGuard>> {
         match &self.workspace {
             Some(settings) => {
                 Ok(

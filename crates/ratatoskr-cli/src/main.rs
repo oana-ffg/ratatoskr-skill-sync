@@ -68,10 +68,17 @@ enum Action {
         #[command(subcommand)]
         action: ScheduleAction,
     },
-    /// Check for a newer signed helper, optionally installing it.
+    /// Check for a newer signed helper, optionally installing it, or update the desktop app.
     Update {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "desktop")]
         install: bool,
+        /// Ask the desktop app beside this CLI to install its signed update and restart
+        /// hidden. It waits while edits or operations are in progress. No window opens.
+        #[arg(long)]
+        desktop: bool,
+        /// Show the last desktop update request and its result.
+        #[arg(long, requires = "desktop")]
+        status: bool,
     },
     /// Register or unregister a project for skill-source Git monitoring.
     Project {
@@ -550,7 +557,56 @@ fn run() -> Result<i32> {
                 ScheduleAction::Remove => core::remove_schedule(&settings)?,
             }
         }
-        Action::Update { install } => {
+        Action::Update {
+            desktop: true,
+            status: false,
+            ..
+        } => {
+            let queued = core::updates::queue_desktop_update()?;
+            println!(
+                "Desktop update requested at {}.{}",
+                queued.request.requested_at.to_rfc3339(),
+                if queued.launched {
+                    " The desktop app was not running and has been started hidden."
+                } else {
+                    ""
+                }
+            );
+            println!(
+                "The app checks within seconds, installs any newer signed release once no edits or operations are in progress, and restarts hidden. Run `ratatoskr update --desktop --status` for the result."
+            );
+        }
+        Action::Update {
+            desktop: true,
+            status: true,
+            ..
+        } => {
+            let (request, response) =
+                core::updates::desktop_request_status(&core::updates::desktop_data_dir()?)?;
+            let failed = response.as_ref().is_some_and(|r| {
+                matches!(
+                    r.outcome,
+                    core::updates::DesktopRequestOutcome::Failed { .. }
+                )
+            });
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "request": request, "response": response })
+                    )?
+                );
+            } else {
+                println!(
+                    "{}",
+                    desktop_request_text(request.as_ref(), response.as_ref())
+                );
+            }
+            if failed {
+                return Ok(1);
+            }
+        }
+        Action::Update { install, .. } => {
             let settings = load(&path)?;
             let update = &settings.updates;
             let result: anyhow::Result<()> = (|| {
@@ -602,6 +658,31 @@ fn run() -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+fn desktop_request_text(
+    request: Option<&core::updates::DesktopUpdateRequest>,
+    response: Option<&core::updates::DesktopUpdateResponse>,
+) -> String {
+    use core::updates::DesktopRequestOutcome as Outcome;
+    let Some(request) = request else {
+        return "No desktop update has been requested.".into();
+    };
+    let Some(response) = response else {
+        return format!(
+            "Requested at {}; waiting for the desktop app. It defers while edits or operations are in progress.",
+            request.requested_at.to_rfc3339()
+        );
+    };
+    let at = response.finished_at.to_rfc3339();
+    match &response.outcome {
+        Outcome::Current => format!("{at}: already up to date."),
+        Outcome::Installing { version } => {
+            format!("{at}: installing {version}; the app restarts to finish.")
+        }
+        Outcome::Installed { version } => format!("{at}: installed {version}."),
+        Outcome::Failed { error } => format!("{at}: failed: {error}"),
+    }
 }
 
 fn main() {
