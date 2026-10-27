@@ -441,6 +441,14 @@ pub fn clear_restart_mode(path: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
+/// The launch visibility `consume_restart_mode` will choose, without consuming the intent.
+pub fn peek_restart_mode(path: &std::path::Path, background_argument: bool) -> Result<bool> {
+    no_symlinks(path)?;
+    if !path.try_exists()? {
+        return Ok(background_argument);
+    }
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
 pub fn consume_restart_mode(path: &std::path::Path, background_argument: bool) -> Result<bool> {
     no_symlinks(path)?;
     if !path.try_exists()? {
@@ -461,6 +469,8 @@ mod restart_tests {
         assert!(!consume_restart_mode(&path, false).unwrap());
         assert!(consume_restart_mode(&path, true).unwrap());
         save_restart_mode(&path, true).unwrap();
+        // Peeking (to decide launch activation) leaves the one-shot intent in place.
+        assert!(peek_restart_mode(&path, false).unwrap());
         assert!(consume_restart_mode(&path, false).unwrap());
         assert!(!path.exists());
         save_restart_mode(&path, false).unwrap();

@@ -659,6 +659,8 @@ pub fn idle_guard(settings: &crate::Settings, wait: bool) -> Result<Option<Updat
 pub struct DesktopUpdateRequest {
     pub id: String,
     pub requested_at: chrono::DateTime<chrono::FixedOffset>,
+    /// The desktop executable that must carry out the request; other copies ignore it.
+    pub app: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -688,6 +690,78 @@ pub enum DesktopRequestOutcome {
 
 const REQUEST_FILE: &str = "desktop-update-request.json";
 const RESPONSE_FILE: &str = "desktop-update-response.json";
+const INSTANCE_LOCK: &str = "desktop-instance.lock";
+const INSTANCE_FILE: &str = "desktop-instance.json";
+
+fn same_app(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+fn instance_lock(data: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(data)?;
+    let path = data.join(INSTANCE_LOCK);
+    crate::config::no_symlinks(&path)?;
+    Ok(std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?)
+}
+
+/// Held by the running desktop app for its lifetime. The CLI uses it to find out whether,
+/// and from where, the app is running, without asking the OS to launch or reopen it.
+pub struct DesktopInstance {
+    lock: std::fs::File,
+}
+
+impl Drop for DesktopInstance {
+    fn drop(&mut self) {
+        if let Err(error) = fs2::FileExt::unlock(&self.lock) {
+            eprintln!("Ratatoskr: release desktop instance lock: {error}");
+        }
+    }
+}
+
+/// Claim the instance for `app`; `None` while another desktop process holds it.
+pub fn claim_desktop_instance(
+    data: &std::path::Path,
+    app: &std::path::Path,
+) -> Result<Option<DesktopInstance>> {
+    let lock = instance_lock(data)?;
+    match fs2::FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => {
+            // A separate file: Windows locks block other processes from reading the lock file.
+            crate::config::atomic_write(&data.join(INSTANCE_FILE), &serde_json::to_vec(app)?)?;
+            Ok(Some(DesktopInstance { lock }))
+        }
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Ok(None)
+        }
+        Err(error) => Err(error).context("Claim the desktop instance"),
+    }
+}
+
+/// The executable of the running desktop app, if one holds the instance lock.
+pub fn running_desktop(data: &std::path::Path) -> Result<Option<std::path::PathBuf>> {
+    let lock = instance_lock(data)?;
+    match fs2::FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => {
+            fs2::FileExt::unlock(&lock)?;
+            Ok(None)
+        }
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            let app: Option<std::path::PathBuf> = read_json(&data.join(INSTANCE_FILE))?;
+            Ok(Some(app.context(
+                "A desktop app is starting but has not recorded its path; retry in a moment",
+            )?))
+        }
+        Err(error) => Err(error).context("Check for a running desktop app"),
+    }
+}
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<Option<T>> {
     crate::config::no_symlinks(path)?;
@@ -702,6 +776,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<O
 
 pub fn request_desktop_update(
     data: &std::path::Path,
+    app: &std::path::Path,
     now: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<DesktopUpdateRequest> {
     let nanos = std::time::SystemTime::now()
@@ -710,6 +785,7 @@ pub fn request_desktop_update(
     let request = DesktopUpdateRequest {
         id: format!("{nanos}-{}", std::process::id()),
         requested_at: now,
+        app: app.to_path_buf(),
     };
     std::fs::create_dir_all(data)?;
     crate::config::atomic_write(
@@ -721,18 +797,29 @@ pub fn request_desktop_update(
 
 pub struct QueuedDesktopUpdate {
     pub request: DesktopUpdateRequest,
-    /// macOS: the app was not running, so this call started it hidden. Windows always
-    /// hands off to the tray app's single instance, which starts it if needed.
+    /// The app was not running, so this call started it hidden.
     pub launched: bool,
 }
 
-/// Queue an install for the desktop app beside this CLI and make sure it runs,
-/// hidden, to carry it out. Never opens or focuses a window.
+/// Queue an install for the desktop app beside this CLI and make sure it runs, hidden,
+/// to carry it out. The app is started directly rather than through the OS launcher,
+/// so no window opens and the app is neither activated nor reopened.
 pub fn queue_desktop_update() -> Result<QueuedDesktopUpdate> {
     let desktop = desktop_beside(&std::env::current_exe()?)?;
-    let request =
-        request_desktop_update(&desktop_data_dir()?, chrono::Local::now().fixed_offset())?;
-    let launched = start_desktop_hidden(&desktop)?;
+    let data = desktop_data_dir()?;
+    let running = running_desktop(&data)?;
+    if let Some(running) = &running {
+        ensure!(
+            same_app(running, &desktop),
+            "Another copy of Ratatoskr is running from {}. Quit it, then request the update again.",
+            running.display()
+        );
+    }
+    let request = request_desktop_update(&data, &desktop, chrono::Local::now().fixed_offset())?;
+    let launched = running.is_none();
+    if launched {
+        start_desktop_hidden(&desktop)?;
+    }
     Ok(QueuedDesktopUpdate { request, launched })
 }
 
@@ -750,51 +837,24 @@ fn desktop_beside(cli: &std::path::Path) -> Result<std::path::PathBuf> {
     Ok(desktop)
 }
 
-#[cfg(target_os = "macos")]
-fn start_desktop_hidden(desktop: &std::path::Path) -> Result<bool> {
-    let running = std::process::Command::new("pgrep")
-        .args(["-x", "ratatoskr-desktop"])
-        .stdout(std::process::Stdio::null())
-        .status()
-        .context("Check whether the desktop app is running")?;
-    if running.success() {
-        return Ok(false);
-    }
-    let bundle = desktop
-        .ancestors()
-        .find(|p| p.extension().is_some_and(|e| e == "app"))
-        .context("Desktop app bundle not found")?;
-    // -g keeps the app in the background; --background keeps its window hidden.
-    let status = std::process::Command::new("open")
-        .arg("-g")
-        .arg("-a")
-        .arg(bundle)
-        .args(["--args", "--background"])
-        .status()
-        .context("Start the desktop app")?;
-    ensure!(
-        status.success(),
-        "Starting the desktop app failed: {status}"
-    );
-    Ok(true)
-}
-
-#[cfg(windows)]
-fn start_desktop_hidden(desktop: &std::path::Path) -> Result<bool> {
-    use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    // A running tray app receives this as a second instance; --background keeps it hidden.
-    std::process::Command::new(desktop)
+/// Start the desktop executable directly with `--background`, detached from the caller.
+pub fn start_desktop_hidden(desktop: &std::path::Path) -> Result<()> {
+    let mut command = std::process::Command::new(desktop);
+    command
         .arg("--background")
-        .creation_flags(DETACHED_PROCESS)
-        .spawn()
-        .context("Start the desktop app")?;
-    Ok(false)
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn start_desktop_hidden(_desktop: &std::path::Path) -> Result<bool> {
-    anyhow::bail!("Desktop updates are available on macOS and Windows")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        command.creation_flags(DETACHED_PROCESS);
+    }
+    command.spawn().context("Start the desktop app")?;
+    Ok(())
 }
 
 /// The latest request and the desktop's answer to it, if any.
@@ -807,10 +867,13 @@ pub fn desktop_request_status(
     Ok((request, response))
 }
 
-/// A request still waiting for the desktop to install or decline it.
-pub fn pending_desktop_request(data: &std::path::Path) -> Result<Option<DesktopUpdateRequest>> {
+/// A request for `app` still waiting to be installed or declined.
+pub fn pending_desktop_request(
+    data: &std::path::Path,
+    app: &std::path::Path,
+) -> Result<Option<DesktopUpdateRequest>> {
     let (request, response) = desktop_request_status(data)?;
-    Ok(request.filter(|_| response.is_none()))
+    Ok(request.filter(|r| response.is_none() && same_app(&r.app, app)))
 }
 
 pub fn answer_desktop_request(
@@ -831,27 +894,27 @@ pub fn answer_desktop_request(
 }
 
 /// Run at desktop startup: settle an install that ended with the app restarting.
+/// Returns the settled outcome so the caller can report it like any update result.
 pub fn finish_desktop_request(
     data: &std::path::Path,
     running: &str,
     now: chrono::DateTime<chrono::FixedOffset>,
-) -> Result<()> {
+) -> Result<Option<DesktopRequestOutcome>> {
     let (Some(request), Some(response)) = desktop_request_status(data)? else {
-        return Ok(());
+        return Ok(None);
     };
-    if let DesktopRequestOutcome::Installing { version } = response.outcome {
-        let outcome = if version == running {
-            DesktopRequestOutcome::Installed { version }
-        } else {
-            DesktopRequestOutcome::Failed {
-                error: format!(
-                    "Installer for {version} finished, but the app still runs {running}"
-                ),
-            }
-        };
-        answer_desktop_request(data, &request, now, outcome)?;
-    }
-    Ok(())
+    let DesktopRequestOutcome::Installing { version } = response.outcome else {
+        return Ok(None);
+    };
+    let outcome = if version == running {
+        DesktopRequestOutcome::Installed { version }
+    } else {
+        DesktopRequestOutcome::Failed {
+            error: format!("Installer for {version} finished, but the app still runs {running}"),
+        }
+    };
+    answer_desktop_request(data, &request, now, outcome.clone())?;
+    Ok(Some(outcome))
 }
 
 #[cfg(test)]
@@ -891,43 +954,73 @@ mod tests {
     #[test]
     fn desktop_requests_are_answered_once_and_settled_after_restart() {
         let temp = tempfile::tempdir().unwrap();
-        let data = temp.path().canonicalize().unwrap().join("app");
+        let root = temp.path().canonicalize().unwrap();
+        let data = root.join("app");
+        let app = root.join("ratatoskr-desktop");
+        let other = root.join("backup/ratatoskr-desktop");
         let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T20:00:00+01:00").unwrap();
-        assert_eq!(pending_desktop_request(&data).unwrap(), None);
-        let first = request_desktop_update(&data, now).unwrap();
-        assert_eq!(pending_desktop_request(&data).unwrap(), Some(first.clone()));
+        assert_eq!(pending_desktop_request(&data, &app).unwrap(), None);
+        let first = request_desktop_update(&data, &app, now).unwrap();
+        assert_eq!(
+            pending_desktop_request(&data, &app).unwrap(),
+            Some(first.clone())
+        );
+        // Another copy of the app never takes a request addressed to this one.
+        assert_eq!(pending_desktop_request(&data, &other).unwrap(), None);
         answer_desktop_request(&data, &first, now, DesktopRequestOutcome::Current).unwrap();
-        assert_eq!(pending_desktop_request(&data).unwrap(), None);
+        assert_eq!(pending_desktop_request(&data, &app).unwrap(), None);
+        assert_eq!(finish_desktop_request(&data, "0.2.17", now).unwrap(), None);
 
         // A new request is pending again; the old answer does not satisfy it.
-        let second = request_desktop_update(&data, now).unwrap();
+        let second = request_desktop_update(&data, &app, now).unwrap();
         assert_ne!(first.id, second.id);
         assert_eq!(
-            pending_desktop_request(&data).unwrap(),
+            pending_desktop_request(&data, &app).unwrap(),
             Some(second.clone())
         );
         let installing = DesktopRequestOutcome::Installing {
             version: "0.2.17".into(),
         };
         answer_desktop_request(&data, &second, now, installing.clone()).unwrap();
-        finish_desktop_request(&data, "0.2.17", now).unwrap();
-        let (_, response) = desktop_request_status(&data).unwrap();
+        let installed = DesktopRequestOutcome::Installed {
+            version: "0.2.17".into(),
+        };
         assert_eq!(
-            response.unwrap().outcome,
-            DesktopRequestOutcome::Installed {
-                version: "0.2.17".into()
-            }
+            finish_desktop_request(&data, "0.2.17", now).unwrap(),
+            Some(installed.clone())
+        );
+        assert_eq!(
+            desktop_request_status(&data).unwrap().1.unwrap().outcome,
+            installed
         );
 
         // An installer that left the old version running is reported, not hidden.
-        let third = request_desktop_update(&data, now).unwrap();
+        let third = request_desktop_update(&data, &app, now).unwrap();
         answer_desktop_request(&data, &third, now, installing).unwrap();
-        finish_desktop_request(&data, "0.2.16", now).unwrap();
-        let (_, response) = desktop_request_status(&data).unwrap();
+        let settled = finish_desktop_request(&data, "0.2.16", now).unwrap();
         assert!(matches!(
-            response.unwrap().outcome,
-            DesktopRequestOutcome::Failed { error } if error.contains("still runs 0.2.16")
+            settled,
+            Some(DesktopRequestOutcome::Failed { error }) if error.contains("still runs 0.2.16")
         ));
+        assert_eq!(pending_desktop_request(&data, &app).unwrap(), None);
+    }
+
+    #[test]
+    fn the_running_desktop_holds_the_instance_and_names_its_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let data = root.join("app");
+        let app = root.join("ratatoskr-desktop");
+        assert_eq!(running_desktop(&data).unwrap(), None);
+        let instance = claim_desktop_instance(&data, &app).unwrap().unwrap();
+        assert_eq!(running_desktop(&data).unwrap(), Some(app.clone()));
+        assert!(
+            claim_desktop_instance(&data, &root.join("other"))
+                .unwrap()
+                .is_none()
+        );
+        drop(instance);
+        assert_eq!(running_desktop(&data).unwrap(), None);
     }
     #[test]
     fn desktop_install_defers_for_other_process_operations() {

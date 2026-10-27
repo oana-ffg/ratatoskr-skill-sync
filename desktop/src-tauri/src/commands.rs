@@ -296,18 +296,24 @@ fn install_desktop_update(
 ) -> anyhow::Result<()> {
     // The updater verifies the signed download before invoking the installer.
     let bytes = tauri::async_runtime::block_on(update.download(|_, _| (), || ()))?;
-    install_downloaded_update(app, &update, bytes)
+    install_downloaded_update(app, &update, bytes, false)
 }
 
+/// `quiet` installs run unattended: the restart that follows keeps the window hidden.
 fn install_downloaded_update(
     app: &tauri::AppHandle,
     update: &tauri_plugin_updater::Update,
     bytes: Vec<u8>,
+    quiet: bool,
 ) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = app;
+    let _ = (app, quiet);
     #[cfg(any(windows, target_os = "macos"))]
-    crate::window_lifecycle::prepare_restart(app)?;
+    if quiet {
+        crate::window_lifecycle::prepare_quiet_restart(app)?;
+    } else {
+        crate::window_lifecycle::prepare_restart(app)?;
+    }
     let result = update.install(bytes);
     #[cfg(any(windows, target_os = "macos"))]
     if result.is_err() {
@@ -446,7 +452,7 @@ pub(crate) async fn automatic_update(
                     {
                         return Ok(false);
                     }
-                    install_downloaded_update(&app, update, bytes)?;
+                    install_downloaded_update(&app, update, bytes, true)?;
                     installed = true;
                     Ok(true)
                 },
@@ -473,7 +479,9 @@ pub(crate) async fn automatic_update(
             if let Err(error) = &result {
                 eprintln!("Ratatoskr: {error}");
             }
-            app.restart();
+            if let Err(error) = crate::window_lifecycle::quiet_restart(&app) {
+                return Err(format!("{error:#}"));
+            }
         }
         result
     })
@@ -482,13 +490,14 @@ pub(crate) async fn automatic_update(
 }
 
 /// Carries out an install queued by `ratatoskr update --desktop` with the nightly
-/// path's signed updater and idle checks. Busy work defers to a later tick.
+/// path's signed updater and idle checks. Busy work defers to a later poll.
 pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
     use core::updates::DesktopRequestOutcome;
     tauri::async_runtime::spawn_blocking(move || {
         let data = core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let Some(request) =
-            core::updates::pending_desktop_request(&data).map_err(|e| format!("{e:#}"))?
+            core::updates::pending_desktop_request(&data, &exe).map_err(|e| format!("{e:#}"))?
         else {
             return Ok(());
         };
@@ -501,9 +510,13 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
             Err(error) => return Err(error.to_string()),
         };
         let context = update_context()?;
+        // Same order as the manual path: serializes update-health writes with nightly checks.
+        let _nightly = NIGHTLY.lock().map_err(|e| e.to_string())?;
         let result = (|| -> anyhow::Result<Option<DesktopRequestOutcome>> {
             let checked =
                 tauri::async_runtime::block_on(desktop_updater(&app, context.settings())?.check())?;
+            // Like a manual check: counts toward health without using an automatic slot.
+            context.record_explicit_check(chrono::Local::now().fixed_offset())?;
             let Some(update) = checked else {
                 return Ok(Some(DesktopRequestOutcome::Current));
             };
@@ -517,13 +530,14 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
             let installing = DesktopRequestOutcome::Installing {
                 version: update.version.clone(),
             };
+            // Windows exits inside the installer, so record the attempt first.
             core::updates::answer_desktop_request(
                 &data,
                 &request,
                 chrono::Local::now().fixed_offset(),
                 installing.clone(),
             )?;
-            install_downloaded_update(&app, &update, bytes)?;
+            install_downloaded_update(&app, &update, bytes, true)?;
             // The restarted app confirms its version and records the final outcome.
             Ok(Some(installing))
         })();
@@ -535,29 +549,59 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
             },
         };
         let restart = matches!(outcome, DesktopRequestOutcome::Installing { .. });
-        let answered = core::updates::answer_desktop_request(
-            &data,
-            &request,
-            chrono::Local::now().fixed_offset(),
-            outcome.clone(),
-        );
+        let answered = if restart {
+            Ok(())
+        } else {
+            core::updates::answer_desktop_request(
+                &data,
+                &request,
+                chrono::Local::now().fixed_offset(),
+                outcome.clone(),
+            )
+        };
+        // Keep both errors when the failure itself could not be recorded.
         let reported = update_result(
             &context,
-            match &outcome {
-                DesktopRequestOutcome::Failed { error } => Err(anyhow::anyhow!("{error}")),
-                _ => answered.map_err(|e| e.context("Record requested update")),
+            match (&outcome, answered) {
+                (DesktopRequestOutcome::Failed { error }, Ok(())) => {
+                    Err(anyhow::anyhow!("{error}"))
+                }
+                (DesktopRequestOutcome::Failed { error }, Err(write)) => Err(anyhow::anyhow!(
+                    "{error}; recording this failure also failed: {write:#}"
+                )),
+                (_, Err(write)) => Err(write.context("Record requested update")),
+                (_, Ok(())) => Ok(()),
             },
         );
         if restart {
             if let Err(error) = &reported {
                 eprintln!("Ratatoskr: {error}");
             }
-            app.restart();
+            crate::window_lifecycle::quiet_restart(&app).map_err(|e| format!("{e:#}"))?;
         }
         reported
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// At startup, settle a requested install that ended with this restart and report it.
+pub(crate) fn settle_requested_update() -> Reply<()> {
+    use core::updates::DesktopRequestOutcome;
+    let data = core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
+    let settled = core::updates::finish_desktop_request(
+        &data,
+        env!("CARGO_PKG_VERSION"),
+        chrono::Local::now().fixed_offset(),
+    )
+    .map_err(|e| format!("Desktop update request: {e:#}"))?;
+    match settled {
+        None => Ok(()),
+        Some(DesktopRequestOutcome::Failed { error }) => {
+            update_result(&update_context()?, Err(anyhow::anyhow!("{error}")))
+        }
+        Some(_) => update_result(&update_context()?, Ok(())),
+    }
 }
 
 fn update_context() -> Reply<UpdateContext> {
@@ -610,7 +654,7 @@ pub(crate) async fn update_desktop(
 pub(crate) fn restart_desktop(app: tauri::AppHandle) -> Reply<()> {
     #[cfg(any(windows, target_os = "macos"))]
     crate::window_lifecycle::prepare_restart(&app).map_err(|e| format!("{e:#}"))?;
-    app.restart();
+    crate::window_lifecycle::restart(&app);
 }
 
 #[tauri::command]

@@ -2,6 +2,7 @@
 
 mod commands;
 mod desktop_updates;
+mod instance;
 #[cfg(windows)]
 mod tray;
 mod update_scheduler;
@@ -9,7 +10,23 @@ mod update_scheduler;
 mod window_lifecycle;
 
 fn main() {
+    match instance::claim() {
+        Ok(true) => (),
+        // Windows forwards a second launch to the tray app through single-instance.
+        #[cfg(windows)]
+        Ok(false) => (),
+        #[cfg(not(windows))]
+        Ok(false) => {
+            eprintln!("Ratatoskr: the desktop app is already running");
+            return;
+        }
+        // Keep the app usable; only CLI update requests depend on the instance record.
+        Err(error) => eprintln!("Ratatoskr: desktop instance: {error:#}"),
+    }
     let builder = tauri::Builder::default();
+    // A hidden launch (login, CLI request, unattended restart) must not take focus.
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(!window_lifecycle::launching_hidden());
     #[cfg(windows)]
     let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {

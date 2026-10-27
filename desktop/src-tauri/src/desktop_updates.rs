@@ -56,6 +56,17 @@ impl UpdateContext {
         Ok(state)
     }
 
+    /// An explicit request's check counts toward update health like a manual check,
+    /// without consuming an automatic slot or opening a catch-up window.
+    pub(crate) fn record_explicit_check(
+        &self,
+        now: chrono::DateTime<chrono::FixedOffset>,
+    ) -> Result<()> {
+        let mut state = self.state()?;
+        state.observe(&self.state_path, self.settings(), now, false)?;
+        state.record_success(&self.state_path, now, false)
+    }
+
     pub(crate) fn installation_allowed(
         &self,
         now: chrono::DateTime<chrono::FixedOffset>,

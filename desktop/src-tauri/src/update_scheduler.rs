@@ -56,48 +56,41 @@ fn report(app: &tauri::AppHandle, result: &Result<bool, String>) {
     }
 }
 
-/// CLI requests are polled often; the nightly policy keeps its one-minute clock.
+/// CLI requests are polled on their own task, so request work never delays the
+/// nightly policy's one-minute clock.
 const REQUEST_POLL: Duration = Duration::from_secs(5);
-const POLICY_TICKS: u32 = 12;
 
-fn finish_request() -> Result<(), String> {
-    let data = ratatoskr_core::updates::desktop_data_dir().map_err(|e| e.to_string())?;
-    ratatoskr_core::updates::finish_desktop_request(
-        &data,
-        env!("CARGO_PKG_VERSION"),
-        chrono::Local::now().fixed_offset(),
-    )
-    .map_err(|e| format!("Desktop update request: {e:#}"))
-}
-
-pub(crate) fn setup(app: &tauri::App) {
-    let handle = app.handle().clone();
+fn poll_requests(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = finish_request() {
+        if let Err(error) = crate::commands::settle_requested_update() {
             report(&handle, &Err(error));
         }
-        report(&handle, &startup(handle.clone()).await);
-        let mut ticks = 0;
-        let mut request_error = None;
+        let mut last_error = None;
         loop {
-            // Wall-clock policy is reevaluated after every wake, including after
-            // sleep. No dependency on a JS interval or the window being visible.
             tokio::time::sleep(REQUEST_POLL).await;
             // Report a persistent request failure once, not on every poll.
             let failure = crate::commands::requested_update(handle.clone())
                 .await
                 .err();
             if let Some(error) = &failure
-                && failure != request_error
+                && failure != last_error
             {
                 report(&handle, &Err(error.clone()));
             }
-            request_error = failure;
-            ticks += 1;
-            if ticks < POLICY_TICKS {
-                continue;
-            }
-            ticks = 0;
+            last_error = failure;
+        }
+    });
+}
+
+pub(crate) fn setup(app: &tauri::App) {
+    let handle = app.handle().clone();
+    poll_requests(handle.clone());
+    tauri::async_runtime::spawn(async move {
+        report(&handle, &startup(handle.clone()).await);
+        loop {
+            // Wall-clock policy is reevaluated after every wake, including after
+            // sleep. No dependency on a JS interval or the window being visible.
+            tokio::time::sleep(Duration::from_secs(60)).await;
             let checked = crate::commands::automatic_update(handle.clone(), false, false).await;
             report(&handle, &checked);
             if matches!(checked, Ok(true)) && !busy(&handle) {

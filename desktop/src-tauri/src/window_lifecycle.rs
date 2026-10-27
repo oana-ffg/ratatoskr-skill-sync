@@ -49,15 +49,59 @@ fn refresh_login_with(
 fn launch_mode_path() -> Result<std::path::PathBuf> {
     Ok(ratatoskr_core::updates::desktop_data_dir()?.join("restart-background.json"))
 }
+fn background_argument() -> bool {
+    std::env::args_os().any(|arg| arg == "--background")
+}
+/// Whether this launch starts hidden; unreadable intent counts as hidden, as in `setup`.
+#[cfg(target_os = "macos")]
+pub(crate) fn launching_hidden() -> bool {
+    launch_mode_path()
+        .and_then(|path| ratatoskr_core::tray::peek_restart_mode(&path, background_argument()))
+        .unwrap_or(true)
+}
+/// Restart after a user's explicit choice, keeping the window's current visibility.
 pub(crate) fn prepare_restart(app: &tauri::AppHandle) -> Result<()> {
     let hidden = !app
         .get_webview_window("main")
         .context("Main window missing")?
         .is_visible()?;
+    save_restart(app, hidden)
+}
+/// Unattended installs restart hidden, so they never open or focus a window.
+pub(crate) fn prepare_quiet_restart(app: &tauri::AppHandle) -> Result<()> {
+    save_restart(app, true)
+}
+fn save_restart(_app: &tauri::AppHandle, hidden: bool) -> Result<()> {
     let result = ratatoskr_core::tray::save_restart_mode(&launch_mode_path()?, hidden);
     #[cfg(windows)]
-    crate::tray::restart_outcome(app, &result)?;
+    crate::tray::restart_outcome(_app, &result)?;
     result
+}
+pub(crate) fn restart(app: &tauri::AppHandle) -> ! {
+    crate::instance::release();
+    app.restart()
+}
+/// Relaunch after an unattended install without activating the app. macOS starts the
+/// executable directly: the OS launcher used by `AppHandle::restart` activates it.
+pub(crate) fn quiet_restart(app: &tauri::AppHandle) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::instance::release();
+        let started = std::env::current_exe()
+            .map_err(anyhow::Error::from)
+            .and_then(|exe| ratatoskr_core::updates::start_desktop_hidden(&exe));
+        if let Err(error) = started {
+            // Keep running the old process rather than exit with no successor.
+            if let Err(reclaim) = crate::instance::claim() {
+                eprintln!("Ratatoskr: reclaim desktop instance: {reclaim:#}");
+            }
+            return Err(error.context("Restart after update"));
+        }
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    restart(app)
 }
 pub(crate) fn cancel_restart(_app: &tauri::AppHandle) -> Result<()> {
     let result = ratatoskr_core::tray::clear_restart_mode(&launch_mode_path()?);
@@ -112,7 +156,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) -> Result<()> {
     });
     let hidden = match ratatoskr_core::tray::consume_restart_mode(
         &launch_mode_path()?,
-        std::env::args_os().any(|arg| arg == "--background"),
+        background_argument(),
     ) {
         Ok(hidden) => hidden,
         Err(error) => {
