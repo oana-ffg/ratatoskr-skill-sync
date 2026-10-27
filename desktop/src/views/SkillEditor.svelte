@@ -70,7 +70,7 @@
   let raw = $state(false);
   let selected = $state<Range>({ from: 0, to: 0 });
   let picker = $state<
-    "only"
+    | "only"
     | "description-only"
     | "value"
     | "rename"
@@ -801,9 +801,8 @@
       <footer class="dialog-actions">
         <button class="primary" onclick={closeArchive}>Back to skills</button>
       </footer>{:else}<p class="muted">
-        Moves {skill.name} into the .ratatoskr-archive folder of its content
-        repository. Nothing is deleted. Installed copies are removed on the next
-        Apply.
+        Moves {skill.name} into the .ratatoskr-archive folder of its content repository.
+        Nothing is deleted. Installed copies are removed on the next Apply.
       </p>
       <footer class="dialog-actions">
         <button class="primary" disabled={busy} onclick={archive}
