@@ -9,7 +9,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct ValidationContext {
     pub machine: String,
     pub harness: Option<String>,
@@ -169,7 +169,25 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
                 .extend(contexts);
         }
     }
-    let warnings = selector_vocabulary_problems(&source, &summaries);
+    let scan = selector_vocabulary_problems(&source, &summaries);
+    let profile_contexts: Vec<ValidationContext> = summaries
+        .iter()
+        .map(|profile| ValidationContext {
+            machine: profile.machine.clone(),
+            harness: None,
+            skill: None,
+        })
+        .collect();
+    for (path, message) in scan.inspections {
+        problems
+            .entry((path, message))
+            .or_default()
+            .extend(profile_contexts.iter().cloned());
+        for profile in &mut summaries {
+            profile.problem_occurrences += 1;
+        }
+    }
+    let warnings = scan.warnings;
     Ok(ValidationReport {
         source,
         problem_occurrences: summaries.iter().map(|p| p.problem_occurrences).sum(),
@@ -212,27 +230,38 @@ const KNOWN_OS: [&str; 3] = ["linux", "macos", "windows"];
 
 /// Selector values that can never match, such as `harness=cursro` or `os=mac`, silently drop
 /// content on every profile. Report them even though each individual render succeeds.
+/// `harnesses` is `None` when `harnesses.toml` itself could not be read; harness warnings are
+/// skipped in that case so a missing vocabulary is not reported as a typo.
 struct SelectorVocabulary {
-    harnesses: BTreeSet<String>,
+    harnesses: Option<BTreeSet<String>>,
     machines: BTreeSet<String>,
     seen: BTreeSet<(String, String)>,
     warnings: Vec<ValidationWarning>,
+    inspections: Vec<(String, String)>,
+}
+
+struct SelectorScan {
+    warnings: Vec<ValidationWarning>,
+    inspections: Vec<(String, String)>,
 }
 
 impl SelectorVocabulary {
     fn unknown(&self, key: &str, value: &str) -> Option<String> {
-        let (known, label): (Vec<&str>, &str) = match key {
+        let (known, label): (Option<Vec<&str>>, &str) = match key {
             "harness" | "harnesses" => (
-                self.harnesses.iter().map(String::as_str).collect(),
+                self.harnesses
+                    .as_ref()
+                    .map(|names| names.iter().map(String::as_str).collect()),
                 "harness",
             ),
             "machine" | "machines" => (
-                self.machines.iter().map(String::as_str).collect(),
+                Some(self.machines.iter().map(String::as_str).collect()),
                 "machine",
             ),
-            "os" => (KNOWN_OS.to_vec(), "os"),
+            "os" => (Some(KNOWN_OS.to_vec()), "os"),
             _ => return None,
         };
+        let known = known?;
         if known.contains(&value) {
             return None;
         }
@@ -246,6 +275,64 @@ impl SelectorVocabulary {
         ))
     }
 
+    fn inspect_fail(&mut self, path: &str, detail: &str) {
+        let message = format!("Could not inspect {path}: {detail}");
+        if self.seen.insert((path.to_string(), message.clone())) {
+            self.inspections.push((path.to_string(), message));
+        }
+    }
+
+    fn parse_fail(&mut self, path: &str, detail: &str) {
+        let message = format!("Could not parse {path}: {detail}");
+        if self.seen.insert((path.to_string(), message.clone())) {
+            self.inspections.push((path.to_string(), message));
+        }
+    }
+
+    /// `None` for a missing optional path. Any other I/O error is recorded.
+    fn read_optional(&mut self, relative: &str, path: &Path) -> Option<String> {
+        match fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                self.inspect_fail(relative, &error.to_string());
+                None
+            }
+        }
+    }
+
+    fn read_required(&mut self, relative: &str, path: &Path) -> Option<String> {
+        match fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(error) => {
+                self.inspect_fail(relative, &error.to_string());
+                None
+            }
+        }
+    }
+
+    /// `None` when the directory is absent. Present directories yield every entry, and a failed
+    /// entry is recorded instead of being dropped.
+    fn read_dir_optional(&mut self, relative: &str, path: &Path) -> Option<Vec<fs::DirEntry>> {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                self.inspect_fail(relative, &error.to_string());
+                return None;
+            }
+        };
+        let mut collected = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => collected.push(entry),
+                Err(error) => self.inspect_fail(relative, &error.to_string()),
+            }
+        }
+        collected.sort_by_key(|entry| entry.file_name());
+        Some(collected)
+    }
+
     fn push(&mut self, path: impl Into<String>, message: String) {
         let path = path.into();
         if self.seen.insert((path.clone(), message.clone())) {
@@ -253,13 +340,19 @@ impl SelectorVocabulary {
         }
     }
 
-    fn warn_markdown(&mut self, path: &Path, relative: &str) {
-        let Ok(text) = fs::read_to_string(path) else {
-            return;
+    fn warn_markdown_text(&mut self, relative: &str, text: &str) {
+        let (blocks, diagnostics) = match crate::template::parse_blocks(text) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.parse_fail(relative, &format!("{error:#}"));
+                return;
+            }
         };
-        let Ok((blocks, _)) = crate::template::parse_blocks(&text) else {
-            return;
-        };
+        for diagnostic in diagnostics {
+            if diagnostic.severity == "error" {
+                self.parse_fail(relative, &diagnostic.message);
+            }
+        }
         for block in blocks {
             for (key, values) in &block.selectors {
                 for value in values {
@@ -271,117 +364,202 @@ impl SelectorVocabulary {
         }
     }
 
-    fn warn_skill_markdown(&mut self, skill_root: &Path, name: &str) {
-        let mut files = Vec::new();
-        for entry in WalkDir::new(skill_root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            if entry.file_type().is_symlink() || !entry.file_type().is_file() {
-                continue;
-            }
-            if super::runtime(entry.path()) || entry.path().extension() != Some("md".as_ref()) {
-                continue;
-            }
-            if let Ok(relative) = entry.path().strip_prefix(skill_root) {
-                files.push(relative.to_path_buf());
-            }
+    fn warn_optional_markdown(&mut self, relative: &str, path: &Path) {
+        if let Some(text) = self.read_optional(relative, path) {
+            self.warn_markdown_text(relative, &text);
         }
-        files.sort();
-        for relative in files {
-            let Some(portable) = relative.to_str() else {
+    }
+
+    fn relative_under(&mut self, root: &Path, path: &Path, prefix: &str) -> Option<String> {
+        let Ok(relative) = path.strip_prefix(root) else {
+            self.inspect_fail(prefix, "path escaped the skill directory");
+            return None;
+        };
+        let Some(portable) = relative.to_str() else {
+            self.inspect_fail(prefix, "non-UTF8 file name");
+            return None;
+        };
+        let portable = portable.replace('\\', "/");
+        Some(if portable.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix}/{portable}")
+        })
+    }
+
+    fn warn_skill_markdown(&mut self, skill_root: &Path, name: &str) {
+        let prefix = format!("skills/{name}");
+        let mut files = Vec::new();
+        for entry in WalkDir::new(skill_root).follow_links(false) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    let relative = error
+                        .path()
+                        .and_then(|path| self.relative_under(skill_root, path, &prefix))
+                        .unwrap_or_else(|| prefix.clone());
+                    let detail = error
+                        .io_error()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| error.to_string());
+                    self.inspect_fail(&relative, &detail);
+                    continue;
+                }
+            };
+            let Some(relative) = self.relative_under(skill_root, entry.path(), &prefix) else {
                 continue;
             };
-            self.warn_markdown(
-                &skill_root.join(&relative),
-                &format!("skills/{name}/{}", portable.replace('\\', "/")),
-            );
+            if entry.path() == skill_root {
+                continue;
+            }
+            if entry.file_type().is_symlink() {
+                self.inspect_fail(&relative, "symlink");
+                continue;
+            }
+            if !entry.file_type().is_file()
+                || super::runtime(entry.path())
+                || entry.path().extension() != Some("md".as_ref())
+            {
+                continue;
+            }
+            files.push((relative, entry.path().to_path_buf()));
+        }
+        files.sort();
+        for (relative, path) in files {
+            if let Some(text) = self.read_required(&relative, &path) {
+                self.warn_markdown_text(&relative, &text);
+            }
         }
     }
 
     fn warn_target(&mut self, skill_root: &Path, name: &str) {
-        let Some(target) = fs::read_to_string(skill_root.join("skill.toml"))
-            .ok()
-            .and_then(|text| text.parse::<toml::Table>().ok())
-            .and_then(|table| table.get("target").and_then(toml::Value::as_table).cloned())
-        else {
+        let relative = format!("skills/{name}/skill.toml");
+        let Some(text) = self.read_required(&relative, &skill_root.join("skill.toml")) else {
             return;
         };
-        for (key, values) in &target {
+        let table = match text.parse::<toml::Table>() {
+            Ok(table) => table,
+            Err(error) => {
+                self.parse_fail(&relative, &error.to_string());
+                return;
+            }
+        };
+        let Some(target) = table.get("target") else {
+            return;
+        };
+        let Some(target) = target.as_table() else {
+            self.parse_fail(&relative, "target is not a table");
+            return;
+        };
+        for (key, values) in target {
+            if !matches!(
+                key.as_str(),
+                "harnesses" | "harness" | "machines" | "machine" | "os"
+            ) {
+                continue;
+            }
             let Some(values) = values.as_array() else {
+                self.parse_fail(&relative, &format!("target `{key}` is not an array"));
                 continue;
             };
-            for value in values.iter().filter_map(toml::Value::as_str) {
+            for value in values {
+                let Some(value) = value.as_str() else {
+                    self.parse_fail(&relative, &format!("target `{key}` contains a non-string"));
+                    continue;
+                };
                 if let Some(message) = self.unknown(key, value) {
-                    self.push(format!("skills/{name}/skill.toml"), message);
+                    self.push(relative.clone(), message);
                 }
             }
         }
     }
 
     fn warn_variants(&mut self, skill_root: &Path, name: &str) {
-        let Ok(entries) = fs::read_dir(skill_root.join("variants")) else {
+        let relative = format!("skills/{name}/variants");
+        let Some(variants) = self.read_dir_optional(&relative, &skill_root.join("variants")) else {
             return;
         };
-        let mut variants: Vec<_> = entries.filter_map(Result::ok).collect();
-        variants.sort_by_key(|entry| entry.file_name());
         for variant in variants {
-            let Ok(kind) = variant.file_type() else {
+            let Some(label) = variant.file_name().into_string().ok() else {
+                self.inspect_fail(&relative, "non-UTF8 file name");
                 continue;
             };
-            if kind.is_symlink() || !kind.is_dir() {
+            let variant_path = format!("{relative}/{label}");
+            let kind = match variant.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    self.inspect_fail(&variant_path, &error.to_string());
+                    continue;
+                }
+            };
+            if kind.is_symlink() {
+                self.inspect_fail(&variant_path, "symlink");
                 continue;
             }
-            let label = variant.file_name().to_string_lossy().into_owned();
+            if !kind.is_dir() {
+                self.inspect_fail(&variant_path, "variant is not a directory");
+                continue;
+            }
             if let Some((key, value)) = label.split_once('=')
                 && let Some(message) = self.unknown(key, value)
             {
-                self.push(format!("skills/{name}/variants/{label}"), message);
+                self.push(variant_path, message);
             }
         }
     }
 }
 
-fn selector_vocabulary_problems(
-    source: &Path,
-    profiles: &[ProfileValidation],
-) -> Vec<ValidationWarning> {
-    let harnesses = fs::read_to_string(source.join("harnesses.toml"))
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .map(|table| table.keys().cloned().collect())
-        .unwrap_or_default();
+fn selector_vocabulary_problems(source: &Path, profiles: &[ProfileValidation]) -> SelectorScan {
     let mut vocabulary = SelectorVocabulary {
-        harnesses,
+        harnesses: None,
         machines: profiles
             .iter()
             .map(|profile| profile.machine.clone())
             .collect(),
         seen: BTreeSet::new(),
         warnings: Vec::new(),
+        inspections: Vec::new(),
     };
-    vocabulary.warn_markdown(
-        &source.join(crate::content::GLOBAL_INSTRUCTIONS),
-        crate::content::GLOBAL_INSTRUCTIONS,
-    );
-    let Ok(entries) = fs::read_dir(source.join("skills")) else {
-        return vocabulary.warnings;
-    };
-    let mut skills: Vec<_> = entries.filter_map(Result::ok).collect();
-    skills.sort_by_key(|entry| entry.file_name());
-    for skill in skills {
-        let Ok(kind) = skill.file_type() else {
-            continue;
-        };
-        if kind.is_symlink() || !kind.is_dir() || super::runtime(&skill.path()) {
-            continue;
+    let harnesses_path = source.join("harnesses.toml");
+    if let Some(text) = vocabulary.read_required("harnesses.toml", &harnesses_path) {
+        match text.parse::<toml::Table>() {
+            Ok(table) => vocabulary.harnesses = Some(table.keys().cloned().collect()),
+            Err(error) => vocabulary.parse_fail("harnesses.toml", &error.to_string()),
         }
-        let name = skill.file_name().to_string_lossy().into_owned();
-        let root = skill.path();
-        vocabulary.warn_skill_markdown(&root, &name);
-        vocabulary.warn_target(&root, &name);
-        vocabulary.warn_variants(&root, &name);
     }
-    vocabulary.warnings
+    vocabulary.warn_optional_markdown(
+        crate::content::GLOBAL_INSTRUCTIONS,
+        &source.join(crate::content::GLOBAL_INSTRUCTIONS),
+    );
+    if let Some(skills) = vocabulary.read_dir_optional("skills", &source.join("skills")) {
+        for skill in skills {
+            let Some(name) = skill.file_name().into_string().ok() else {
+                vocabulary.inspect_fail("skills", "non-UTF8 file name");
+                continue;
+            };
+            let skill_path = format!("skills/{name}");
+            let kind = match skill.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    vocabulary.inspect_fail(&skill_path, &error.to_string());
+                    continue;
+                }
+            };
+            if kind.is_symlink() {
+                vocabulary.inspect_fail(&skill_path, "symlink");
+                continue;
+            }
+            if !kind.is_dir() || super::runtime(&skill.path()) {
+                continue;
+            }
+            let root = skill.path();
+            vocabulary.warn_skill_markdown(&root, &name);
+            vocabulary.warn_target(&root, &name);
+            vocabulary.warn_variants(&root, &name);
+        }
+    }
+    SelectorScan {
+        warnings: vocabulary.warnings,
+        inspections: vocabulary.inspections,
+    }
 }

@@ -89,4 +89,11 @@ fn apply_reports_written_files_and_a_later_apply_is_unchanged() {
     assert!(!json.contains("Applied "), "{json}");
     let report: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(report["changes"].as_array().unwrap().is_empty(), "{report}");
+    assert_eq!(
+        report["applied"],
+        serde_json::json!({"added": 0, "updated": 0, "removed": 0})
+    );
+    let planned: serde_json::Value =
+        serde_json::from_str(&stdout(&output(&root, &["--json", "plan"]))).unwrap();
+    assert!(planned.get("applied").is_none(), "{planned}");
 }

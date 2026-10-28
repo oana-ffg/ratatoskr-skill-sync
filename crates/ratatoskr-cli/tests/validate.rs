@@ -304,3 +304,67 @@ Known.
     );
     assert_eq!(report["warnings"].as_array().unwrap().len(), 8);
 }
+
+#[test]
+fn selector_scan_failures_are_problems_and_missing_optional_paths_are_not() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("machines")).unwrap();
+    fs::write(root.join("harnesses.toml"), "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\n[codex.roots]\nlinux='{{af:home}}/.agents'\n").unwrap();
+    fs::write(
+        root.join("machines/remote.toml"),
+        "os='linux'\nmode='live'\nhome='/remote/home'\nharnesses=['codex']\n",
+    )
+    .unwrap();
+    let clean = validate(&root, false);
+    assert!(
+        clean.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    let clean_out = String::from_utf8(clean.stdout).unwrap();
+    assert!(!clean_out.contains("ERROR "), "{clean_out}");
+    assert!(
+        clean_out.contains("1 profile; 0 distinct problems; 0 problem occurrences"),
+        "{clean_out}"
+    );
+
+    fs::create_dir_all(root.join("skills/parked")).unwrap();
+    fs::write(root.join("skills/parked/skill.toml"), "enabled = false\n").unwrap();
+    fs::write(
+        root.join("skills/parked/broken.md"),
+        "<!-- only os=mac -->\nOpen.\n",
+    )
+    .unwrap();
+    fs::write(root.join("skills/parked/variants"), "not-a-directory").unwrap();
+    let failed = validate(&root, true);
+    assert_eq!(failed.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let problems = report["problems"].as_array().unwrap();
+    assert!(
+        problems.iter().any(|problem| {
+            problem["path"] == "skills/parked/broken.md"
+                && problem["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Unclosed only block")
+        }),
+        "{report}"
+    );
+    assert!(
+        problems.iter().any(|problem| {
+            problem["path"] == "skills/parked/variants"
+                && problem["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Could not inspect ")
+        }),
+        "{report}"
+    );
+    assert!(
+        problems
+            .iter()
+            .all(|problem| problem["path"] != "global/AGENTS.md" && problem["path"] != "skills"),
+        "{report}"
+    );
+}

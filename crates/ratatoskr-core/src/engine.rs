@@ -46,6 +46,31 @@ pub struct InstallTarget {
     pub project: Option<PathBuf>,
 }
 
+/// Writes performed by the `apply` call that returned this plan.
+/// `plan` and `status` leave [`Plan::applied`] unset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct AppliedChanges {
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+}
+
+impl AppliedChanges {
+    fn from_changes(changes: &[Change]) -> Self {
+        let count = |action: &str| {
+            changes
+                .iter()
+                .filter(|change| change.action == action)
+                .count()
+        };
+        Self {
+            added: count("add"),
+            updated: count("update"),
+            removed: count("remove"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Plan {
     pub source: PathBuf,
@@ -61,6 +86,10 @@ pub struct Plan {
     pub projects: Vec<ProjectStatus>,
     pub content_status: crate::ContentStatus,
     pub revision: String,
+    /// Counts from the writes this apply performed under its lock.
+    /// Absent for `plan` and `status`, which do not write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied: Option<AppliedChanges>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -1163,6 +1192,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
             .map(|p| project_status(p))
             .collect(),
         revision: format!("{:x}", revision.finalize()),
+        applied: None,
     })
 }
 
@@ -1189,6 +1219,9 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     let desired = desired(settings)?;
     let old = manifest(settings, &desired)?;
     let preflight = preflight(settings, &desired, &old)?;
+    // Count the plan computed under the lock. A later unlocked `plan` can disagree if the
+    // checkout changes between the two calls.
+    let applied = AppliedChanges::from_changes(&preflight.changes);
     if let Some(expected) = expected {
         ensure!(
             serde_json::to_value(&preflight)? == expected,
@@ -1247,7 +1280,9 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     };
     atomic_write(&manifest_path(settings), &serde_json::to_vec_pretty(&new)?)?;
     drop(lock);
-    plan(settings)
+    let mut report = plan(settings)?;
+    report.applied = Some(applied);
+    Ok(report)
 }
 
 pub(crate) fn detach_project(settings: &Settings, project: &Path) -> Result<()> {

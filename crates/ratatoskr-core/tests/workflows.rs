@@ -644,6 +644,148 @@ impl Fixture {
 }
 
 #[test]
+fn apply_returns_the_counts_written_under_the_lock() {
+    use ratatoskr_core::AppliedChanges;
+    let f = Fixture::new();
+    let planned = plan(&f.settings).unwrap();
+    assert!(planned.applied.is_none());
+    let expected = AppliedChanges {
+        added: planned.changes.len(),
+        updated: 0,
+        removed: 0,
+    };
+    assert!(expected.added > 0);
+    let written = apply(&f.settings).unwrap();
+    assert!(written.changes.is_empty());
+    assert_eq!(written.applied, Some(expected));
+    f.write("skills/review-code/guide.txt", "Updated guidance");
+    let updated = apply(&f.settings).unwrap();
+    assert_eq!(
+        updated.applied,
+        Some(AppliedChanges {
+            added: 1,
+            updated: 0,
+            removed: 0,
+        })
+    );
+    f.write("skills/review-code/guide.txt", "Revised guidance");
+    let revised = apply(&f.settings).unwrap();
+    assert_eq!(
+        revised.applied,
+        Some(AppliedChanges {
+            added: 0,
+            updated: 1,
+            removed: 0,
+        })
+    );
+    fs::remove_file(f.settings.source.join("skills/review-code/guide.txt")).unwrap();
+    let removed = apply(&f.settings).unwrap();
+    assert_eq!(
+        removed.applied,
+        Some(AppliedChanges {
+            added: 0,
+            updated: 0,
+            removed: 1,
+        })
+    );
+    let unchanged = apply(&f.settings).unwrap();
+    assert_eq!(unchanged.applied, Some(AppliedChanges::default()));
+    assert!(plan(&f.settings).unwrap().applied.is_none());
+}
+
+#[test]
+fn selector_scan_distinguishes_missing_optional_paths_from_inspection_failures() {
+    let f = Fixture::new();
+    fs::remove_dir_all(f.settings.source.join("skills")).unwrap();
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    assert!(
+        report.problems.is_empty(),
+        "missing skills/ and global/AGENTS.md are optional: {:?}",
+        report.problems
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+    // `enabled = false` returns before the renderer walks files, so only the selector scan sees these.
+    f.write("skills/parked/skill.toml", "enabled = false\n");
+    f.write(
+        "skills/parked/notes.md",
+        "<!-- only harness=cursro -->\nHidden.\n<!-- /only -->\n",
+    );
+    f.write("skills/parked/broken.md", "<!-- only os=mac -->\nOpen.\n");
+    fs::write(
+        f.settings.source.join("skills/parked/variants"),
+        "not-a-directory",
+    )
+    .unwrap();
+    f.write("skills/garbled/skill.toml", "target = [");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        "notes.md",
+        f.settings.source.join("skills/parked/linked.md"),
+    )
+    .unwrap();
+
+    let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+    let messages = report
+        .problems
+        .iter()
+        .map(|problem| format!("{}: {}", problem.path, problem.message))
+        .collect::<Vec<_>>();
+    assert!(
+        messages.iter().any(|message| {
+            message.starts_with("skills/parked/broken.md: Could not parse ")
+                && message.contains("Unclosed only block")
+        }),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.starts_with("skills/parked/variants: Could not inspect ")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.starts_with("skills/garbled/skill.toml: Could not parse ")),
+        "{messages:?}"
+    );
+    #[cfg(unix)]
+    assert!(
+        messages.iter().any(|message| {
+            message.starts_with("skills/parked/linked.md: Could not inspect ")
+                && message.contains("symlink")
+        }),
+        "{messages:?}"
+    );
+    assert!(
+        report.warnings.iter().any(|warning| {
+            warning.path == "skills/parked/notes.md" && warning.message.contains("`cursro`")
+        }),
+        "{:?}",
+        report.warnings
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .all(|problem| problem.path != "global/AGENTS.md" && problem.path != "skills")
+    );
+    let variants = report
+        .problems
+        .iter()
+        .find(|problem| problem.path == "skills/parked/variants")
+        .unwrap();
+    assert!(
+        variants
+            .contexts
+            .iter()
+            .all(|context| context.harness.is_none() && context.skill.is_none())
+    );
+    assert_eq!(variants.contexts.len(), report.profiles.len());
+}
+
+#[test]
 fn renders_applies_and_updates_without_rewriting_identical_files() {
     let f = Fixture::new();
     let initial = plan(&f.settings).unwrap();
@@ -2691,16 +2833,43 @@ fn source_validation_groups_shared_problems_with_every_context() {
     f.write("skills/missing/skill.toml", "");
     f.write("skills/malformed/skill.toml", "target = [");
     let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
-    assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
+    assert_eq!(report.problems.len(), 4, "{:?}", report.problems);
     assert_eq!(
         report
             .problems
             .iter()
             .map(|p| p.path.as_str())
             .collect::<Vec<_>>(),
-        ["skills/malformed", "skills/missing", "skills/review-code"]
+        [
+            "skills/malformed",
+            "skills/malformed/skill.toml",
+            "skills/missing",
+            "skills/review-code"
+        ]
     );
-    for problem in &report.problems {
+    let inspection = report
+        .problems
+        .iter()
+        .find(|problem| problem.path == "skills/malformed/skill.toml")
+        .unwrap();
+    assert!(
+        inspection
+            .message
+            .starts_with("Could not parse skills/malformed/skill.toml:"),
+        "{}",
+        inspection.message
+    );
+    assert!(
+        inspection
+            .contexts
+            .iter()
+            .all(|context| context.harness.is_none() && context.skill.is_none())
+    );
+    for problem in report
+        .problems
+        .iter()
+        .filter(|problem| problem.path != "skills/malformed/skill.toml")
+    {
         let expected = ["first", "second", "test"]
             .into_iter()
             .flat_map(|machine| ["claude", "codex"].map(move |harness| (machine, harness)))
@@ -2734,13 +2903,13 @@ fn source_validation_groups_shared_problems_with_every_context() {
     }));
     for profile in &report.profiles {
         assert_eq!(
-            profile.problem_occurrences, 6,
-            "Counts must retain every failing target"
+            profile.problem_occurrences, 7,
+            "Counts must retain every failing target and the selector-scan failure"
         );
         assert_eq!(profile.harnesses.len(), 2);
         assert!(profile.harnesses.iter().all(|h| h.skills_rendered == 0));
     }
-    assert_eq!(report.problem_occurrences, 18);
+    assert_eq!(report.problem_occurrences, 21);
     assert_eq!(
         report.problem_occurrences,
         report
@@ -2951,6 +3120,33 @@ fn skills_root_file_error_names_the_entry() {
     let listed = format!("{error:#}");
     assert!(
         listed.contains("Skills root must contain directories only: README.md"),
+        "{listed}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn junction_skill_folder_is_refused_by_name() {
+    let f = Fixture::new();
+    let skills = f.settings.source.join("skills");
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(skills.join("linked"))
+        .arg(skills.join("review-code"))
+        .status()
+        .unwrap();
+    assert!(status.success(), "mklink /J failed: {status}");
+    let error = format!("{:#}", plan(&f.settings).unwrap_err());
+    assert!(
+        error.contains("Skills root entry is a symlink: linked"),
+        "{error}"
+    );
+    let Err(error) = ratatoskr_core::list_skills(&f.settings) else {
+        panic!("junction skill folder must be rejected");
+    };
+    let listed = format!("{error:#}");
+    assert!(
+        listed.contains("Skills root entry is a symlink: linked"),
         "{listed}"
     );
 }
