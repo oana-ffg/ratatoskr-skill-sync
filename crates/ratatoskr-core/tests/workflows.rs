@@ -2890,6 +2890,43 @@ fn global_instructions_save_validates_every_profile_and_previews_each_target() {
 }
 
 #[test]
+fn copy_back_preview_labels_source_as_old_and_installed_copy_as_new() {
+    use ratatoskr_core::{ConflictAction, preview_resolution, preview_source_edit};
+    let f = Fixture::new();
+    let original = "---\nname: review-code\ndescription: Review changed code\n---\nOriginal.\n";
+    f.write("skills/review-code/SKILL.md", original);
+    apply(&f.settings).unwrap();
+    let path = f.output().join("SKILL.md");
+    fs::write(&path, original.replace("Original.", "Hand edit.")).unwrap();
+    let preview = serde_json::to_value(
+        preview_resolution(&f.settings, &path, ConflictAction::CopyBack).unwrap(),
+    )
+    .unwrap();
+    let diff = preview["effects"][0]["diff"].as_str().unwrap();
+    assert!(
+        diff.starts_with("--- source\n+++ installed copy\n"),
+        "{diff}"
+    );
+    assert!(diff.contains("-Original.\n+Hand edit.\n"), "{diff}");
+
+    let edited = serde_json::to_value(
+        preview_source_edit(
+            &f.settings,
+            &path,
+            &original.replace("Original.", "Draft edit."),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let diff = edited["effects"][0]["diff"].as_str().unwrap();
+    assert!(
+        diff.starts_with("--- source\n+++ edited source\n"),
+        "{diff}"
+    );
+    assert!(diff.contains("-Original.\n+Draft edit.\n"), "{diff}");
+}
+
+#[test]
 fn finder_metadata_in_skills_root_is_ignored() {
     let f = Fixture::new();
     f.write("skills/.DS_Store", "finder");

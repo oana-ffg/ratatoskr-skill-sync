@@ -12,6 +12,10 @@ pub struct Conflict {
 }
 
 fn text_diff(before: &[u8], after: &[u8]) -> Option<String> {
+    labelled_diff(before, after, "installed", "rendered source")
+}
+
+fn labelled_diff(before: &[u8], after: &[u8], old: &str, new: &str) -> Option<String> {
     if before.len() + after.len() > 131_072 {
         return None;
     }
@@ -21,7 +25,7 @@ fn text_diff(before: &[u8], after: &[u8]) -> Option<String> {
             std::str::from_utf8(after).ok()?,
         )
         .unified_diff()
-        .header("installed", "rendered source")
+        .header(old, new)
         .to_string(),
     )
 }
@@ -178,6 +182,13 @@ fn resolution_preview(
                 before.as_deref().context("Installed file disappeared")?
             };
             let original = fs::read(&file.source)?;
+            // `original` is the current source. Copy-back replaces it with the installed
+            // bytes; a source edit replaces it with the draft. The minus side is source.
+            let (old_label, new_label) = if source_edit.is_some() {
+                ("source", "edited source")
+            } else {
+                ("source", "installed copy")
+            };
             effects.push(Change {
                 path: file.source.clone(),
                 action: if source_edit.is_some() {
@@ -186,7 +197,7 @@ fn resolution_preview(
                     "copy installed content to source"
                 }
                 .into(),
-                diff: text_diff(&original, installed),
+                diff: labelled_diff(&original, installed, old_label, new_label),
                 before_sha256: Some(fingerprint(&original, executable(&file.source)?).sha256),
                 after_sha256: Some(fingerprint(installed, false).sha256),
                 executable: Some(if source_edit.is_some() {
