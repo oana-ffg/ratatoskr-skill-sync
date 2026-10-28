@@ -43,15 +43,18 @@ fn validates_without_config_and_emits_human_and_json_reports() {
         "{}",
         String::from_utf8_lossy(&human.stderr)
     );
+    let stdout = String::from_utf8(human.stdout).unwrap();
     assert!(
-        String::from_utf8(human.stdout).unwrap().contains(
+        stdout.contains(
             "remote: 1 skill installation across 1 harness rendered; 0 problem occurrences"
         )
     );
+    assert!(!stdout.contains("WARNING"), "{stdout}");
     let json = validate(&root, true);
     assert!(json.status.success());
     let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(report["problems"], serde_json::json!([]));
+    assert_eq!(report["warnings"], serde_json::json!([]));
     assert_eq!(report["profiles"][0]["harnesses"][0]["skills_rendered"], 1);
     assert!(!root.join(".validation").exists());
     assert!(!root.join("relative-invalid-config.toml").exists());
@@ -212,4 +215,92 @@ fn undefined_path_reports_only_affected_machines_and_uses_singular_labels() {
         output.contains("2 profiles; 1 distinct problem; 1 problem occurrence"),
         "{output}"
     );
+}
+
+#[test]
+fn reports_selector_values_that_can_never_match() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    source(&root);
+    fs::write(
+        root.join("skills/review-code/SKILL.md"),
+        "\
+---
+name: review-code
+description: Review code
+---
+Shared.
+<!-- only harness=cdex -->
+Typo.
+<!-- /only -->
+<!-- only os=mac -->
+Mac.
+<!-- /only -->
+<!-- only harness=codex,cluade -->
+Mixed.
+<!-- /only -->
+<!-- only harness=codex -->
+Known.
+<!-- /only -->
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("skills/review-code/notes.md"),
+        "<!-- only machine=brunnr -->\nNope.\n<!-- /only -->\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("skills/review-code/skill.toml"),
+        "[target]\nmachines = ['remtoe']\nharnesses = ['cluade']\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("skills/review-code/variants/harness=codx")).unwrap();
+    fs::write(
+        root.join("skills/review-code/variants/harness=codx/SKILL.md"),
+        "Variant.\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("skills/review-code/variants/harness=codex")).unwrap();
+    fs::create_dir_all(root.join("global")).unwrap();
+    fs::write(
+        root.join("global/AGENTS.md"),
+        "<!-- only harness=cursro -->\nTypo.\n<!-- /only -->\n",
+    )
+    .unwrap();
+    let human = validate(&root, false);
+    assert!(
+        human.status.success(),
+        "{}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    for expected in [
+        "WARNING skills/review-code/SKILL.md: Unknown harness `cdex` never matches; known: codex",
+        "WARNING skills/review-code/SKILL.md: Unknown os `mac` never matches; known: linux, macos, windows",
+        "WARNING skills/review-code/SKILL.md: Unknown harness `cluade` never matches; known: codex",
+        "WARNING skills/review-code/notes.md: Unknown machine `brunnr` never matches; known: remote",
+        "WARNING skills/review-code/skill.toml: Unknown machine `remtoe` never matches; known: remote",
+        "WARNING skills/review-code/skill.toml: Unknown harness `cluade` never matches; known: codex",
+        "WARNING skills/review-code/variants/harness=codx: Unknown harness `codx` never matches; known: codex",
+        "WARNING global/AGENTS.md: Unknown harness `cursro` never matches; known: codex",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected}\n{stdout}");
+    }
+    assert!(!stdout.contains("Unknown harness `codex`"), "{stdout}");
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("WARNING "))
+            .count(),
+        8
+    );
+    let json = validate(&root, true);
+    assert!(json.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        report["problems"].as_array().unwrap().is_empty(),
+        "{report}"
+    );
+    assert_eq!(report["warnings"].as_array().unwrap().len(), 8);
 }

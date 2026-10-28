@@ -19,7 +19,7 @@ The command does not register projects or inspect Git, local ownership, host per
 
 ## Selection and templates
 
-Set `enabled = false` at the top level of `skill.toml` to disable a skill without deleting its source. It can also contain `[target]` arrays named `harnesses`, `os`, `machines`, and `capabilities`. Members of each ordinary list are OR; different keys are AND. All capabilities must be present. An empty ordinary selector excludes the skill. Unknown selector keys are errors.
+Set `enabled = false` at the top level of `skill.toml` to disable a skill without deleting its source. It can also contain `[target]` arrays named `harnesses`, `os`, `machines`, and `capabilities`. Members of each ordinary list are OR; different keys are AND. All capabilities must be present. An empty ordinary selector excludes the skill. Unknown selector keys are errors. Unknown values that no defined harness, machine profile, or operating system can match are `ratatoskr validate` warnings and do not change its exit code.
 
 Markdown supports `only` HTML comment blocks: an opening comment starts with `only`, followed by `harness=codex`, `os=windows`, or `machine=brunnr`, and a closing comment contains `/only`. Comma-separated values mean OR and separate keys mean AND. Blocks cannot nest, even in excluded content, and are interpreted inside Markdown code fences too.
 

@@ -320,6 +320,9 @@ fn run() -> Result<i32> {
                     .join(", ");
                 println!("ERROR {}: {} [{}]", problem.path, problem.message, contexts);
             }
+            for warning in &report.warnings {
+                println!("WARNING {}: {}", warning.path, warning.message);
+            }
             println!(
                 "{}; {}; {}",
                 counted(report.profiles.len(), "profile", "profiles"),
