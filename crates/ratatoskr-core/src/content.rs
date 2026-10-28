@@ -153,10 +153,10 @@ pub fn list_skills(settings: &Settings) -> Result<Vec<SkillEntry>> {
         }
         for skill in fs::read_dir(path)? {
             let skill = skill?;
-            ensure!(
-                skill.file_type()?.is_dir(),
-                "Skills root must contain directories"
-            );
+            if crate::engine::skills_root_runtime_file(&skill)? {
+                continue;
+            }
+            crate::engine::require_skill_directory(&skill)?;
             let name = skill
                 .file_name()
                 .into_string()

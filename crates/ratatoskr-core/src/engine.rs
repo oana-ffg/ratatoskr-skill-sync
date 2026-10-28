@@ -132,6 +132,24 @@ fn runtime(path: &Path) -> bool {
         || path.extension().is_some_and(|n| n == "pyc")
 }
 
+/// Finder and Python drop these beside real skill directories. A symlink keeps its
+/// own error even when its name looks like a runtime artifact.
+pub(crate) fn skills_root_runtime_file(entry: &fs::DirEntry) -> Result<bool> {
+    let kind = entry.file_type()?;
+    Ok(runtime(&entry.path()) && !kind.is_dir() && !kind.is_symlink())
+}
+
+pub(crate) fn require_skill_directory(entry: &fs::DirEntry) -> Result<()> {
+    let kind = entry.file_type()?;
+    let name = entry.file_name().to_string_lossy().into_owned();
+    ensure!(!kind.is_symlink(), "Skills root entry is a symlink: {name}");
+    ensure!(
+        kind.is_dir(),
+        "Skills root must contain directories only: {name}"
+    );
+    Ok(())
+}
+
 pub(crate) fn file_paths(root: &Path) -> Result<BTreeMap<PathBuf, PathBuf>> {
     let mut files = BTreeMap::new();
     let mut cases = BTreeSet::new();
@@ -714,6 +732,10 @@ fn render_harness(
                 None => continue,
             };
             let skill_path = skill.path();
+            // `.DS_Store` and `.pyc` files are ignored inside a skill; ignore them at the root too.
+            if skills_root_runtime_file(&skill)? {
+                continue;
+            }
             let skill_label = skill.file_name().to_string_lossy().into_owned();
             let skill_result = render_skill(
                 rendering,
@@ -763,10 +785,7 @@ fn render_skill(
     } = *rendering;
     let machine_name = scope.machine;
     let skill_path = skill.path();
-    ensure!(
-        skill.file_type()?.is_dir(),
-        "Skills root must contain directories only"
-    );
+    require_skill_directory(skill)?;
     let skill_name = skill
         .file_name()
         .into_string()

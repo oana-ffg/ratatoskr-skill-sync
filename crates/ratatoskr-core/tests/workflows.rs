@@ -2888,3 +2888,52 @@ fn global_instructions_save_validates_every_profile_and_previews_each_target() {
                 .contains("Notes live in /notes.")
     }));
 }
+
+#[test]
+fn finder_metadata_in_skills_root_is_ignored() {
+    let f = Fixture::new();
+    f.write("skills/.DS_Store", "finder");
+    f.write("skills/cache.pyc", "bytecode");
+    let planned = plan(&f.settings).unwrap();
+    assert_eq!(planned.changes.len(), 1);
+    assert_eq!(ratatoskr_core::list_skills(&f.settings).unwrap().len(), 1);
+}
+
+#[test]
+fn skills_root_file_error_names_the_entry() {
+    let f = Fixture::new();
+    f.write("skills/README.md", "notes");
+    let error = format!("{:#}", plan(&f.settings).unwrap_err());
+    assert!(
+        error.contains("Skills root must contain directories only: README.md"),
+        "{error}"
+    );
+    let Err(error) = ratatoskr_core::list_skills(&f.settings) else {
+        panic!("README.md must be rejected");
+    };
+    let listed = format!("{error:#}");
+    assert!(
+        listed.contains("Skills root must contain directories only: README.md"),
+        "{listed}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_skill_folder_is_refused_by_name() {
+    let f = Fixture::new();
+    std::os::unix::fs::symlink("review-code", f.settings.source.join("skills/linked")).unwrap();
+    let error = format!("{:#}", plan(&f.settings).unwrap_err());
+    assert!(
+        error.contains("Skills root entry is a symlink: linked"),
+        "{error}"
+    );
+    let Err(error) = ratatoskr_core::list_skills(&f.settings) else {
+        panic!("symlinked skill folder must be rejected");
+    };
+    let listed = format!("{error:#}");
+    assert!(
+        listed.contains("Skills root entry is a symlink: linked"),
+        "{listed}"
+    );
+}
