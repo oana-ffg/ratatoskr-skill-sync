@@ -2974,3 +2974,47 @@ fn symlinked_skill_folder_is_refused_by_name() {
         "{listed}"
     );
 }
+
+#[test]
+fn dropping_an_applied_agent_explains_the_stale_ownership() {
+    let f = Fixture::new();
+    f.write(
+        "skills/review-code/SKILL.md",
+        "---\nname: review-code\ndescription: Review changed code\n---\nRead the diff.\n",
+    );
+    let harnesses = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();
+    f.write(
+        "harnesses.toml",
+        &format!("{harnesses}[claude]\nskills_dir='skills'\nglobal_file='CLAUDE.md'\n[claude.roots]\nmacos='{{{{af:home}}}}/.claude'\nwindows='{{{{af:home}}}}/.claude'\nlinux='{{{{af:home}}}}/.claude'\n"),
+    );
+    let profile = "os='macos'\nmode='staging'\ncapabilities=[]\n[paths]\nvault='/knowledge'\n";
+    f.write(
+        "machines/test.toml",
+        &format!("harnesses=['codex','claude']\n{profile}"),
+    );
+    apply(&f.settings).unwrap();
+    f.write(
+        "machines/test.toml",
+        &format!("harnesses=['codex']\n{profile}"),
+    );
+    let error = format!("{:#}", plan(&f.settings).unwrap_err());
+    assert!(
+        error.contains("Ownership path outside current targets"),
+        "{error}"
+    );
+    assert!(error.contains("claude"), "{error}");
+    assert!(
+        error.contains("removing an agent from the profile's `harnesses`"),
+        "{error}"
+    );
+    assert!(
+        error.contains("switching `mode` between staging and live"),
+        "{error}"
+    );
+    assert!(
+        error.contains("Restore the previous setting to keep managing these files"),
+        "{error}"
+    );
+    assert!(error.contains("machine `test`"), "{error}");
+    assert!(apply(&f.settings).is_err());
+}

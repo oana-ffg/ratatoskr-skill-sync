@@ -988,16 +988,21 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
         manifest.source == settings.source && manifest.machine == settings.machine,
         "Ownership manifest belongs to another source or machine"
     );
-    for path in manifest.files.keys() {
-        ensure!(
-            desired
+    let stray: Vec<&PathBuf> = manifest
+        .files
+        .keys()
+        .filter(|path| {
+            !desired
                 .allowed
                 .iter()
-                .any(|(skills, global)| path.starts_with(skills) || path == global),
-            "Ownership path outside current targets: {}",
-            path.display()
-        );
-    }
+                .any(|(skills, global)| path.starts_with(skills) || *path == global)
+        })
+        .collect();
+    ensure!(
+        stray.is_empty(),
+        "{}",
+        stale_ownership_message(&settings.machine, &stray)
+    );
     for root in &manifest.roots {
         ensure!(
             desired
@@ -1008,6 +1013,23 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
         );
     }
     Ok(manifest)
+}
+
+fn stale_ownership_message(machine: &str, stray: &[&PathBuf]) -> String {
+    let first = stray
+        .first()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let more = if stray.len() > 1 {
+        format!(" (and {} more)", stray.len() - 1)
+    } else {
+        String::new()
+    };
+    // Releasing these files is intentionally not offered here. The previous configuration has to
+    // be restored until ownership of a removed target is designed explicitly.
+    format!(
+        "Ownership path outside current targets: {first}{more}\nRatatoskr still owns files from an earlier configuration of machine `{machine}`. This happens after removing an agent from the profile's `harnesses`, switching `mode` between staging and live, or changing an agent's roots. Restore the previous setting to keep managing these files; owned files are never forgotten silently."
+    )
 }
 
 fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Result<Plan> {
