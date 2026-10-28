@@ -655,7 +655,30 @@ fn run() -> Result<i32> {
         command => {
             let settings = load(&path)?;
             let report = match command {
-                Action::Apply => apply(&settings)?,
+                Action::Apply if cli.json => apply(&settings)?,
+                Action::Apply => {
+                    // `apply` returns the post-apply plan, which is empty on success. Report what
+                    // the reviewed plan contained so a first apply does not read as a no-op.
+                    let before = plan(&settings)?;
+                    let report = apply(&settings)?;
+                    if before.conflicts.is_empty() && !before.changes.is_empty() {
+                        let count = |action: &str| {
+                            before
+                                .changes
+                                .iter()
+                                .filter(|change| change.action == action)
+                                .count()
+                        };
+                        println!(
+                            "Applied {}: {} added, {} updated, {} removed.",
+                            counted(before.changes.len(), "change", "changes"),
+                            count("add"),
+                            count("update"),
+                            count("remove")
+                        );
+                    }
+                    report
+                }
                 Action::Sync => sync(&settings)?,
                 _ => plan(&settings)?,
             };

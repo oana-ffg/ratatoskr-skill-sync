@@ -3018,3 +3018,16 @@ fn dropping_an_applied_agent_explains_the_stale_ownership() {
     assert!(error.contains("machine `test`"), "{error}");
     assert!(apply(&f.settings).is_err());
 }
+
+#[test]
+fn invalid_identifier_names_the_accepted_form() {
+    let f = Fixture::new();
+    fs::create_dir(f.settings.source.join("skills/Bad_Name")).unwrap();
+    let error = format!("{:#}", plan(&f.settings).unwrap_err());
+    assert!(
+        error.contains("Invalid identifier: \"Bad_Name\""),
+        "{error}"
+    );
+    assert!(error.contains("lowercase ASCII letters"), "{error}");
+    assert!(error.contains("`review-code`"), "{error}");
+}
