@@ -128,3 +128,33 @@ jobs:
         with:
           name: editor-ui-failures
           path: desktop/test-results/
+
+  native-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: desktop
+      - name: Build the debug app with its test-only WebDriver server
+        run: npm run build:native-e2e
+        working-directory: desktop
+      - run: npm run test:native
+        working-directory: desktop
+        env:
+          RATATOSKR_NATIVE_E2E: "1"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: native-e2e-failures-${{ matrix.os }}
+          path: desktop/test-results/native/

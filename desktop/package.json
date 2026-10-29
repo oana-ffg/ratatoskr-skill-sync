@@ -9,11 +9,13 @@
     "build": "npm run check && vite build",
     "tauri": "tauri",
     "prepare:helper": "node scripts/prepare-helper.mjs",
-    "format": "prettier --write src scripts tests e2e \"*.json\" \"*.ts\"",
-    "format:check": "prettier --check src scripts tests e2e \"*.json\" \"*.ts\"",
+    "format": "prettier --write src scripts tests e2e native-e2e \"*.json\" \"*.ts\"",
+    "format:check": "prettier --check src scripts tests e2e native-e2e \"*.json\" \"*.ts\"",
     "test": "node --experimental-strip-types --test tests/*.test.mjs && npm run prepare:fixtures && vitest run",
     "test:screenshots": "npm run prepare:fixtures && playwright test screenshots.spec.ts windows-tray.spec.ts --project=chromium --output=test-results/screenshots",
     "test:ui": "npm run prepare:fixtures && playwright test editor.spec.ts instructions.spec.ts projects.spec.ts --output=test-results/ui",
+    "build:native-e2e": "tauri build --debug --no-bundle --features e2e-webdriver --config native-e2e/tauri.conf.json",
+    "test:native": "node --test native-e2e/*.test.mjs",
     "prepare:fixtures": "node scripts/prepare-fixtures.mjs"
   },
   "dependencies": {

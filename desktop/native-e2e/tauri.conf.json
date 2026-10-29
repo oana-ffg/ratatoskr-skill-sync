@@ -1,0 +1,5 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run prepare:helper -- --debug && npm run build"
+  }
+}

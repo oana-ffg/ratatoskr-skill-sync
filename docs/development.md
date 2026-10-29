@@ -39,6 +39,19 @@ CI runs it as `editor-ui` and retains screenshots and traces on failure. Cover
 user-visible failure and recovery paths when changing editor behavior, including
 pending preview, invalid drafts, source conflicts, refresh and target selection.
 
+`native-e2e/` drives the real desktop app on macOS and Windows CI (`native-e2e`
+job). `npm run build:native-e2e` builds a debug app with the `e2e-webdriver`
+feature, which embeds a W3C WebDriver server bound to `127.0.0.1`. The feature
+refuses to compile into release builds. `npm run test:native` creates a
+disposable workspace with the real CLI and a local bare remote. It creates, edits
+and saves a skill in the app, checks the push reached the remote, and applies it
+from Review changes. On Windows it then starts the tray app with `--background`
+and waits for a skill published from another checkout to sync. The journeys
+only run with `RATATOSKR_NATIVE_E2E=1`, because the app shares its
+single-instance record and app data with any installed copy. Do not set it on a
+machine running Ratatoskr. Failure screenshots and app logs are kept in
+`desktop/test-results/native/`.
+
 `cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
 For changes to Windows-only desktop code, also compile the Windows cfg paths before pushing. Install the target once, then run these commands from the repository root and from `desktop/src-tauri/`:

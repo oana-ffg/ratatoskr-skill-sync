@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Embedded W3C WebDriver server for the native end-to-end tests. Anything local can
+# drive the app through it, so main.rs refuses to compile it into release builds.
+e2e-webdriver = ["dep:tauri-plugin-wdio-webdriver"]
+
 [build-dependencies]
 serde_json.workspace = true
 tauri-build = { version = "2", features = [] }
@@ -24,6 +29,7 @@ tokio = { version = "1", features = ["time", "sync"] }
 
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-wdio-webdriver = { version = "1.5", optional = true }
 
 [dev-dependencies]
 dunce = "1"

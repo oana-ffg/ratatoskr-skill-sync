@@ -9,6 +9,9 @@ mod update_scheduler;
 #[cfg(any(windows, target_os = "macos"))]
 mod window_lifecycle;
 
+#[cfg(all(feature = "e2e-webdriver", not(debug_assertions)))]
+compile_error!("e2e-webdriver lets any local process drive the app; use it only in debug builds");
+
 fn main() {
     match instance::claim() {
         Ok(true) => (),
@@ -37,6 +40,8 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_notification::init());
+    #[cfg(feature = "e2e-webdriver")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     let autostart = tauri_plugin_autostart::Builder::new();
     #[cfg(any(windows, target_os = "macos"))]
     let autostart = autostart.args(window_lifecycle::AUTOSTART_ARGS);
