@@ -143,6 +143,19 @@ async function drive(name, journey) {
   }
 }
 
+/** Opens a screen and waits for `arrived`. The app shows its unsaved-changes guard
+ * while a save is still finishing, so keep editing and retry; a guard that never
+ * clears fails the journey. */
+async function navigate(session, name, arrived) {
+  const guard = "//dialog[@aria-label='You have unsaved changes']";
+  await until(`${name} to open`, async () => {
+    if (await session.find(arrived)) return true;
+    if (await session.find(guard)) await session.click(button("Keep editing"));
+    else await session.click(nav(name));
+    return false;
+  });
+}
+
 test(
   "the app creates, edits, publishes and applies a skill through the real core",
   { skip: disabled },
@@ -198,10 +211,10 @@ test(
           .includes("Written in the native editor."),
       );
 
-      await session.click(nav("Review changes"));
-      await session.click(
-        "//button[contains(normalize-space(.), 'in the staging folder')]",
-      );
+      const apply =
+        "//button[contains(normalize-space(.), 'in the staging folder')]";
+      await navigate(session, "Review changes", apply);
+      await session.click(apply);
       for (const harness of ["claude", "codex"]) {
         const staged = workspace.staged(
           `${harness}/skills/native-check/SKILL.md`,
