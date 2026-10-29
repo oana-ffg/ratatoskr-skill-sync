@@ -39,6 +39,14 @@ CI runs it as `editor-ui` and retains screenshots and traces on failure. Cover
 user-visible failure and recovery paths when changing editor behavior, including
 pending preview, invalid drafts, source conflicts, refresh and target selection.
 
+`crates/ratatoskr-cli/tests/end_to_end.rs` runs whole journeys through the real
+CLI: validate, init from a local bare Git remote, apply, sync published changes,
+and refuse then resolve a hand edit. Two staged machine profiles keep their
+intentional harness, OS and path differences. Its launchd journey installs a
+real per-user job, waits for scheduled syncs and removes the job. It is ignored
+by default; macOS CI runs it with
+`cargo test --locked -p ratatoskr-skill-sync --test end_to_end -- --ignored`.
+
 `cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
 For changes to Windows-only desktop code, also compile the Windows cfg paths before pushing. Install the target once, then run these commands from the repository root and from `desktop/src-tauri/`:
