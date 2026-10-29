@@ -761,10 +761,7 @@ fn run() -> Result<i32> {
             {
                 return Ok(1);
             }
-            if !report.conflicts.is_empty()
-                && !(matches!(command, Action::Plan)
-                    && report.conflicts.len() == report.stale_targets.len())
-            {
+            if !report.conflicts.is_empty() {
                 return Ok(1);
             }
         }

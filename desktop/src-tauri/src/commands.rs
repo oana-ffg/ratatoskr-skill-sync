@@ -1123,11 +1123,6 @@ pub(crate) fn keep_legacy(expected: String) -> Reply<Snapshot> {
 }
 
 #[tauri::command]
-pub(crate) fn list_stale_targets() -> Reply<Vec<core::StaleLocation>> {
-    core::stale_targets(&settings()?).map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
 pub(crate) fn preview_stale_target(
     path: PathBuf,
     action: core::StaleAction,

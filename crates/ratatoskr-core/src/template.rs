@@ -345,17 +345,6 @@ fn variable_lookup<'a>(name: &str, context: &'a toml::Table) -> Option<&'a toml:
     Some(value)
 }
 
-/// Optional historical labels cannot infer values removed from the profile.
-/// Invalid templates still fail; undefined values yield no candidate path.
-pub(crate) fn render_if_defined(source: &str, context: &toml::Table) -> Result<Option<String>> {
-    for caps in variable_regex()?.captures_iter(source) {
-        if variable_lookup(&caps[1], context).is_none() {
-            return Ok(None);
-        }
-    }
-    render(source, context, false).map(Some)
-}
-
 fn variable_value(name: &str, context: &toml::Table) -> Result<String> {
     let value =
         variable_lookup(name, context).with_context(|| format!("Undefined variable: {name}"))?;

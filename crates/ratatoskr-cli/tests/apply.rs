@@ -123,7 +123,9 @@ fn stale_target_cli_lists_previews_and_resolves_each_location() {
             format!("{profile}harnesses=['beta']\n"),
         )
         .unwrap();
-        let planned = stdout(&output(&root, &["plan"]));
+        let planned = output(&root, &["plan"]);
+        assert_eq!(planned.status.code(), Some(1));
+        let planned = String::from_utf8(planned.stdout).unwrap();
         assert!(
             planned.contains("Pending stale-target decision")
                 && planned.contains("ratatoskr stale-target resolve"),
@@ -137,7 +139,7 @@ fn stale_target_cli_lists_previews_and_resolves_each_location() {
         let locations: serde_json::Value =
             serde_json::from_str(&stdout(&output(&root, &["--json", "stale-target", "list"])))
                 .unwrap();
-        assert_eq!(locations.as_array().unwrap().len(), 2);
+        assert_eq!(locations.as_array().unwrap().len(), 1);
         let mut installed = vec![];
         for location in locations.as_array().unwrap() {
             for file in location["files"].as_array().unwrap() {

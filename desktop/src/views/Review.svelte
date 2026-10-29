@@ -271,7 +271,7 @@
               >
             </p>{/each}
           <button disabled={busy} onclick={() => previewStale(item, "remove")}
-            >Remove from {item.path}…</button
+            >Remove installed copies…</button
           >
           <button disabled={busy} onclick={() => previewStale(item, "forget")}
             >Leave files and stop managing them…</button
@@ -430,10 +430,11 @@
         directories include hand edits, runtime files and untracked contents.
         Other skills stay where they are. Nothing is deleted.
       </p>
-      <p>
-        Archive: <code>{stalePreview.archive}</code>. The JSON receipt records
-        each original path for recovery.
-      </p>
+      <p>Each target stays on its volume. Archive locations:</p>
+      {#each stalePreview.archives as archive}<p>
+          <code>{archive}</code>
+        </p>{/each}
+      <p>Each JSON receipt records all original paths for recovery.</p>
     {:else}<p>
         Files stay exactly as they are. Ratatoskr will stop tracking them. If
         you enable this target again, use Adopt to take over the existing files.
@@ -441,10 +442,7 @@
     {#each stalePreview.location.files.filter((file) => file.modified) as file}<p
         class="warning-text"
       >
-        Hand-edited, permission-changed or missing: <code
-          >{file.path.slice(stalePreview.location.path.length + 1) ||
-            basename(file.path)}</code
-        >
+        Hand-edited, permission-changed or missing: <code>{file.path}</code>
       </p>{/each}
     {#if stalePreview.action === "remove" && stalePreview.location.roots.length > stalePreview.location.archive_roots.length}<p
       >
@@ -454,10 +452,7 @@
     <details open={stalePreview.location.files.length <= 5}>
       <summary>{stalePreview.location.files.length} reviewed files</summary>
       {#each stalePreview.location.files as file}<div class="resource-row">
-          <code
-            >{file.path.slice(stalePreview.location.path.length + 1) ||
-              basename(file.path)}</code
-          >{!file.owned ? " · Untracked file" : ""}
+          <code>{file.path}</code>{!file.owned ? " · Untracked file" : ""}
         </div>{/each}
     </details>
     <details>

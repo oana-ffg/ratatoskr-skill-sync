@@ -1391,8 +1391,25 @@ fn project_content_renders_with_shared_machine_settings_and_can_be_detached() {
         .clone();
     apply(&settings).unwrap();
     assert!(fs::read_to_string(&output).unwrap().contains("Use test."));
+    let skills = output.parent().unwrap().parent().unwrap();
+    assert_eq!(
+        f.ownership()["target_harnesses"][skills.to_str().unwrap()],
+        "codex"
+    );
     ratatoskr_core::remove_project(&config, &project).unwrap();
     assert!(output.is_file(), "Detaching preserves project output");
+    assert!(
+        f.ownership()["target_harnesses"]
+            .get(skills.to_str().unwrap())
+            .is_none()
+    );
+    assert!(
+        f.ownership()["target_harnesses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|path| !Path::new(path).starts_with(skills.parent().unwrap()))
+    );
     assert!(plan(&load(&config).unwrap()).unwrap().conflicts.is_empty());
 }
 
@@ -3279,6 +3296,13 @@ fn variants_refuse_runtime_named_symlinks() {
 }
 
 impl Fixture {
+    fn ownership(&self) -> serde_json::Value {
+        serde_json::from_slice(
+            &fs::read(self.settings.state_dir.join("test/manifest.json")).unwrap(),
+        )
+        .unwrap()
+    }
+
     fn targets(&self, mode: &str, harnesses: &[&str]) {
         let home = directories::BaseDirs::new()
             .unwrap()
@@ -3372,14 +3396,22 @@ fn stale_live_target_blocks_apply_reviewed_and_sync_through_conflicts() {
     git(&f.settings.source, &["commit", "-m", "Stop syncing beta"]);
     git(&f.settings.source, &["push"]);
     let report = plan(&f.settings).unwrap();
-    assert_eq!(report.stale_targets.len(), 2);
+    assert_eq!(report.stale_targets.len(), 1);
     assert!(
         report
             .stale_targets
             .iter()
             .all(|l| l.harness.as_deref() == Some("beta"))
     );
-    assert_eq!(report.conflicts.len(), 2);
+    assert_eq!(report.conflicts.len(), 1);
+    assert_eq!(report.stale_targets[0].path, f.root.join("beta/skills"));
+    assert_eq!(report.stale_targets[0].files.len(), 2);
+    assert!(
+        report.stale_targets[0]
+            .files
+            .iter()
+            .any(|file| file.path == f.root.join("beta-instructions/AGENTS.md"))
+    );
     assert!(report.changes.is_empty());
     assert!(apply(&f.settings).is_err());
     assert!(
@@ -3412,6 +3444,13 @@ fn stale_forget_preserves_files_and_reenabled_target_is_unmanaged_until_adopted(
     assert!(
         report.stale_targets.is_empty() && report.conflicts.is_empty() && report.changes.is_empty()
     );
+    assert!(
+        f.ownership()["target_harnesses"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|name| name == "alpha")
+    );
     f.targets("live", &["alpha", "beta"]);
     let report = plan(&f.settings).unwrap();
     assert!(
@@ -3426,7 +3465,16 @@ fn stale_forget_preserves_files_and_reenabled_target_is_unmanaged_until_adopted(
             .iter()
             .any(|c| c.contains(global.to_str().unwrap()))
     );
-    ratatoskr_core::adopt(&f.settings).unwrap();
+    let backup = ratatoskr_core::adopt(&f.settings).unwrap();
+    let adopted = f.ownership()["target_harnesses"].clone();
+    assert_eq!(
+        adopted[skill.parent().unwrap().parent().unwrap().to_str().unwrap()],
+        "beta"
+    );
+    assert_eq!(adopted[global.to_str().unwrap()], "beta");
+    apply(&f.settings).unwrap();
+    ratatoskr_core::restore_backup(&f.settings, &backup).unwrap();
+    assert_eq!(f.ownership()["target_harnesses"], adopted);
     assert!(plan(&f.settings).unwrap().conflicts.is_empty());
 }
 
@@ -3461,7 +3509,7 @@ fn stale_remove_archives_edits_runtime_files_and_empty_directories_with_recovery
             .any(|file| !file.owned && file.path.ends_with(".DS_Store"))
     );
     let archives = f.resolve_stale(ratatoskr_core::StaleAction::Remove);
-    assert_eq!(archives.len(), 2);
+    assert_eq!(archives.len(), 1);
     assert!(!skill_root.exists());
     assert!(!f.root.join("beta-instructions/AGENTS.md").exists());
     assert!(f.root.join("beta/skills/unrelated/SKILL.md").exists());
@@ -3472,7 +3520,31 @@ fn stale_remove_archives_edits_runtime_files_and_empty_directories_with_recovery
     for archive in archives {
         let receipt: serde_json::Value =
             serde_json::from_slice(&fs::read(archive.join("receipt.json")).unwrap()).unwrap();
+        let archives = receipt["preview"]["archives"].as_array().unwrap();
+        assert_eq!(archives.len(), 2);
+        for directory in archives {
+            let other: serde_json::Value = serde_json::from_slice(
+                &fs::read(Path::new(directory.as_str().unwrap()).join("receipt.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(other, receipt);
+        }
         for (original, stored) in receipt["moves"].as_object().unwrap() {
+            let target = if Path::new(original).starts_with(&skill_root) {
+                skill_root.parent().unwrap()
+            } else {
+                Path::new(original)
+            };
+            assert_eq!(
+                Path::new(stored.as_str().unwrap())
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap(),
+                target.parent().unwrap().join("ratatoskr-backups")
+            );
             assert!(!Path::new(original).exists());
             fs::rename(stored.as_str().unwrap(), original).unwrap();
         }
@@ -3557,7 +3629,7 @@ fn staging_live_switches_require_explicit_decisions_in_both_directions() {
         apply(&f.settings).unwrap();
         f.targets(to, &["alpha"]);
         let report = plan(&f.settings).unwrap();
-        assert_eq!(report.stale_targets.len(), 2);
+        assert_eq!(report.stale_targets.len(), 1);
         assert!(apply(&f.settings).is_err());
         assert!(old_paths.iter().all(|p| p.is_file()));
         f.resolve_stale(ratatoskr_core::StaleAction::Remove);
@@ -3616,7 +3688,7 @@ fn stale_permission_previews_detect_drift_and_remove_preserves_modes() {
 }
 
 #[test]
-fn changed_roots_and_instruction_paths_are_decidable_with_path_only_labels() {
+fn changed_roots_and_instruction_paths_keep_recorded_harness_labels() {
     for change in ["root", "skills", "instructions"] {
         let f = Fixture::with_targets("live", &["alpha"]);
         apply(&f.settings).unwrap();
@@ -3643,7 +3715,11 @@ fn changed_roots_and_instruction_paths_are_decidable_with_path_only_labels() {
         f.write("harnesses.toml", &changed);
         let report = plan(&f.settings).unwrap();
         assert_eq!(report.stale_targets.len(), 1, "{change}");
-        assert!(report.stale_targets[0].harness.is_none(), "{change}");
+        assert_eq!(
+            report.stale_targets[0].harness.as_deref(),
+            Some("alpha"),
+            "{change}"
+        );
         f.resolve_stale(ratatoskr_core::StaleAction::Remove);
         apply(&f.settings).unwrap();
         assert!(plan(&f.settings).unwrap().conflicts.is_empty(), "{change}");
@@ -3658,7 +3734,7 @@ fn empty_owned_roots_and_missing_owned_files_still_require_a_decision() {
     fs::remove_file(&file).unwrap();
     f.targets("live", &["alpha"]);
     let locations = ratatoskr_core::stale_targets(&f.settings).unwrap();
-    assert_eq!(locations.len(), 2);
+    assert_eq!(locations.len(), 1);
     assert!(
         locations
             .iter()
@@ -3702,6 +3778,19 @@ fn failed_stale_manifest_write_rolls_back_archived_files() {
     );
     assert_eq!(fs::read(&skill).unwrap(), bytes);
     assert_eq!(fs::read(&manifest).unwrap(), before);
+    assert!(
+        error.contains(
+            preview
+                .archive
+                .as_ref()
+                .unwrap()
+                .join("receipt.json")
+                .to_str()
+                .unwrap()
+        ),
+        "{error}"
+    );
+    assert!(!error.contains("Some("), "{error}");
     assert!(preview.archive.unwrap().join("receipt.json").is_file());
 }
 
@@ -3846,4 +3935,120 @@ fn stale_remove_leaves_contents_of_overlapping_current_targets_in_place() {
         fs::read(f.settings.source.join("skills/review-code/SKILL.md")).unwrap()
     );
     assert!(plan(&f.settings).unwrap().stale_targets.is_empty());
+}
+
+#[test]
+fn stale_harness_labels_survive_removed_definitions() {
+    let f = Fixture::with_targets("live", &["alpha", "beta"]);
+    apply(&f.settings).unwrap();
+    f.targets("live", &["alpha"]);
+    let definitions = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();
+    f.write(
+        "harnesses.toml",
+        definitions.split("[beta]").next().unwrap(),
+    );
+    let locations = ratatoskr_core::stale_targets(&f.settings).unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].harness.as_deref(), Some("beta"));
+    assert_eq!(locations[0].path, f.root.join("beta/skills"));
+    assert_eq!(locations[0].files.len(), 2);
+    f.resolve_stale(ratatoskr_core::StaleAction::Remove);
+    assert!(plan(&f.settings).unwrap().conflicts.is_empty());
+}
+
+#[test]
+fn old_manifests_keep_path_only_decisions_until_applied_again() {
+    let f = Fixture::with_targets("live", &["alpha", "beta"]);
+    apply(&f.settings).unwrap();
+    let mut old = f.ownership();
+    old.as_object_mut().unwrap().remove("target_harnesses");
+    fs::write(
+        f.settings.state_dir.join("test/manifest.json"),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    f.targets("live", &["alpha"]);
+    let locations = ratatoskr_core::stale_targets(&f.settings).unwrap();
+    assert_eq!(locations.len(), 2);
+    assert!(locations.iter().all(|location| location.harness.is_none()));
+    assert!(
+        locations
+            .iter()
+            .any(|location| location.path == f.root.join("beta/skills"))
+    );
+    assert!(
+        locations
+            .iter()
+            .any(|location| location.path == f.root.join("beta-instructions/AGENTS.md"))
+    );
+    f.resolve_stale(ratatoskr_core::StaleAction::Forget);
+    apply(&f.settings).unwrap();
+    assert_eq!(
+        f.ownership()["target_harnesses"][f.root.join("alpha/skills").to_str().unwrap()],
+        "alpha"
+    );
+}
+
+#[test]
+fn global_only_stale_harness_uses_the_instructions_path() {
+    let f = Fixture::with_targets("live", &["alpha", "beta"]);
+    f.write(
+        "skills/review-code/skill.toml",
+        "[target]\nharnesses=['alpha']\n",
+    );
+    apply(&f.settings).unwrap();
+    f.targets("live", &["alpha"]);
+    let locations = ratatoskr_core::stale_targets(&f.settings).unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].harness.as_deref(), Some("beta"));
+    assert_eq!(
+        locations[0].path,
+        f.root.join("beta-instructions/AGENTS.md")
+    );
+    assert_eq!(locations[0].files.len(), 1);
+    f.resolve_stale(ratatoskr_core::StaleAction::Remove);
+    assert!(plan(&f.settings).unwrap().conflicts.is_empty());
+}
+
+#[test]
+fn stale_harness_groups_global_and_project_targets_in_one_decision() {
+    let mut f = Fixture::with_targets("live", &["alpha", "beta"]);
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills/project-review")).unwrap();
+    git(&project, &["init", "-b", "main"]);
+    fs::write(
+        project.join("agent-skills/skills/project-review/skill.toml"),
+        "",
+    )
+    .unwrap();
+    fs::write(
+        project.join("agent-skills/skills/project-review/SKILL.md"),
+        "---\nname: project-review\ndescription: Review project\n---\nRead the diff.\n",
+    )
+    .unwrap();
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    add_project(&config, &project, "agent-skills").unwrap();
+    f.settings = load(&config).unwrap();
+    apply(&f.settings).unwrap();
+    f.targets("live", &["alpha"]);
+    let locations = ratatoskr_core::stale_targets(&f.settings).unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].harness.as_deref(), Some("beta"));
+    assert_eq!(locations[0].roots.len(), 2);
+    assert_eq!(locations[0].files.len(), 3);
+    assert_eq!(locations[0].path, f.root.join("beta/skills"));
+    let preview = ratatoskr_core::preview_stale_target(
+        &f.settings,
+        &locations[0].path,
+        ratatoskr_core::StaleAction::Remove,
+    )
+    .unwrap();
+    assert_eq!(preview.archives.len(), 3);
+    let archives = f.resolve_stale(ratatoskr_core::StaleAction::Remove);
+    assert_eq!(archives.len(), 1);
+    assert!(!project.join(".beta/skills/project-review").exists());
+    assert!(!f.root.join("beta/skills/review-code").exists());
+    assert!(!f.root.join("beta-instructions/AGENTS.md").exists());
+    assert!(plan(&f.settings).unwrap().conflicts.is_empty());
 }

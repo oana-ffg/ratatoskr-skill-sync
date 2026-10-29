@@ -340,6 +340,12 @@ test("review former target decisions and their exact archive preview", async ({
     preview: StalePreview;
   };
   const workspace = structuredClone(fixture.workspace);
+  expect(stale.plan.stale_targets).toHaveLength(1);
+  expect(
+    stale.preview.location.files.some((file) =>
+      file.path.endsWith("/codex/AGENTS.md"),
+    ),
+  ).toBe(true);
   workspace.plan = stale.plan;
   workspace.plan.content_status = fixture.workspace.plan.content_status;
   workspace.legacy = [];
@@ -356,7 +362,7 @@ test("review former target decisions and their exact archive preview", async ({
   const section = page.getByRole("region", { name: "Former target locations" });
   await expect(
     section.getByRole("heading", { name: "Codex", exact: true }),
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   await expect(section).toContainText(
     "Hand-edited, permission-changed or missing",
   );
@@ -370,13 +376,19 @@ test("review former target decisions and their exact archive preview", async ({
   });
   await section
     .getByRole("button", {
-      name: `Remove from ${stale.preview.location.path}…`,
+      name: "Remove installed copies…",
       exact: true,
     })
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Nothing is deleted");
   await expect(dialog).toContainText("Untracked file");
+  await expect(dialog).toContainText(stale.preview.archive!);
+  await expect(dialog).toContainText(
+    stale.preview.location.files.find((file) =>
+      file.path.endsWith("/codex/AGENTS.md"),
+    )!.path,
+  );
   await page.screenshot({
     path: "../docs/screenshots/former-target-preview-dark.png",
     fullPage: true,

@@ -114,6 +114,18 @@ pub(crate) struct Manifest {
     roots: BTreeSet<PathBuf>,
     #[serde(default)]
     project_roots: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    /// Harness identity captured when targets are applied or adopted.
+    #[serde(default)]
+    target_harnesses: BTreeMap<PathBuf, String>,
+}
+
+impl Manifest {
+    fn retain_owned_targets(&mut self) {
+        self.target_harnesses.retain(|target, _| {
+            self.files.keys().any(|path| path.starts_with(target))
+                || self.roots.iter().any(|root| root.parent() == Some(target))
+        });
+    }
 }
 
 #[derive(Deserialize)]
@@ -146,6 +158,19 @@ struct Desired {
     skills: usize,
     targets: usize,
     project_roots: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+}
+
+impl Desired {
+    fn target_harnesses(&self) -> BTreeMap<PathBuf, String> {
+        self.install_targets
+            .iter()
+            .flat_map(|target| {
+                [target.skills_root.clone(), target.instructions_file.clone()]
+                    .into_iter()
+                    .map(|path| (path, target.harness.clone()))
+            })
+            .collect()
+    }
 }
 
 fn read_toml(path: &Path) -> Result<toml::Table> {
@@ -1059,7 +1084,7 @@ fn stale_ownership_message(machine: &str, location: &Path) -> String {
 
 fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Result<Plan> {
     protection::capture(&manifest_path(settings))?;
-    let stale_targets = stale::locations(settings, desired, manifest)?;
+    let stale_targets = stale::locations(desired, manifest)?;
     // Stale ownership requires its own explicit decision; it is never a normal remove.
     let active = stale::active_manifest(manifest, desired);
     let manifest = &active;
@@ -1276,6 +1301,7 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
         source: settings.source.clone(),
         machine: settings.machine.clone(),
         roots,
+        target_harnesses: desired.target_harnesses(),
         project_roots: desired.project_roots,
         files: desired
             .files
@@ -1307,6 +1333,7 @@ pub(crate) fn detach_project(settings: &Settings, project: &Path) -> Result<()> 
             .files
             .retain(|path, _| !roots.iter().any(|root| path.starts_with(root)));
         owned.roots.retain(|root| !roots.contains(root));
+        owned.retain_owned_targets();
         atomic_write(&path, &serde_json::to_vec_pretty(&owned)?)?;
     }
     Ok(())
@@ -1392,7 +1419,7 @@ pub fn adopt(settings: &Settings) -> Result<PathBuf> {
     let _lock = crate::config::operation_lock(settings, "apply.lock")?;
     let mut owned = manifest(settings)?;
     ensure!(
-        stale::locations(settings, &desired, &owned)?.is_empty(),
+        stale::locations(&desired, &owned)?.is_empty(),
         "Resolve pending stale-target decisions with `ratatoskr stale-target list` before adopt"
     );
     for (path, expected) in &owned.files {
@@ -1424,6 +1451,7 @@ pub fn adopt(settings: &Settings) -> Result<PathBuf> {
             );
         }
     }
+    owned.target_harnesses = desired.target_harnesses();
     owned.project_roots = desired.project_roots;
     let directory = backup(settings, &owned)?;
     atomic_write(
@@ -1668,6 +1696,7 @@ pub(crate) fn detach_legacy_ownership(
     let mut manifest: Manifest = serde_json::from_str(expected)?;
     manifest.files.retain(|path, _| !path.starts_with(root));
     manifest.roots.remove(root);
+    manifest.retain_owned_targets();
     atomic_write(
         &manifest_path(settings),
         &serde_json::to_vec_pretty(&manifest)?,

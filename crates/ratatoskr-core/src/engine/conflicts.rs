@@ -413,6 +413,7 @@ pub(crate) fn resolve_conflict_locked(settings: &Settings, expected: &str) -> Re
     if desired.roots.contains(&path) {
         owned.roots.insert(path);
     }
+    owned.target_harnesses = desired.target_harnesses();
     owned.project_roots = desired.project_roots;
     atomic_write(
         &manifest_path(settings),

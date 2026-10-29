@@ -146,6 +146,15 @@ function staleWorkspace() {
           current: { sha256: "edited", executable: false },
           protection: null,
         },
+        {
+          path: "/separate-global-root/AGENTS.md",
+          owned: true,
+          modified: false,
+          readonly: false,
+          recorded: { sha256: "instructions", executable: false },
+          current: { sha256: "instructions", executable: false },
+          protection: null,
+        },
       ],
     },
   ];
@@ -165,6 +174,13 @@ test.each(["forget", "remove"] as const)(
       location,
       archive:
         action === "remove" ? "/former-agent/ratatoskr-backups/123" : null,
+      archives:
+        action === "remove"
+          ? [
+              "/former-agent/ratatoskr-backups/123",
+              "/separate-global-root/ratatoskr-backups/123",
+            ]
+          : [],
       revision: "reviewed-configuration-and-manifest",
     };
     const updated = structuredClone(workspace);
@@ -185,7 +201,7 @@ test.each(["forget", "remove"] as const)(
       name: "Former target locations",
     });
     expect(section).toHaveTextContent("Codex");
-    expect(section).toHaveTextContent("1 file");
+    expect(section).toHaveTextContent("2 files");
     expect(section).toHaveTextContent(
       "Hand-edited, permission-changed or missing",
     );
@@ -203,7 +219,7 @@ test.each(["forget", "remove"] as const)(
       within(section).getByRole("button", {
         name:
           action === "remove"
-            ? "Remove from /former-agent/skills…"
+            ? "Remove installed copies…"
             : "Leave files and stop managing them…",
       }),
     );
@@ -217,6 +233,9 @@ test.each(["forget", "remove"] as const)(
       expect.anything(),
     );
     expect(p.onupdate).not.toHaveBeenCalled();
+    expect(dialog).toHaveTextContent("/separate-global-root/AGENTS.md");
+    for (const archive of preview.archives)
+      expect(dialog).toHaveTextContent(archive);
     expect(dialog).toHaveTextContent(
       action === "remove"
         ? "Nothing is deleted"
@@ -247,6 +266,7 @@ test("a changed former target stays open for review and reports the failure", as
     action: "forget",
     location: workspace.plan.stale_targets[0],
     archive: null,
+    archives: [],
     revision: "original",
   };
   mockIPC((command) => {

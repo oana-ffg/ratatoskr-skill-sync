@@ -160,6 +160,7 @@ export interface StalePreview {
   action: "forget" | "remove";
   location: StaleLocation;
   archive: string | null;
+  archives: string[];
   revision: string;
 }
 export interface Snapshot {

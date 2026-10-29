@@ -39,7 +39,10 @@ pub struct StaleLocation {
 pub struct StalePreview {
     pub action: StaleAction,
     pub location: StaleLocation,
+    /// Primary receipt directory returned by resolve.
     pub archive: Option<PathBuf>,
+    /// Each former target archives locally so a grouped decision can span volumes.
+    pub archives: BTreeSet<PathBuf>,
     /// Binds the decision to the whole ownership/configuration, not just one file.
     revision: String,
 }
@@ -62,87 +65,36 @@ pub(super) fn active_manifest(manifest: &Manifest, desired: &Desired) -> Manifes
     let mut active = manifest.clone();
     active.files.retain(|path, _| allowed_file(path, desired));
     active.roots.retain(|path| allowed_root(path, desired));
+    active.retain_owned_targets();
     active
 }
 
-fn harness_label(
-    settings: &Settings,
+/// Recorded harnesses share one decision. Historical manifests without labels
+/// keep their original per-path decisions; current definitions cannot identify them.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum LocationKey {
+    Harness(String),
+    Path(PathBuf),
+}
+
+fn location<'a>(
+    groups: &'a mut BTreeMap<LocationKey, StaleLocation>,
     manifest: &Manifest,
-    location: &Path,
-    skills: bool,
-) -> Result<Option<String>> {
-    let machine = read_toml(
-        &settings
-            .source
-            .join("machines")
-            .join(format!("{}.toml", settings.machine)),
-    )?;
-    let definitions: BTreeMap<String, Harness> =
-        read_toml(&settings.source.join("harnesses.toml"))?.try_into()?;
-    let os = string(&machine, "os")?;
-    let mut matches = BTreeSet::new();
-    for (name, definition) in definitions {
-        let mut context = machine.clone();
-        context.insert("machine".into(), settings.machine.clone().into());
-        context.insert("harness".into(), name.clone().into());
-        let staging = settings.state_dir.join(&settings.machine).join("staging");
-        let mut candidates = vec![(staging.join(&name), true)];
-        for project in settings
-            .projects
-            .iter()
-            .chain(manifest.project_roots.keys())
-        {
-            candidates.push((
-                staging
-                    .join("projects")
-                    .join(format!(
-                        "{:x}",
-                        Sha256::digest(project.to_string_lossy().as_bytes())
-                    ))
-                    .join(&name),
-                true,
-            ));
-            candidates.push((
-                project.join(relative(
-                    definition
-                        .project_root
-                        .as_deref()
-                        .unwrap_or(&format!(".{name}")),
-                )?),
-                false,
-            ));
-        }
-        if let Some(root) = definition.roots.get(os)
-            && let Some(root) = crate::template::render_if_defined(root, &context)?
-        {
-            candidates.push((PathBuf::from(root), false));
-        }
-        for (base, staged) in candidates {
-            let path = if skills {
-                base.join(relative(&definition.skills_dir)?)
-            } else {
-                let base = if !staged {
-                    if let Some(root) = &definition.global_root {
-                        let Some(root) = crate::template::render_if_defined(root, &context)? else {
-                            continue;
-                        };
-                        PathBuf::from(root)
-                    } else {
-                        base
-                    }
-                } else {
-                    base
-                };
-                base.join(relative(&definition.global_file)?)
-            };
-            if path == location {
-                matches.insert(name.clone());
-            }
-        }
-    }
-    Ok((matches.len() == 1)
-        .then(|| matches.into_iter().next())
-        .flatten())
+    path: &Path,
+) -> &'a mut StaleLocation {
+    let harness = manifest.target_harnesses.get(path).cloned();
+    let key = match &harness {
+        Some(name) => LocationKey::Harness(name.clone()),
+        None => LocationKey::Path(path.into()),
+    };
+    groups.entry(key).or_insert_with(|| StaleLocation {
+        harness,
+        path: path.into(),
+        files: vec![],
+        roots: BTreeSet::new(),
+        archive_roots: BTreeSet::new(),
+        directories: BTreeMap::new(),
+    })
 }
 
 fn inspect_file(path: &Path, recorded: Option<&Fingerprint>) -> Result<StaleFile> {
@@ -182,31 +134,20 @@ fn directory_mode(path: &Path) -> Result<u32> {
     }
 }
 
-pub(super) fn locations(
-    settings: &Settings,
-    desired: &Desired,
-    manifest: &Manifest,
-) -> Result<Vec<StaleLocation>> {
+pub(super) fn locations(desired: &Desired, manifest: &Manifest) -> Result<Vec<StaleLocation>> {
     let stale_roots: BTreeSet<_> = manifest
         .roots
         .iter()
         .filter(|r| !allowed_root(r, desired))
         .cloned()
         .collect();
-    let mut groups: BTreeMap<PathBuf, StaleLocation> = BTreeMap::new();
+    let mut groups = BTreeMap::new();
     for root in &stale_roots {
         let path = root
             .parent()
             .context("Ownership root has no skills directory")?
             .to_path_buf();
-        let location = groups.entry(path.clone()).or_insert(StaleLocation {
-            harness: None,
-            path,
-            files: vec![],
-            roots: BTreeSet::new(),
-            archive_roots: BTreeSet::new(),
-            directories: BTreeMap::new(),
-        });
+        let location = location(&mut groups, manifest, &path);
         location.roots.insert(root.clone());
     }
     for path in manifest.files.keys().filter(|p| !allowed_file(p, desired)) {
@@ -215,14 +156,7 @@ pub(super) fn locations(
             .find(|root| path.starts_with(root))
             .and_then(|root| root.parent())
             .unwrap_or(path);
-        let location = groups.entry(group.to_path_buf()).or_insert(StaleLocation {
-            harness: None,
-            path: group.into(),
-            files: vec![],
-            roots: BTreeSet::new(),
-            archive_roots: BTreeSet::new(),
-            directories: BTreeMap::new(),
-        });
+        let location = location(&mut groups, manifest, group);
         location
             .files
             .push(inspect_file(path, manifest.files.get(path))?);
@@ -269,12 +203,6 @@ pub(super) fn locations(
             }
         }
         location.files.sort_by(|a, b| a.path.cmp(&b.path));
-        location.harness = harness_label(
-            settings,
-            manifest,
-            &location.path,
-            !location.roots.is_empty(),
-        )?;
     }
     Ok(groups.into_values().collect())
 }
@@ -282,7 +210,7 @@ pub(super) fn locations(
 pub fn stale_targets(settings: &Settings) -> Result<Vec<StaleLocation>> {
     settings.validate()?;
     let desired = desired(settings)?;
-    locations(settings, &desired, &manifest(settings)?)
+    locations(&desired, &manifest(settings)?)
 }
 
 fn revision(settings: &Settings, manifest: &Manifest, desired: &Desired) -> Result<String> {
@@ -302,9 +230,8 @@ fn revision(settings: &Settings, manifest: &Manifest, desired: &Desired) -> Resu
     Ok(format!("{:x}", hash.finalize()))
 }
 
-fn archive_parent(location: &StaleLocation) -> Result<PathBuf> {
-    Ok(location
-        .path
+fn archive_parent(target: &Path) -> Result<PathBuf> {
+    Ok(target
         .parent()
         .context("Former target has no parent")?
         .join("ratatoskr-backups"))
@@ -318,22 +245,28 @@ pub fn preview_stale_target(
     settings.validate()?;
     let desired = desired(settings)?;
     let manifest = manifest(settings)?;
-    let location = locations(settings, &desired, &manifest)?
+    let location = locations(&desired, &manifest)?
         .into_iter()
         .find(|l| l.path == path)
         .context("Stale target no longer exists; review again")?;
     let archive = if action == StaleAction::Remove {
         Some(
-            archive_parent(&location)?
+            archive_parent(&location.path)?
                 .join(chrono::Utc::now().format("%Y%m%d%H%M%S%f").to_string()),
         )
     } else {
         None
     };
+    let archives = if let Some(archive) = &archive {
+        archive_directories(&archive_moves(&location, archive)?, archive)?
+    } else {
+        BTreeSet::new()
+    };
     Ok(StalePreview {
         action,
         location,
         archive,
+        archives,
         revision: revision(settings, &manifest, &desired)?,
     })
 }
@@ -346,9 +279,61 @@ fn detach(manifest: &mut Manifest, location: &StaleLocation) {
             .any(|file| file.owned && file.path == *path)
     });
     manifest.roots.retain(|root| !location.roots.contains(root));
+    manifest.retain_owned_targets();
     for roots in manifest.project_roots.values_mut() {
         roots.retain(|root| !location.roots.contains(root));
     }
+}
+
+fn archive_moves(location: &StaleLocation, archive: &Path) -> Result<BTreeMap<PathBuf, PathBuf>> {
+    let name = archive.file_name().context("Invalid archive name")?;
+    let paths: BTreeSet<_> = location
+        .archive_roots
+        .iter()
+        .cloned()
+        .chain(
+            location
+                .files
+                .iter()
+                .filter(|f| {
+                    f.owned
+                        && !location
+                            .archive_roots
+                            .iter()
+                            .any(|root| f.path.starts_with(root))
+                })
+                .map(|f| f.path.clone()),
+        )
+        .collect();
+    let mut moves = BTreeMap::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        let target = location
+            .roots
+            .iter()
+            .find(|root| path.starts_with(root))
+            .and_then(|root| root.parent())
+            .unwrap_or(&path);
+        let directory = archive_parent(target)?.join(name);
+        moves.insert(path, directory.join("entries").join(index.to_string()));
+    }
+    Ok(moves)
+}
+
+fn archive_directories(
+    moves: &BTreeMap<PathBuf, PathBuf>,
+    primary: &Path,
+) -> Result<BTreeSet<PathBuf>> {
+    let mut archives = BTreeSet::from([primary.to_path_buf()]);
+    for destination in moves.values() {
+        archives.insert(
+            destination
+                .parent()
+                .and_then(Path::parent)
+                .context("Archive entry has no directory")?
+                .to_path_buf(),
+        );
+    }
+    Ok(archives)
 }
 
 fn prepare_archive(
@@ -361,7 +346,7 @@ fn prepare_archive(
         .as_ref()
         .context("Remove requires an archive")?;
     ensure!(
-        archive.parent() == Some(archive_parent(&expected.location)?.as_path()),
+        archive.parent() == Some(archive_parent(&expected.location.path)?.as_path()),
         "Archive outside approved backup folder"
     );
     identifier(
@@ -370,62 +355,51 @@ fn prepare_archive(
             .and_then(|s| s.to_str())
             .context("Invalid archive name")?,
     )?;
-    no_symlinks(archive)?;
+    let planned = archive_moves(&expected.location, archive)?;
+    let archives = archive_directories(&planned, archive)?;
     ensure!(
-        !archive.try_exists()?,
-        "Archive already exists; review again"
+        archives == expected.archives,
+        "Archive destinations changed; review again"
     );
-    // Write the complete recovery mapping before moving anything. Renames
-    // stay on the target volume and preserve all bytes and permissions.
-    ensure!(
-        !overlaps(archive, &settings.source)
-            && !desired
-                .allowed
-                .iter()
-                .any(|(skills, global)| overlaps(archive, skills) || overlaps(archive, global))
-            && !expected
-                .location
-                .roots
-                .iter()
-                .any(|root| overlaps(archive, root)),
-        "Archive overlaps managed content"
-    );
-    fs::create_dir_all(archive.parent().context("Archive parent missing")?)?;
-    fs::create_dir(archive)?;
-    fs::create_dir(archive.join("entries"))?;
-    let paths: BTreeSet<_> = expected
-        .location
-        .archive_roots
-        .iter()
-        .cloned()
-        .chain(
-            expected
-                .location
-                .files
-                .iter()
-                .filter(|f| {
-                    f.owned
-                        && !expected
-                            .location
-                            .archive_roots
-                            .iter()
-                            .any(|root| f.path.starts_with(root))
-                })
-                .map(|f| f.path.clone()),
-        )
-        .collect();
+    for directory in &archives {
+        no_symlinks(directory)?;
+        ensure!(
+            !directory.try_exists()?,
+            "Archive already exists; review again: {}",
+            directory.display()
+        );
+        ensure!(
+            !overlaps(directory, &settings.source)
+                && !desired
+                    .allowed
+                    .iter()
+                    .any(|(skills, global)| overlaps(directory, skills)
+                        || overlaps(directory, global))
+                && !expected
+                    .location
+                    .roots
+                    .iter()
+                    .any(|root| overlaps(directory, root)),
+            "Archive overlaps managed content"
+        );
+    }
     let mut moves = BTreeMap::new();
-    for (index, path) in paths.into_iter().enumerate() {
+    for (path, destination) in planned {
         if path.try_exists()? {
-            moves.insert(path, archive.join("entries").join(index.to_string()));
+            moves.insert(path, destination);
         }
     }
-    atomic_write(
-        &archive.join("receipt.json"),
-        &serde_json::to_vec_pretty(
-            &serde_json::json!({"preview": expected, "moves": moves, "recovery": "Move each archived entry back to its original path only when that path is absent. Nothing deleted; ownership is not automatically restored."}),
-        )?,
+    // Each target has a local archive. All receipts contain the complete mapping,
+    // written before the first move, even when this decision spans volumes.
+    let receipt = serde_json::to_vec_pretty(
+        &serde_json::json!({"preview": expected, "moves": moves, "recovery": "Move each archived entry back to its original path only when that path is absent. Nothing deleted; ownership is not automatically restored."}),
     )?;
+    for directory in archives {
+        fs::create_dir_all(directory.parent().context("Archive parent missing")?)?;
+        fs::create_dir(&directory)?;
+        fs::create_dir(directory.join("entries"))?;
+        atomic_write(&directory.join("receipt.json"), &receipt)?;
+    }
     Ok(moves)
 }
 
@@ -436,7 +410,7 @@ pub fn resolve_stale_target(settings: &Settings, expected: &str) -> Result<Optio
     let expected: StalePreview = serde_json::from_str(expected)?;
     let desired = desired(settings)?;
     let mut manifest = manifest(settings)?;
-    let current = locations(settings, &desired, &manifest)?
+    let current = locations(&desired, &manifest)?
         .into_iter()
         .find(|l| l.path == expected.location.path);
     ensure!(
@@ -449,13 +423,13 @@ pub fn resolve_stale_target(settings: &Settings, expected: &str) -> Result<Optio
     let result = (|| -> Result<()> {
         match expected.action {
             StaleAction::Forget => ensure!(
-                expected.archive.is_none(),
+                expected.archive.is_none() && expected.archives.is_empty(),
                 "Forget must not specify an archive"
             ),
             StaleAction::Remove => {
                 let moves = prepare_archive(settings, &desired, &expected)?;
                 ensure!(
-                    locations(settings, &desired, &manifest)?
+                    locations(&desired, &manifest)?
                         .into_iter()
                         .find(|l| l.path == expected.location.path)
                         .as_ref()
@@ -500,7 +474,21 @@ pub fn resolve_stale_target(settings: &Settings, expected: &str) -> Result<Optio
                 ));
             }
         }
-        return Err(error).context(if failures.is_empty() { format!("No installed files changed (any moves rolled back); ownership unchanged. Archive receipt, if created: {:?}", expected.archive) } else { format!("Ownership unchanged; rollback incomplete: {}. Receipt: {:?}", failures.join("; "), expected.archive) });
+        let mut message = if failures.is_empty() {
+            "No installed files changed (any moves rolled back); ownership unchanged.".to_owned()
+        } else {
+            format!(
+                "Ownership unchanged; rollback incomplete: {}.",
+                failures.join("; ")
+            )
+        };
+        if let Some(archive) = &expected.archive {
+            message.push_str(&format!(
+                " Archive receipt, if created: {}",
+                archive.join("receipt.json").display()
+            ));
+        }
+        return Err(error).context(message);
     }
     Ok(expected.archive)
 }
