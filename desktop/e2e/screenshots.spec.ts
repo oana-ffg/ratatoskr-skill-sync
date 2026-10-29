@@ -1,6 +1,12 @@
+import type { Plan, StalePreview } from "../src/api";
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { fixtureIPC, projectWorkspace } from "../tests/fixture";
+import {
+  fixtureIPC,
+  projectWorkspace,
+  fixture,
+  oracle,
+} from "../tests/fixture";
 import { installFixture } from "./helpers";
 test("all main screens", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -324,4 +330,68 @@ test("project cards with source skills", async ({ page }) => {
     path: "../docs/screenshots/projects-dark.png",
     fullPage: true,
   });
+});
+
+test("review former target decisions and their exact archive preview", async ({
+  page,
+}) => {
+  const stale = oracle("stale_fixture") as {
+    plan: Plan;
+    preview: StalePreview;
+  };
+  const workspace = structuredClone(fixture.workspace);
+  expect(stale.plan.stale_targets).toHaveLength(1);
+  expect(
+    stale.preview.location.files.some((file) =>
+      file.path.endsWith("/codex/AGENTS.md"),
+    ),
+  ).toBe(true);
+  workspace.plan = stale.plan;
+  workspace.plan.content_status = fixture.workspace.plan.content_status;
+  workspace.legacy = [];
+  await installFixture(page, (cmd, args) => {
+    if (cmd === "read_workspace") return workspace;
+    if (cmd === "preview_stale_target") return stale.preview;
+    return fixtureIPC(cmd, args);
+  });
+  await page.goto("/");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Review changes/ })
+    .click();
+  const section = page.getByRole("region", { name: "Former target locations" });
+  await expect(
+    section.getByRole("heading", { name: "Codex", exact: true }),
+  ).toHaveCount(1);
+  await expect(section).toContainText(
+    "Hand-edited, permission-changed or missing",
+  );
+  await expect(
+    page.getByRole("button", { name: "No files to apply" }),
+  ).toBeDisabled();
+  mkdirSync("../docs/screenshots", { recursive: true });
+  await page.screenshot({
+    path: "../docs/screenshots/former-targets-dark.png",
+    fullPage: true,
+  });
+  await section
+    .getByRole("button", {
+      name: "Remove installed copies…",
+      exact: true,
+    })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Nothing is deleted");
+  await expect(dialog).toContainText("Untracked file");
+  await expect(dialog).toContainText(stale.preview.archive!);
+  await expect(dialog).toContainText(
+    stale.preview.location.files.find((file) =>
+      file.path.endsWith("/codex/AGENTS.md"),
+    )!.path,
+  );
+  await page.screenshot({
+    path: "../docs/screenshots/former-target-preview-dark.png",
+    fullPage: true,
+  });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });

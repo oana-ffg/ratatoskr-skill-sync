@@ -1,3 +1,6 @@
+/// Operating systems supported by machine profiles and harness definitions.
+pub(crate) const SUPPORTED_OS: [&str; 3] = ["linux", "macos", "windows"];
+
 mod desktop_source;
 pub use desktop_source::{DesktopSourceEdit, desktop_source_edit};
 mod legacy;
@@ -37,9 +40,10 @@ pub use content::{
 pub use content::{SourceDocument, read_source_file, source_files, write_source_file};
 pub use engine::{
     AppliedChanges, Change, Conflict, ConflictAction, HarnessValidation, Plan, ProfileValidation,
-    ResolutionPreview, ValidationContext, ValidationProblem, ValidationReport, ValidationWarning,
-    adopt, apply, apply_reviewed, plan, preview_resolution, preview_source_edit,
-    read_conflict_source, resolve_conflict, restore_backup, validate_source,
+    ResolutionPreview, StaleAction, StaleFile, StaleLocation, StalePreview, ValidationContext,
+    ValidationProblem, ValidationReport, ValidationWarning, adopt, apply, apply_reviewed, plan,
+    preview_resolution, preview_source_edit, preview_stale_target, read_conflict_source,
+    resolve_conflict, resolve_stale_target, restore_backup, stale_targets, validate_source,
 };
 pub use git::{
     ContentStatus, ProjectStatus, add_project, content_status, project_status, push_content,

@@ -125,3 +125,166 @@ test("custom Windows roots and project scope stay separate; a live apply names r
   expect(screen.getByText("C:\\agent-data\\custom-skills")).toBeVisible();
   expect(screen.getAllByText("C:\\work\\project")).toHaveLength(1);
 });
+
+function staleWorkspace() {
+  const workspace = structuredClone(fixture.workspace);
+  workspace.legacy = [];
+  workspace.plan.stale_targets = [
+    {
+      path: "/former-agent/skills",
+      harness: "codex",
+      roots: ["/former-agent/skills/review-code"],
+      archive_roots: ["/former-agent/skills/review-code"],
+      directories: { "/former-agent/skills/review-code": 448 },
+      files: [
+        {
+          path: "/former-agent/skills/review-code/SKILL.md",
+          owned: true,
+          modified: true,
+          readonly: false,
+          recorded: { sha256: "previous", executable: false },
+          current: { sha256: "edited", executable: false },
+          protection: null,
+        },
+        {
+          path: "/separate-global-root/AGENTS.md",
+          owned: true,
+          modified: false,
+          readonly: false,
+          recorded: { sha256: "instructions", executable: false },
+          current: { sha256: "instructions", executable: false },
+          protection: null,
+        },
+      ],
+    },
+  ];
+  workspace.plan.conflicts.push(
+    "Pending stale-target decision at /former-agent/skills",
+  );
+  return workspace;
+}
+
+test.each(["forget", "remove"] as const)(
+  "former targets require an exact preview and explicit %s confirmation",
+  async (action) => {
+    const workspace = staleWorkspace();
+    const location = workspace.plan.stale_targets[0];
+    const preview = {
+      action,
+      location,
+      archive:
+        action === "remove" ? "/former-agent/ratatoskr-backups/123" : null,
+      archives:
+        action === "remove"
+          ? [
+              "/former-agent/ratatoskr-backups/123",
+              "/separate-global-root/ratatoskr-backups/123",
+            ]
+          : [],
+      revision: "reviewed-configuration-and-manifest",
+    };
+    const updated = structuredClone(workspace);
+    updated.plan.stale_targets = [];
+    const calls = vi.fn((command) => {
+      if (command === "preview_stale_target") return preview;
+      if (command === "resolve_stale_target") return preview.archive;
+      if (command === "read_workspace") return updated;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    mockIPC(calls);
+    const p = props(workspace);
+    const summary = reviewSummary(workspace);
+    expect(summary.errors).not.toContain(workspace.plan.conflicts.at(-1));
+    expect(summary.decisions).toBe(2);
+    render(Review, p);
+    const section = screen.getByRole("region", {
+      name: "Former target locations",
+    });
+    expect(section).toHaveTextContent("Codex");
+    expect(section).toHaveTextContent("2 files");
+    expect(section).toHaveTextContent(
+      "Hand-edited, permission-changed or missing",
+    );
+    expect(
+      screen.getByRole("button", { name: summary.applyAction }),
+    ).toBeDisabled();
+    expect(calls).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Restore from source" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Take over as-is" }),
+    ).toBeDisabled();
+    await fireEvent.click(
+      within(section).getByRole("button", {
+        name:
+          action === "remove"
+            ? "Remove installed copies…"
+            : "Leave files and stop managing them…",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(calls).toHaveBeenCalledWith("preview_stale_target", {
+      path: location.path,
+      action,
+    });
+    expect(calls).not.toHaveBeenCalledWith(
+      "resolve_stale_target",
+      expect.anything(),
+    );
+    expect(p.onupdate).not.toHaveBeenCalled();
+    expect(dialog).toHaveTextContent("/separate-global-root/AGENTS.md");
+    for (const archive of preview.archives)
+      expect(dialog).toHaveTextContent(archive);
+    expect(dialog).toHaveTextContent(
+      action === "remove"
+        ? "Nothing is deleted"
+        : "Files stay exactly as they are",
+    );
+    await fireEvent.click(
+      within(dialog).getByRole("button", {
+        name:
+          action === "remove"
+            ? "Archive copies and stop managing"
+            : "Leave files and stop managing",
+      }),
+    );
+    await waitFor(() => expect(p.onupdate).toHaveBeenCalledWith(updated));
+    expect(calls).toHaveBeenCalledWith("resolve_stale_target", {
+      expected: JSON.stringify(preview),
+    });
+    expect(p.onerror).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      action === "remove" ? "Nothing deleted" : "Installed files unchanged",
+    );
+  },
+);
+
+test("a changed former target stays open for review and reports the failure", async () => {
+  const workspace = staleWorkspace();
+  const preview = {
+    action: "forget",
+    location: workspace.plan.stale_targets[0],
+    archive: null,
+    archives: [],
+    revision: "original",
+  };
+  mockIPC((command) => {
+    if (command === "preview_stale_target") return preview;
+    throw new Error("Stale target changed since preview; review again");
+  });
+  const p = props(workspace);
+  render(Review, p);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Leave files and stop managing them…" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  await fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "Leave files and stop managing",
+    }),
+  );
+  await waitFor(() => expect(p.onerror).toHaveBeenCalled());
+  expect(p.onupdate).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});

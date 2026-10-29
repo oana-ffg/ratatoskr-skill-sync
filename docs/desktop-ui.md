@@ -53,3 +53,9 @@ Save uses the core's validation of the exact submitted draft, independently of l
 ## Content publication status
 
 Central source mutations in the desktop save, commit, and push directly to the deploy upstream; project edits remain write-only. The top-level content warning persists across views for uncommitted files, unpushed commits, or inspection errors. **Push now** retries existing local commits without staging other work. Failed publication keeps the error explicit and refreshes Git counts without replacing an unsaved editor draft. See [save and freshness semantics](usage.md#desktop-saves-and-content-git-state).
+
+## Former target locations
+
+Review changes includes a **Former target locations** section for ownership left outside current targets after a harness is disabled, a path changes, or the machine switches between staging and live. Each former skills directory and global instructions file gets its own card with the reliable harness label (otherwise path only), path, file count, and hand-edited, permission-changed or missing files. The section counts each location once as a decision; Apply stays disabled until all decisions are resolved, including in staging.
+
+**Remove from <location>…** previews a same-volume archive with a JSON recovery receipt. It preserves complete owned skill directories, including runtime and untracked files, and leaves unrelated skills untouched. **Leave files and stop managing them…** previews ownership release with no file changes. Both require a separate confirmation of the exact preview. Errors retain the dialog and surface the reason; success refreshes the workspace and reports either the archive/recovery path or that installed files stayed unchanged. An open preview blocks automatic refresh/navigation through the existing dirty-state guard. These actions share the core/CLI verification under `apply.lock`.

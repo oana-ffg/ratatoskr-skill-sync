@@ -208,6 +208,17 @@ fn main() -> anyhow::Result<()> {
         "realistic_document" => {
             serde_json::to_value(core::read_skill(&settings, None, "aws-project-migration")?)?
         }
+        "stale_fixture" => {
+            core::apply(&settings)?;
+            let skills = settings.state_dir.join("brunnr/staging/codex/skills");
+            fs::write(skills.join("recordings/SKILL.md"), "Keep this hand edit.\n")?;
+            fs::write(skills.join("recordings/.DS_Store"), "Finder metadata")?;
+            fs::write(
+                settings.source.join("machines/brunnr.toml"),
+                machine.replace("['codex','claude']", "['claude']"),
+            )?;
+            json!({"plan": core::plan(&settings)?, "preview": core::preview_stale_target(&settings, &skills, core::StaleAction::Remove)?})
+        }
         "fixture" => {
             core::apply(&settings)?;
             let installed = settings

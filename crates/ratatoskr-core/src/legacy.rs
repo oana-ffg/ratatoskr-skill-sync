@@ -336,13 +336,19 @@ mod tests {
         fs::write(legacy.join("SKILL.md"), "user edit")?;
         let manifest = settings.state_dir.join("test/manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
-        let owned = serde_json::json!({"source":settings.source,"machine":"test","roots":[legacy],"files":{(legacy.join("SKILL.md").to_string_lossy().to_string()):{"sha256":format!("{:x}",Sha256::digest(b"user edit")),"executable":false}},"project_roots":{}});
+        let owned = serde_json::json!({"source":settings.source,"machine":"test","roots":[legacy],"files":{(legacy.join("SKILL.md").to_string_lossy().to_string()):{"sha256":format!("{:x}",Sha256::digest(b"user edit")),"executable":false}},"project_roots":{},"target_harnesses":{(legacy.parent().unwrap().to_string_lossy().to_string()):"codex"}});
         fs::write(&manifest, serde_json::to_vec(&owned)?)?;
         if keep {
             keep_in(&settings, &reviewed, &home)?;
             let remaining: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
             assert!(remaining["files"].as_object().unwrap().is_empty());
             assert!(remaining["roots"].as_array().unwrap().is_empty());
+            assert!(
+                remaining["target_harnesses"]
+                    .as_object()
+                    .unwrap()
+                    .is_empty()
+            );
             assert_eq!(fs::read_to_string(legacy.join("SKILL.md"))?, "user edit");
             assert_eq!(fs::read(legacy.join("__pycache__/keep.pyc"))?, [0, 1, 255]);
             assert!(unresolved(&settings, duplicates_in(&settings, &home)?)?.is_empty());
@@ -367,6 +373,12 @@ mod tests {
         let remaining: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
         assert!(remaining["files"].as_object().unwrap().is_empty());
         assert!(remaining["roots"].as_array().unwrap().is_empty());
+        assert!(
+            remaining["target_harnesses"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(fs::read_to_string(backup.join("SKILL.md"))?, "new edit");
         assert_eq!(fs::read(backup.join("__pycache__/keep.pyc"))?, [0, 1, 255]);
         assert!(backup.with_extension("json").is_file());

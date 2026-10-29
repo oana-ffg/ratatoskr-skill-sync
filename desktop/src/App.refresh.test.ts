@@ -295,12 +295,6 @@ test.each([
 test.each(["macos", "windows"])(
   "%s close preserves unsaved edits for the native hide path",
   async (platform) => {
-    HTMLDialogElement.prototype.showModal = function () {
-      this.open = true;
-    };
-    HTMLDialogElement.prototype.close = function () {
-      this.open = false;
-    };
     native.platform = platform;
     await start();
     await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));

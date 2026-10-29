@@ -45,6 +45,11 @@ enum Action {
         #[command(subcommand)]
         action: ConflictCommand,
     },
+    /// Decide what to do with files owned at a former target location.
+    StaleTarget {
+        #[command(subcommand)]
+        action: StaleTargetCommand,
+    },
     /// Last background run, notification-ledger errors and bounded logs.
     JobStatus,
     /// List verified presets or preview an agent definition from a JSON input file.
@@ -103,6 +108,20 @@ enum ConflictCommand {
         action: String,
     },
     /// Apply the exact JSON preview saved from conflict preview.
+    Resolve {
+        #[arg(long)]
+        preview: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum StaleTargetCommand {
+    List,
+    Preview {
+        path: PathBuf,
+        #[arg(long, value_parser = ["forget", "remove"])]
+        action: String,
+    },
     Resolve {
         #[arg(long)]
         preview: PathBuf,
@@ -397,6 +416,63 @@ fn run() -> Result<i32> {
                     core::resolve_conflict(&settings, &std::fs::read_to_string(preview)?)?
                         .display()
                 ),
+            }
+        }
+        Action::StaleTarget { action } => {
+            let settings = load(&path)?;
+            match action {
+                StaleTargetCommand::List => {
+                    let locations = core::stale_targets(&settings)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&locations)?);
+                    } else if locations.is_empty() {
+                        println!("No pending stale-target decisions.");
+                    } else {
+                        for location in locations {
+                            println!(
+                                "{}{}: {} files, {} hand-edited or missing. Preview with `ratatoskr stale-target preview <path> --action forget|remove`.",
+                                location.path.display(),
+                                location
+                                    .harness
+                                    .map(|name| format!(" ({name})"))
+                                    .unwrap_or_default(),
+                                location.files.len(),
+                                location.files.iter().filter(|file| file.modified).count()
+                            );
+                            for file in location.files.iter().filter(|file| file.modified) {
+                                println!(
+                                    "  Hand-edited, permission-changed or missing: {}",
+                                    file.path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+                StaleTargetCommand::Preview { path, action } => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&core::preview_stale_target(
+                        &settings,
+                        &path,
+                        serde_json::from_value(serde_json::Value::String(action))?
+                    )?)?
+                ),
+                StaleTargetCommand::Resolve { preview } => {
+                    let archive =
+                        core::resolve_stale_target(&settings, &std::fs::read_to_string(preview)?)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&archive)?);
+                    } else if let Some(archive) = archive {
+                        println!(
+                            "Archived installed copies at {}. Recovery mapping: {}/receipt.json. Nothing deleted.",
+                            archive.display(),
+                            archive.display()
+                        );
+                    } else {
+                        println!(
+                            "Stopped tracking the reviewed location. Installed files unchanged."
+                        );
+                    }
+                }
             }
         }
         Action::JobStatus => println!(

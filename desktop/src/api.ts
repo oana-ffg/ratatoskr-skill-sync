@@ -118,6 +118,7 @@ export interface Plan {
   changes: Change[];
   conflicts: string[];
   conflict_details: Conflict[];
+  stale_targets: StaleLocation[];
   projects: Project[];
 }
 export interface Jobs {
@@ -137,6 +138,30 @@ export interface Legacy {
   destination: string;
   path: string;
   files: { path: string; sha256: string; executable: boolean }[];
+}
+export interface StaleFile {
+  path: string;
+  owned: boolean;
+  modified: boolean;
+  readonly: boolean | null;
+  recorded: { sha256: string; executable: boolean } | null;
+  current: { sha256: string; executable: boolean } | null;
+  protection: { mode: number; uid: number; gid: number } | null;
+}
+export interface StaleLocation {
+  path: string;
+  harness: string | null;
+  files: StaleFile[];
+  roots: string[];
+  archive_roots: string[];
+  directories: Record<string, number>;
+}
+export interface StalePreview {
+  action: "forget" | "remove";
+  location: StaleLocation;
+  archive: string | null;
+  archives: string[];
+  revision: string;
 }
 export interface Snapshot {
   plan: Plan;
@@ -376,13 +401,15 @@ export function reviewSummary(workspace: Snapshot) {
   const errors = plan.conflicts.filter(
     (message) =>
       !plan.conflict_details.some((c) => message.includes(c.path)) &&
-      !legacy.some((item) => message.includes(item.path)),
+      !legacy.some((item) => message.includes(item.path)) &&
+      !plan.stale_targets.some((item) => message.includes(item.path)),
   );
   const items = [...groups.values()];
   const decisions =
     items.filter((g) => g.conflicts.length).length +
     errors.length +
-    legacy.length;
+    legacy.length +
+    plan.stale_targets.length;
   const writes = readyChanges.filter((c) => c.action !== "remove").length;
   const removes = readyChanges.length - writes;
   return {
@@ -391,7 +418,8 @@ export function reviewSummary(workspace: Snapshot) {
     groups: items,
     errors,
     decisions,
-    total: items.length + errors.length + legacy.length,
+    total:
+      items.length + errors.length + legacy.length + plan.stale_targets.length,
   };
 }
 

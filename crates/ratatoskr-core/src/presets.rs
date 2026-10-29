@@ -109,7 +109,7 @@ pub(crate) fn target_definition(target: &AgentTarget) -> Result<toml::Table> {
         target.instructions_file.clone().into(),
     );
     table.insert("project_root".into(), target.project_folder.clone().into());
-    let roots: BTreeMap<_, _> = ["macos", "windows", "linux"]
+    let roots: BTreeMap<_, _> = crate::SUPPORTED_OS
         .into_iter()
         .map(|os| (os, &target.global_folder))
         .collect();

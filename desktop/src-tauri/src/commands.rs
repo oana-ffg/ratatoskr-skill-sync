@@ -86,6 +86,7 @@ fn snapshot() -> Reply<Snapshot> {
         changes: vec![],
         conflicts: vec![format!("Preview failed: {error:#}")],
         conflict_details: vec![],
+        stale_targets: vec![],
         revision: String::new(),
         applied: None,
         projects: settings
@@ -1119,4 +1120,21 @@ pub(crate) async fn choose_project_source(
 #[tauri::command]
 pub(crate) fn keep_legacy(expected: String) -> Reply<Snapshot> {
     mutate(|s| core::keep_legacy(s, &expected))
+}
+
+#[tauri::command]
+pub(crate) fn preview_stale_target(
+    path: PathBuf,
+    action: core::StaleAction,
+) -> Reply<core::StalePreview> {
+    core::preview_stale_target(&settings()?, &path, action).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) async fn resolve_stale_target(expected: String) -> Reply<Option<PathBuf>> {
+    source_mutation(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        core::resolve_stale_target(&settings()?, &expected).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }

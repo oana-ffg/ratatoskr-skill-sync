@@ -28,6 +28,15 @@ The snapshot's `skills_error` is null when its skill list was read successfully.
 
 The snapshot plan retains human-readable `conflicts` for CLI compatibility and adds `conflict_details` containing `path`, `kind`, `diff`, mapped `source` and `copy_back_blocked`. Kinds are `hand-edited`, `removed`, `permission-change`, `unmanaged-collision`, and `unmanaged-directory`. Directory actions enumerate individual effects. Binary/large text diffs are null; effect hashes and executable state remain available. Adoption records ownership as-is; pending source differences are still replaced by a later reviewed Apply.
 
+## Former target decisions
+
+`read_workspace().plan.stale_targets` contains former locations with `path`, nullable `harness`, `files`, and previously owned skill `roots`. File records include absolute `path`, `owned`, `modified`, recorded/current fingerprints (nullable for untracked/missing files), and current protection metadata. `modified` flags byte or executable-state differences from the ownership manifest. Untracked files inside archived skill directories are also enumerated. Directory permissions and the exact archive roots are part of the verified payload. Targets with a harness identity recorded at apply/adopt time share one location per harness, combining former skills directories and global instructions files. Its `path` is the first former skills directory in path order, or the global instructions path when only instructions are stale. Old manifests without recorded identities retain per-path decisions and a null `harness`. These decisions also appear in `plan.conflicts`, blocking Apply and existing background sync/alerts without degrading the snapshot to “Preview failed”.
+
+- `preview_stale_target({path, action})`, where action is `forget` or `remove`, returns `StalePreview` with the location, action, nullable primary `archive` destination, all `archives` directories (empty for Forget), and a revision binding the ownership and configuration.
+- `resolve_stale_target({expected})` accepts the complete serialized preview, verifies it under `apply.lock`, and returns the archive path for Remove or null for Forget. It runs on a blocking worker under the desktop mutation guard. Do not reconstruct or edit preview fields. A successful resolution needs a new workspace read.
+
+Forget releases only reviewed ownership. Remove uses same-volume renames into a local archive beside each former target, with an identical JSON recovery receipt in each archive containing the complete grouped mapping, including edited and untracked bytes inside owned skill directories. Unrelated skills are preserved. It releases ownership only after moves succeed, rolling moves back if a later operation fails and reporting exact paths for incomplete rollback. Recovery is manual using the receipt's `moves` mapping; `restore_workspace` retains its current-target boundary and does not accept these archives. See [CLI and recovery instructions](usage.md#former-target-locations).
+
 ## Rendering and editor analysis
 
 - The `read_workspace` snapshot's `preview_targets` lists enabled `{machine, harness}` pairs from all source profiles.

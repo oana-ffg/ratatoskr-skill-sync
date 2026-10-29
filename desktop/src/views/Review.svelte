@@ -6,6 +6,8 @@
     type Snapshot,
     type Conflict,
     type Resolution,
+    type StaleLocation,
+    type StalePreview,
   } from "../api";
   import { errorText, title, reviewSummary } from "../api";
   const loadConflictEditor = () =>
@@ -24,6 +26,7 @@
     ondirty: (v: boolean) => void;
   } = $props();
   const summary = $derived(reviewSummary(workspace));
+  const hasStaleTargets = $derived(workspace.plan.stale_targets.length > 0);
   let sourceConflict = $state<Conflict | null>(null);
   let resolution = $state<Resolution | null>(null);
   let busy = $state(false);
@@ -31,9 +34,50 @@
   let legacyBackup = $state("");
   let legacy = $state<Snapshot["legacy"][number] | null>(null);
   let legacyPreview = $state<unknown>(null);
+  let stalePreview = $state<StalePreview | null>(null);
+  let staleResult = $state<string | null>(null);
+  async function previewStale(
+    item: StaleLocation,
+    action: StalePreview["action"],
+  ) {
+    busy = true;
+    try {
+      stalePreview = await api.command<StalePreview>("preview_stale_target", {
+        path: item.path,
+        action,
+      });
+    } catch (e) {
+      onerror(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function resolveStale() {
+    if (!stalePreview) return;
+    busy = true;
+    try {
+      const archive = await api.command<string | null>("resolve_stale_target", {
+        expected: JSON.stringify(stalePreview),
+      });
+      staleResult = archive
+        ? `Installed copies archived at ${archive}. Nothing deleted. Use receipt.json in that folder to recover them.`
+        : "Stopped managing this location. Installed files unchanged.";
+      stalePreview = null;
+      const w = await api.workspace();
+      if (w) onupdate(w);
+    } catch (e) {
+      onerror(e);
+    } finally {
+      busy = false;
+    }
+  }
   $effect(() =>
     ondirty(
-      busy || resolution !== null || legacy !== null || sourceConflict !== null,
+      busy ||
+        resolution !== null ||
+        legacy !== null ||
+        sourceConflict !== null ||
+        stalePreview !== null,
     ),
   );
   async function choose(conflict: Conflict, action: string) {
@@ -119,7 +163,8 @@
       disabled={busy ||
         workspace.plan.conflicts.length > 0 ||
         !workspace.plan.changes.length ||
-        workspace.legacy.length > 0}
+        workspace.legacy.length > 0 ||
+        hasStaleTargets}
       onclick={apply}
       aria-describedby="apply-destination">{summary.applyAction}</button
     >
@@ -196,6 +241,43 @@
           >
         </article>{/each}
     </section>{/if}
+  {#if staleResult}<p role="status" class="success-message">
+      {staleResult}
+    </p>{/if}
+  {#if workspace.plan.stale_targets.length}<section
+      class="legacy-section"
+      aria-label="Former target locations"
+    >
+      <h2>Former target locations</h2>
+      <p>
+        These locations are outside your current targets. Apply and background
+        sync wait for your decision for each location. Resolve these decisions
+        before other conflict actions so recovery backups stay within current
+        targets.
+      </p>
+      {#each workspace.plan.stale_targets as item}<article
+          class="conflict-card"
+        >
+          <h3>{item.harness ? agentName(item.harness) : "Former target"}</h3>
+          <p>
+            <code>{item.path}</code> · {item.files.length}
+            {item.files.length === 1 ? "file" : "files"}
+          </p>
+          {#each item.files.filter((file) => file.modified) as file}<p
+              class="warning-text"
+            >
+              Hand-edited, permission-changed or missing: <code
+                >{file.path}</code
+              >
+            </p>{/each}
+          <button disabled={busy} onclick={() => previewStale(item, "remove")}
+            >Remove installed copies…</button
+          >
+          <button disabled={busy} onclick={() => previewStale(item, "forget")}
+            >Leave files and stop managing them…</button
+          >
+        </article>{/each}
+    </section>{/if}
   {#each summary.groups as group}<article class="change-card">
       <h2>
         {group.name} → {group.harness
@@ -232,19 +314,23 @@
             <div class="conflict-actions">
               <button
                 class="primary"
-                disabled={!!conflict.copy_back_blocked || busy}
+                disabled={!!conflict.copy_back_blocked ||
+                  busy ||
+                  hasStaleTargets}
                 title={conflict.copy_back_blocked ??
                   "Preserve the installed edit in your source"}
                 onclick={() => choose(conflict, "copy-back")}
                 >Keep edit → update source</button
               ><button
-                disabled={busy}
+                disabled={busy || hasStaleTargets}
                 onclick={() => choose(conflict, "reinstall")}
                 >Restore from source</button
               ><button
-                disabled={!conflict.source}
+                disabled={!conflict.source || hasStaleTargets}
                 onclick={() => (sourceConflict = conflict)}>Edit source…</button
-              ><button disabled={busy} onclick={() => choose(conflict, "adopt")}
+              ><button
+                disabled={busy || hasStaleTargets}
+                onclick={() => choose(conflict, "adopt")}
                 >Take over as-is</button
               >
             </div>
@@ -281,7 +367,7 @@
   {#each summary.errors as message}<p role="alert" class="error-message">
       {message}
     </p>{/each}
-  {#if !workspace.plan.changes.length && !workspace.plan.conflicts.length && !workspace.legacy.length}<div
+  {#if !workspace.plan.changes.length && !workspace.plan.conflicts.length && !workspace.legacy.length && !workspace.plan.stale_targets.length}<div
       class="empty-state"
     >
       <span class="large-check">✓</span>
@@ -329,6 +415,60 @@
       ><button onclick={() => (legacy = null)}>Cancel</button>
     </footer></Dialog
   >{/if}
+
+{#if stalePreview}<Dialog
+    title={stalePreview.action === "remove"
+      ? "Remove former installed copies"
+      : "Stop managing this location"}
+    onclose={() => {
+      if (!busy) stalePreview = null;
+    }}
+  >
+    <p><code>{stalePreview.location.path}</code></p>
+    {#if stalePreview.action === "remove"}<p>
+        The reviewed copies will move to a dated archive. Owned skill
+        directories include hand edits, runtime files and untracked contents.
+        Other skills stay where they are. Nothing is deleted.
+      </p>
+      <p>Each target stays on its volume. Archive locations:</p>
+      {#each stalePreview.archives as archive}<p>
+          <code>{archive}</code>
+        </p>{/each}
+      <p>Each JSON receipt records all original paths for recovery.</p>
+    {:else}<p>
+        Files stay exactly as they are. Ratatoskr will stop tracking them. If
+        you enable this target again, use Adopt to take over the existing files.
+      </p>{/if}
+    {#each stalePreview.location.files.filter((file) => file.modified) as file}<p
+        class="warning-text"
+      >
+        Hand-edited, permission-changed or missing: <code>{file.path}</code>
+      </p>{/each}
+    {#if stalePreview.action === "remove" && stalePreview.location.roots.length > stalePreview.location.archive_roots.length}<p
+      >
+        Directories shared with current targets stay in place; only their former
+        owned files move.
+      </p>{/if}
+    <details open={stalePreview.location.files.length <= 5}>
+      <summary>{stalePreview.location.files.length} reviewed files</summary>
+      {#each stalePreview.location.files as file}<div class="resource-row">
+          <code>{file.path}</code>{!file.owned ? " · Untracked file" : ""}
+        </div>{/each}
+    </details>
+    <details>
+      <summary>Verified preview</summary>
+      <pre>{JSON.stringify(stalePreview, null, 2)}</pre>
+    </details>
+    <footer class="dialog-actions">
+      <button class="primary" disabled={busy} onclick={resolveStale}
+        >{stalePreview.action === "remove"
+          ? "Archive copies and stop managing"
+          : "Leave files and stop managing"}</button
+      ><button disabled={busy} onclick={() => (stalePreview = null)}
+        >Cancel</button
+      >
+    </footer>
+  </Dialog>{/if}
 
 {#if sourceConflict}{#await loadConflictEditor()}<p role="status">
       Opening source editor…
