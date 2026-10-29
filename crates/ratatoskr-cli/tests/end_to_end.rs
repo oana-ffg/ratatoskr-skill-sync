@@ -409,25 +409,86 @@ mod launchd {
         }
     }
 
-    /// Removes the job if the test fails before `schedule remove` does.
+    /// Whether the latest run finished successfully at or after `since` (Unix seconds).
+    fn synced_since(deployment: &Deployment, since: u64) -> bool {
+        let run = &deployment.job_status()["last_run"];
+        run["error"].is_null()
+            && run["finished_at"]
+                .as_u64()
+                .is_some_and(|finished| finished >= since)
+    }
+
+    fn modified_secs(path: &Path) -> Option<u64> {
+        let modified = fs::metadata(path).ok()?.modified().ok()?;
+        Some(
+            modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs(),
+        )
+    }
+
+    /// Boots out and deletes the job if the test fails before `schedule remove` does.
+    /// Armed from the plan, so a failure partway through installation is covered too.
     struct LaunchdCleanup {
         target: String,
         plist: PathBuf,
     }
 
+    impl LaunchdCleanup {
+        fn planned(definition: &str) -> Self {
+            let label = definition
+                .split_once("<key>Label</key><string>")
+                .and_then(|(_, rest)| rest.split_once("</string>"))
+                .map(|(label, _)| label)
+                .expect("Planned definition has no label");
+            let uid = Command::new("id").arg("-u").output().unwrap();
+            assert!(uid.status.success(), "Cannot determine login UID");
+            Self {
+                target: format!(
+                    "gui/{}/{label}",
+                    String::from_utf8(uid.stdout).unwrap().trim()
+                ),
+                plist: PathBuf::from(std::env::var_os("HOME").unwrap())
+                    .join("Library/LaunchAgents")
+                    .join(format!("{label}.plist")),
+            }
+        }
+
+        fn loaded(&self) -> std::io::Result<bool> {
+            let print = Command::new("launchctl")
+                .args(["print", &self.target])
+                .output()?;
+            Ok(print.status.success())
+        }
+    }
+
     impl Drop for LaunchdCleanup {
         fn drop(&mut self) {
-            if !self.plist.exists() {
-                return;
-            }
-            let bootout = Command::new("launchctl")
-                .args(["bootout", &self.target])
-                .output();
-            let removed = fs::remove_file(&self.plist);
-            if bootout.is_err() || removed.is_err() {
-                eprintln!(
-                    "WARNING: leftover launchd job {}: bootout {bootout:?}, remove {removed:?}",
+            match self.loaded() {
+                Ok(false) => (),
+                Ok(true) => {
+                    let bootout = Command::new("launchctl")
+                        .args(["bootout", &self.target])
+                        .output();
+                    if !matches!(self.loaded(), Ok(false)) {
+                        eprintln!(
+                            "WARNING: launchd job {} is still loaded after cleanup: {bootout:?}",
+                            self.target
+                        );
+                    }
+                }
+                Err(error) => eprintln!(
+                    "WARNING: cannot inspect launchd job {}: {error}",
                     self.target
+                ),
+            }
+            if self.plist.exists()
+                && let Err(error) = fs::remove_file(&self.plist)
+            {
+                eprintln!(
+                    "WARNING: leftover launchd plist {}: {error}",
+                    self.plist.display()
                 );
             }
         }
@@ -451,6 +512,7 @@ mod launchd {
         assert!(definition.contains("<string>sync</string>"), "{definition}");
         assert!(definition.contains("<integer>60</integer>"), "{definition}");
 
+        let cleanup = LaunchdCleanup::planned(&definition);
         expect(
             alpha.ratatoskr(&[
                 "schedule",
@@ -466,23 +528,23 @@ mod launchd {
             &fs::read_to_string(alpha.state.join("alpha/installed-schedule.json")).unwrap(),
         )
         .unwrap();
-        let uid = String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap();
-        let cleanup = LaunchdCleanup {
-            target: format!("gui/{}/{}", uid.trim(), record["label"].as_str().unwrap()),
-            plist: PathBuf::from(record["path"].as_str().unwrap()),
-        };
+        assert_eq!(
+            record["path"].as_str().map(PathBuf::from),
+            Some(cleanup.plist.clone())
+        );
+        assert!(
+            cleanup
+                .target
+                .ends_with(&format!("/{}", record["label"].as_str().unwrap()))
+        );
         assert_eq!(
             text(&cleanup.plist),
             definition.trim_end_matches('\n').to_owned() + "\n"
         );
-        let loaded = Command::new("launchctl")
-            .args(["print", &cleanup.target])
-            .output()
-            .unwrap();
         assert!(
-            loaded.status.success(),
-            "{}",
-            String::from_utf8_lossy(&loaded.stderr)
+            cleanup.loaded().unwrap(),
+            "launchd did not load {}",
+            cleanup.target
         );
 
         // RunAtLoad performs the first sync; the interval picks up later publications.
@@ -490,7 +552,7 @@ mod launchd {
             &alpha,
             "the load-time sync",
             Duration::from_secs(90),
-            || alpha.staged("codex/skills/review/SKILL.md").is_file(),
+            || alpha.staged("codex/skills/review/SKILL.md").is_file() && synced_since(&alpha, 0),
         );
         workspace.publish("Add notes", |author| {
             fs::create_dir(author.join("skills/notes")).unwrap();
@@ -505,14 +567,13 @@ mod launchd {
             &alpha,
             "the interval sync",
             Duration::from_secs(150),
-            || alpha.staged("codex/skills/notes/SKILL.md").is_file(),
+            // Output is written before the run is recorded; wait for the record too.
+            || {
+                modified_secs(&alpha.staged("codex/skills/notes/SKILL.md"))
+                    .is_some_and(|written| synced_since(&alpha, written))
+            },
         );
         let status = alpha.job_status();
-        assert_eq!(
-            status["last_run"]["error"],
-            serde_json::Value::Null,
-            "{status}"
-        );
         assert!(
             status["log"]
                 .as_str()
@@ -526,12 +587,8 @@ mod launchd {
         expect(alpha.ratatoskr(&["schedule", "remove"]), 0);
         assert!(!cleanup.plist.exists());
         assert!(!alpha.state.join("alpha/installed-schedule.json").exists());
-        let unloaded = Command::new("launchctl")
-            .args(["print", &cleanup.target])
-            .output()
-            .unwrap();
         assert!(
-            !unloaded.status.success(),
+            !cleanup.loaded().unwrap(),
             "launchd still has {}",
             cleanup.target
         );
