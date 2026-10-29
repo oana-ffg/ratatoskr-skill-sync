@@ -3,7 +3,7 @@
 // downloaders and install scripts.
 import { writeFile } from "node:fs/promises";
 
-const ELEMENT = "element-6066-11e4-a52f-4f735466cecf";
+const ELEMENT = "element-6066-11e4-a52e-4f735466cecf";
 
 /** Literal for an XPath expression; the test text never contains both quote kinds. */
 export function xpathString(text) {
