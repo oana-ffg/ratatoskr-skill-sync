@@ -409,23 +409,14 @@ mod launchd {
         }
     }
 
-    /// Whether the latest run finished successfully at or after `since` (Unix seconds).
-    fn synced_since(deployment: &Deployment, since: u64) -> bool {
-        let run = &deployment.job_status()["last_run"];
-        run["error"].is_null()
-            && run["finished_at"]
-                .as_u64()
-                .is_some_and(|finished| finished >= since)
-    }
-
-    fn modified_secs(path: &Path) -> Option<u64> {
-        let modified = fs::metadata(path).ok()?.modified().ok()?;
-        Some(
-            modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?
-                .as_secs(),
-        )
+    /// Successful runs in the job history. The ledger records `last_run` before it
+    /// appends history, so waiting on the history covers the whole record.
+    fn successes(deployment: &Deployment) -> usize {
+        deployment.job_status()["log"]
+            .as_str()
+            .unwrap()
+            .matches("Sync succeeded")
+            .count()
     }
 
     /// Boots out and deletes the job if the test fails before `schedule remove` does.
@@ -552,8 +543,9 @@ mod launchd {
             &alpha,
             "the load-time sync",
             Duration::from_secs(90),
-            || alpha.staged("codex/skills/review/SKILL.md").is_file() && synced_since(&alpha, 0),
+            || alpha.staged("codex/skills/review/SKILL.md").is_file() && successes(&alpha) >= 1,
         );
+        let before = successes(&alpha);
         workspace.publish("Add notes", |author| {
             fs::create_dir(author.join("skills/notes")).unwrap();
             fs::write(
@@ -567,21 +559,7 @@ mod launchd {
             &alpha,
             "the interval sync",
             Duration::from_secs(150),
-            // Output is written before the run is recorded; wait for the record too.
-            || {
-                modified_secs(&alpha.staged("codex/skills/notes/SKILL.md"))
-                    .is_some_and(|written| synced_since(&alpha, written))
-            },
-        );
-        let status = alpha.job_status();
-        assert!(
-            status["log"]
-                .as_str()
-                .unwrap()
-                .matches("Sync succeeded")
-                .count()
-                >= 2,
-            "{status}"
+            || alpha.staged("codex/skills/notes/SKILL.md").is_file() && successes(&alpha) > before,
         );
 
         expect(alpha.ratatoskr(&["schedule", "remove"]), 0);
