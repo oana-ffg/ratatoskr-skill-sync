@@ -3760,3 +3760,90 @@ fn stale_symlinks_remain_hard_errors_even_for_forget() {
         .is_err()
     );
 }
+
+#[test]
+fn stale_decisions_precede_other_conflict_backups_so_restore_stays_usable() {
+    let f = Fixture::with_targets("live", &["alpha", "beta"]);
+    apply(&f.settings).unwrap();
+    let active = f.root.join("alpha/skills/review-code/SKILL.md");
+    fs::write(&active, "Current target's hand edit").unwrap();
+    f.targets("live", &["alpha"]);
+    let error = format!(
+        "{:#}",
+        ratatoskr_core::preview_resolution(
+            &f.settings,
+            &active,
+            ratatoskr_core::ConflictAction::Reinstall
+        )
+        .err()
+        .unwrap()
+    );
+    assert!(
+        error.contains("Resolve pending stale-target decisions"),
+        "{error}"
+    );
+    assert!(ratatoskr_core::adopt(&f.settings).is_err());
+    assert!(!f.settings.state_dir.join("test/backups").exists());
+    assert_eq!(fs::read(&active).unwrap(), b"Current target's hand edit");
+    f.resolve_stale(ratatoskr_core::StaleAction::Forget);
+    let preview = ratatoskr_core::preview_resolution(
+        &f.settings,
+        &active,
+        ratatoskr_core::ConflictAction::Reinstall,
+    )
+    .unwrap();
+    let backup =
+        ratatoskr_core::resolve_conflict(&f.settings, &serde_json::to_string(&preview).unwrap())
+            .unwrap();
+    ratatoskr_core::restore_backup(&f.settings, &backup).unwrap();
+    assert_eq!(fs::read(&active).unwrap(), b"Current target's hand edit");
+}
+
+#[test]
+fn stale_remove_leaves_contents_of_overlapping_current_targets_in_place() {
+    let f = Fixture::with_targets("live", &["alpha"]);
+    apply(&f.settings).unwrap();
+    let old_file = f.root.join("alpha/skills/review-code/SKILL.md");
+    let definitions = fs::read_to_string(f.settings.source.join("harnesses.toml")).unwrap();
+    f.write(
+        "harnesses.toml",
+        &definitions.replace(
+            "skills_dir='skills'",
+            "skills_dir='skills/review-code/current'",
+        ),
+    );
+    let current_file = f
+        .root
+        .join("alpha/skills/review-code/current/review-code/SKILL.md");
+    fs::create_dir_all(current_file.parent().unwrap()).unwrap();
+    fs::write(&current_file, "New target's existing copy").unwrap();
+    let preview = ratatoskr_core::preview_stale_target(
+        &f.settings,
+        &f.root.join("alpha/skills"),
+        ratatoskr_core::StaleAction::Remove,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&preview).unwrap();
+    assert!(
+        value["location"]["archive_roots"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let archive = ratatoskr_core::resolve_stale_target(
+        &f.settings,
+        &serde_json::to_string(&preview).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(!old_file.exists());
+    assert_eq!(
+        fs::read(&current_file).unwrap(),
+        b"New target's existing copy"
+    );
+    assert_eq!(
+        fs::read(archive.join("entries/0")).unwrap(),
+        fs::read(f.settings.source.join("skills/review-code/SKILL.md")).unwrap()
+    );
+    assert!(plan(&f.settings).unwrap().stale_targets.is_empty());
+}

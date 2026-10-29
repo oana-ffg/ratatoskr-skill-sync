@@ -26,6 +26,7 @@
     ondirty: (v: boolean) => void;
   } = $props();
   const summary = $derived(reviewSummary(workspace));
+  const hasStaleTargets = $derived(workspace.plan.stale_targets.length > 0);
   let sourceConflict = $state<Conflict | null>(null);
   let resolution = $state<Resolution | null>(null);
   let busy = $state(false);
@@ -163,7 +164,7 @@
         workspace.plan.conflicts.length > 0 ||
         !workspace.plan.changes.length ||
         workspace.legacy.length > 0 ||
-        workspace.plan.stale_targets.length > 0}
+        hasStaleTargets}
       onclick={apply}
       aria-describedby="apply-destination">{summary.applyAction}</button
     >
@@ -250,7 +251,9 @@
       <h2>Former target locations</h2>
       <p>
         These locations are outside your current targets. Apply and background
-        sync wait for your decision for each location.
+        sync wait for your decision for each location. Resolve these decisions
+        before other conflict actions so recovery backups stay within current
+        targets.
       </p>
       {#each workspace.plan.stale_targets as item}<article
           class="conflict-card"
@@ -311,19 +314,23 @@
             <div class="conflict-actions">
               <button
                 class="primary"
-                disabled={!!conflict.copy_back_blocked || busy}
+                disabled={!!conflict.copy_back_blocked ||
+                  busy ||
+                  hasStaleTargets}
                 title={conflict.copy_back_blocked ??
                   "Preserve the installed edit in your source"}
                 onclick={() => choose(conflict, "copy-back")}
                 >Keep edit → update source</button
               ><button
-                disabled={busy}
+                disabled={busy || hasStaleTargets}
                 onclick={() => choose(conflict, "reinstall")}
                 >Restore from source</button
               ><button
-                disabled={!conflict.source}
+                disabled={!conflict.source || hasStaleTargets}
                 onclick={() => (sourceConflict = conflict)}>Edit source…</button
-              ><button disabled={busy} onclick={() => choose(conflict, "adopt")}
+              ><button
+                disabled={busy || hasStaleTargets}
+                onclick={() => choose(conflict, "adopt")}
                 >Take over as-is</button
               >
             </div>

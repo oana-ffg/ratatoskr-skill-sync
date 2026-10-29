@@ -193,6 +193,12 @@ test.each(["forget", "remove"] as const)(
       screen.getByRole("button", { name: summary.applyAction }),
     ).toBeDisabled();
     expect(calls).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Restore from source" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Take over as-is" }),
+    ).toBeDisabled();
     await fireEvent.click(
       within(section).getByRole("button", {
         name:

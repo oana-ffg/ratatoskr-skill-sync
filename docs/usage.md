@@ -94,7 +94,7 @@ For existing unmanaged imports, the legacy bulk `ratatoskr adopt` backs up exist
 
 ## Former target locations
 
-Removing a harness from a machine profile, switching between `staging` and `live`, or changing a target's root, skills directory or global instructions path can leave previously owned files outside the new targets. `plan` succeeds and lists these as pending decisions in `stale_targets` and `conflicts`; `status` returns 1 for pending work. Apply, reviewed Apply and background sync refuse to write until every location is decided. A live → staging switch therefore preserves live files until you explicitly choose what to do with them.
+Removing a harness from a machine profile, switching between `staging` and `live`, or changing a target's root, skills directory or global instructions path can leave previously owned files outside the new targets. `plan` succeeds and lists these as pending decisions in `stale_targets` and `conflicts`; `status` returns 1 for pending work. Apply, reviewed Apply and background sync refuse to write until every location is decided. A live → staging switch therefore preserves live files until you explicitly choose what to do with them. Adoption and ordinary conflict actions also wait for these decisions, so their workspace backups remain restorable within current targets.
 
 Each former skills directory is one decision, and each former global instructions file is another. A harness label is included only when its current definition identifies the old location unambiguously. Review the path even when a label is available. Changing a skill's `[target]` selection remains an ordinary removal inside an active target.
 

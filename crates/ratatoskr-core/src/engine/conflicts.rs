@@ -123,6 +123,10 @@ fn resolution_preview(
     owned: &Manifest,
 ) -> Result<ResolutionPreview> {
     let check = preflight(settings, desired, owned)?;
+    ensure!(
+        check.stale_targets.is_empty(),
+        "Resolve pending stale-target decisions with `ratatoskr stale-target list` before resolving other conflicts; workspace backups must stay within current targets"
+    );
     let conflict = check
         .conflict_details
         .into_iter()
