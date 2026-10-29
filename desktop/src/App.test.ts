@@ -5,7 +5,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/svelte";
-import { test, expect, vi, beforeEach } from "vitest";
+import { test, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { mockIPC, clearMocks, mockWindows } from "@tauri-apps/api/mocks";
 import App from "./App.svelte";
 import { fixture, fixtureIPC } from "../tests/fixture";
@@ -272,6 +272,18 @@ test("failed publication refreshes content status and exposes retry", async () =
 });
 
 test("creating a skill opens it in the editor without an unsaved-changes prompt", async () => {
+  // The skill editor sizes its description with ResizeObserver, which jsdom lacks.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  onTestFinished(() => {
+    vi.unstubAllGlobals();
+  });
   // The new skill is opened by name; reuse the fixture skill so it can be read.
   const created = vi.fn();
   mockIPC((cmd, args) => {
