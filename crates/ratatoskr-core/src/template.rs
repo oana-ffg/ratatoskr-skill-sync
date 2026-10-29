@@ -336,16 +336,29 @@ pub(crate) fn parse_blocks(source: &str) -> Result<(Vec<ParsedBlock>, Vec<Templa
     Ok((blocks, diagnostics))
 }
 
-fn variable_value(name: &str, context: &toml::Table) -> Result<String> {
+fn variable_lookup<'a>(name: &str, context: &'a toml::Table) -> Option<&'a toml::Value> {
     let mut pieces = name.split('.');
-    let mut value = context
-        .get(pieces.next().context("Empty variable")?)
-        .with_context(|| format!("Undefined variable: {name}"))?;
+    let mut value = context.get(pieces.next()?)?;
     for piece in pieces {
-        value = value
-            .get(piece)
-            .with_context(|| format!("Undefined variable: {name}"))?;
+        value = value.get(piece)?;
     }
+    Some(value)
+}
+
+/// Optional historical labels cannot infer values removed from the profile.
+/// Invalid templates still fail; undefined values yield no candidate path.
+pub(crate) fn render_if_defined(source: &str, context: &toml::Table) -> Result<Option<String>> {
+    for caps in variable_regex()?.captures_iter(source) {
+        if variable_lookup(&caps[1], context).is_none() {
+            return Ok(None);
+        }
+    }
+    render(source, context, false).map(Some)
+}
+
+fn variable_value(name: &str, context: &toml::Table) -> Result<String> {
+    let value =
+        variable_lookup(name, context).with_context(|| format!("Undefined variable: {name}"))?;
     match value {
         toml::Value::String(s) => Ok(s.clone()),
         toml::Value::Integer(i) => Ok(i.to_string()),

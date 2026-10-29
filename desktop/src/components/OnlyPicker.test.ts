@@ -1,14 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/svelte";
-import { vi, test, expect, beforeAll } from "vitest";
+import { vi, test, expect } from "vitest";
 import OnlyPicker from "./OnlyPicker.svelte";
-beforeAll(() => {
-  HTMLDialogElement.prototype.showModal = function () {
-    this.open = true;
-  };
-  HTMLDialogElement.prototype.close = function () {
-    this.open = false;
-  };
-});
 test("picks structured conditions with a plain-language summary and keyboard focusable buttons", async () => {
   const apply = vi.fn();
   render(OnlyPicker, {

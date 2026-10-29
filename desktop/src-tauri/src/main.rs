@@ -67,6 +67,9 @@ fn main() {
         .plugin(autostart.build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            commands::list_stale_targets,
+            commands::preview_stale_target,
+            commands::resolve_stale_target,
             commands::preview_legacy_resolution,
             commands::resolve_legacy,
             commands::keep_legacy,

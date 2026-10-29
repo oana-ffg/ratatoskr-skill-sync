@@ -5,12 +5,6 @@ import App from "./App.svelte";
 import { fixture, fixtureIPC } from "../tests/fixture";
 beforeEach(() => {
   clearMocks();
-  HTMLDialogElement.prototype.showModal = function () {
-    this.open = true;
-  };
-  HTMLDialogElement.prototype.close = function () {
-    this.open = false;
-  };
   mockIPC((cmd, args) => fixtureIPC(cmd, args as Record<string, unknown>));
 });
 test("routes screens, guards unsaved settings, and discards only on explicit action", async () => {

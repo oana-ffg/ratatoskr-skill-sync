@@ -226,8 +226,6 @@ pub(super) fn validate_root(root: &str, os: &str) -> Result<()> {
     Ok(())
 }
 
-const KNOWN_OS: [&str; 3] = ["linux", "macos", "windows"];
-
 /// Selector values that can never match, such as `harness=cursro` or `os=mac`, silently drop
 /// content on every profile. Report them even though each individual render succeeds.
 /// `harnesses` is `None` when `harnesses.toml` itself could not be read; harness warnings are
@@ -258,7 +256,7 @@ impl SelectorVocabulary {
                 Some(self.machines.iter().map(String::as_str).collect()),
                 "machine",
             ),
-            "os" => (Some(KNOWN_OS.to_vec()), "os"),
+            "os" => (Some(crate::SUPPORTED_OS.to_vec()), "os"),
             _ => return None,
         };
         let known = known?;
@@ -480,6 +478,14 @@ impl SelectorVocabulary {
             return;
         };
         for variant in variants {
+            match super::variant_runtime_entry(&variant) {
+                Ok(true) => continue,
+                Ok(false) => (),
+                Err(error) => {
+                    self.inspect_fail(&relative, &error.to_string());
+                    continue;
+                }
+            }
             let Some(label) = variant.file_name().into_string().ok() else {
                 self.inspect_fail(&relative, "non-UTF8 file name");
                 continue;

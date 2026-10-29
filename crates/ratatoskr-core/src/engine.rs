@@ -1,5 +1,6 @@
 mod conflicts;
 pub(crate) use conflicts::resolve_conflict_locked;
+mod stale;
 mod validation;
 use crate::{
     Settings,
@@ -16,6 +17,10 @@ pub use conflicts::{
 use conflicts::{conflict, write_rendered};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub use stale::{
+    StaleAction, StaleFile, StaleLocation, StalePreview, preview_stale_target,
+    resolve_stale_target, stale_targets,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -83,6 +88,7 @@ pub struct Plan {
     pub changes: Vec<Change>,
     pub conflicts: Vec<String>,
     pub conflict_details: Vec<Conflict>,
+    pub stale_targets: Vec<StaleLocation>,
     pub projects: Vec<ProjectStatus>,
     pub content_status: crate::ContentStatus,
     pub revision: String,
@@ -166,6 +172,11 @@ fn runtime(path: &Path) -> bool {
 pub(crate) fn skills_root_runtime_file(entry: &fs::DirEntry) -> Result<bool> {
     let kind = entry.file_type()?;
     Ok(runtime(&entry.path()) && !kind.is_dir() && !kind.is_symlink())
+}
+
+pub(crate) fn variant_runtime_entry(entry: &fs::DirEntry) -> Result<bool> {
+    Ok(skills_root_runtime_file(entry)?
+        || (entry.file_name() == "__pycache__" && entry.file_type()?.is_dir()))
 }
 
 pub(crate) fn require_skill_directory(entry: &fs::DirEntry) -> Result<()> {
@@ -319,9 +330,19 @@ fn skill_sources(
         no_symlinks(&variants)?;
         for variant in fs::read_dir(&variants)? {
             let variant = variant?;
+            if variant_runtime_entry(&variant)? {
+                continue;
+            }
+            let kind = variant.file_type()?;
             ensure!(
-                variant.file_type()?.is_dir(),
-                "Variants must be directories"
+                !kind.is_symlink(),
+                "Variant is a symlink: {}",
+                variant.file_name().to_string_lossy()
+            );
+            ensure!(
+                kind.is_dir(),
+                "Variants must be directories: {}",
+                variant.file_name().to_string_lossy()
             );
             let variant_name = variant
                 .file_name()
@@ -454,10 +475,7 @@ fn render_scope_inner(
     let harnesses: BTreeMap<String, Harness> =
         read_toml(&source.join("harnesses.toml"))?.try_into()?;
     let os = string(&machine, "os")?;
-    ensure!(
-        matches!(os, "macos" | "windows" | "linux"),
-        "Unknown machine OS"
-    );
+    ensure!(crate::SUPPORTED_OS.contains(&os), "Unknown machine OS");
     let mode = machine
         .get("mode")
         .and_then(|v| v.as_str())
@@ -1002,7 +1020,7 @@ fn manifest_path(settings: &Settings) -> PathBuf {
         .join("manifest.json")
 }
 
-fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
+fn manifest(settings: &Settings) -> Result<Manifest> {
     let path = manifest_path(settings);
     no_symlinks(&path)?;
     if !path.try_exists()? {
@@ -1017,54 +1035,40 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
         manifest.source == settings.source && manifest.machine == settings.machine,
         "Ownership manifest belongs to another source or machine"
     );
-    let stray: Vec<&PathBuf> = manifest
-        .files
-        .keys()
-        .filter(|path| {
-            !desired
-                .allowed
-                .iter()
-                .any(|(skills, global)| path.starts_with(skills) || *path == global)
-        })
-        .collect();
-    ensure!(
-        stray.is_empty(),
-        "{}",
-        stale_ownership_message(&settings.machine, &stray)
-    );
-    for root in &manifest.roots {
+    for path in manifest.files.keys().chain(manifest.roots.iter()) {
         ensure!(
-            desired
-                .allowed
-                .iter()
-                .any(|(skills, _)| root.parent() == Some(skills)),
-            "Ownership root outside current skills targets"
+            path.is_absolute()
+                && !path.components().any(|c| matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )),
+            "Invalid ownership path: {}",
+            path.display()
         );
+        no_symlinks(path)?;
     }
     Ok(manifest)
 }
 
-fn stale_ownership_message(machine: &str, stray: &[&PathBuf]) -> String {
-    let first = stray
-        .first()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    let more = if stray.len() > 1 {
-        format!(" (and {} more)", stray.len() - 1)
-    } else {
-        String::new()
-    };
-    // Releasing these files is intentionally not offered here. The previous configuration has to
-    // be restored until ownership of a removed target is designed explicitly.
+fn stale_ownership_message(machine: &str, location: &Path) -> String {
     format!(
-        "Ownership path outside current targets: {first}{more}\nRatatoskr still owns files from an earlier configuration of machine `{machine}`. This happens after removing an agent from the profile's `harnesses`, switching `mode` between staging and live, or changing an agent's roots. Restore the previous setting to keep managing these files; owned files are never forgotten silently."
+        "Pending stale-target decision for machine `{machine}` at {}. This location is outside current targets after removing a harness, switching staging/live mode, or changing roots. Run `ratatoskr stale-target list`, then `ratatoskr stale-target preview <path> --action forget|remove` and `ratatoskr stale-target resolve --preview <file>`. Nothing is forgotten or removed automatically.",
+        location.display()
     )
 }
 
 fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Result<Plan> {
     protection::capture(&manifest_path(settings))?;
+    let stale_targets = stale::locations(settings, desired, manifest)?;
+    // Stale ownership requires its own explicit decision; it is never a normal remove.
+    let active = stale::active_manifest(manifest, desired);
+    let manifest = &active;
     let mut revision = Sha256::new();
-    let mut conflicts = Vec::new();
+    revision.update(serde_json::to_vec(&stale_targets)?);
+    let mut conflicts: Vec<String> = stale_targets
+        .iter()
+        .map(|location| stale_ownership_message(&settings.machine, &location.path))
+        .collect();
     let mut conflict_details = Vec::new();
     let mut changes = Vec::new();
     for root in &desired.roots {
@@ -1186,6 +1190,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
         changes,
         conflicts,
         conflict_details,
+        stale_targets,
         projects: settings
             .projects
             .iter()
@@ -1198,7 +1203,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
 
 pub fn plan(settings: &Settings) -> Result<Plan> {
     let desired = desired(settings)?;
-    let manifest = manifest(settings, &desired)?;
+    let manifest = manifest(settings)?;
     preflight(settings, &desired, &manifest)
 }
 
@@ -1217,7 +1222,7 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     fs::create_dir_all(&state)?;
     let lock = crate::config::operation_lock(settings, "apply.lock")?;
     let desired = desired(settings)?;
-    let old = manifest(settings, &desired)?;
+    let old = manifest(settings)?;
     let preflight = preflight(settings, &desired, &old)?;
     // Count the plan computed under the lock. A later unlocked `plan` can disagree if the
     // checkout changes between the two calls.
@@ -1385,7 +1390,11 @@ pub fn adopt(settings: &Settings) -> Result<PathBuf> {
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
     let _lock = crate::config::operation_lock(settings, "apply.lock")?;
-    let mut owned = manifest(settings, &desired)?;
+    let mut owned = manifest(settings)?;
+    ensure!(
+        stale::locations(settings, &desired, &owned)?.is_empty(),
+        "Resolve pending stale-target decisions with `ratatoskr stale-target list` before adopt"
+    );
     for (path, expected) in &owned.files {
         no_symlinks(path)?;
         ensure!(
@@ -1471,7 +1480,7 @@ pub(crate) fn restore_backup_locked(settings: &Settings, directory: &Path) -> Re
             "Backup destination is outside current targets"
         );
     }
-    let current = manifest(settings, &desired)?;
+    let current = manifest(settings)?;
     let check = preflight(settings, &desired, &current)?;
     ensure!(
         check.conflicts.is_empty(),

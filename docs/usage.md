@@ -92,6 +92,30 @@ Tray runs write reports to `sync.stdout.log`, errors to `sync.stderr.log`, and e
 
 For existing unmanaged imports, the legacy bulk `ratatoskr adopt` backs up existing matching target directories and global files with corresponding source content before recording ownership. It does not write generated output. Review `plan` before applying: adopted files absent from source are scheduled for removal. `ratatoskr restore` accepts the backup directory printed by adoption, verifies every stored hash, and refuses current hand edits or unmanaged overwrite. Archiving a source skill moves it into `.ratatoskr-archive` on the same volume.
 
+## Former target locations
+
+Removing a harness from a machine profile, switching between `staging` and `live`, or changing a target's root, skills directory or global instructions path can leave previously owned files outside the new targets. `plan` succeeds and lists these as pending decisions in `stale_targets` and `conflicts`; `status` returns 1 for pending work. Apply, reviewed Apply and background sync refuse to write until every location is decided. A live → staging switch therefore preserves live files until you explicitly choose what to do with them.
+
+Each former skills directory is one decision, and each former global instructions file is another. A harness label is included only when its current definition identifies the old location unambiguously. Review the path even when a label is available. Changing a skill's `[target]` selection remains an ordinary removal inside an active target.
+
+For SSH-only machines, use the same preview/resolve process as conflict resolution:
+
+```sh
+ratatoskr stale-target list
+ratatoskr --json stale-target list
+ratatoskr stale-target preview "$former_target" --action forget > decision.json
+ratatoskr stale-target resolve --preview decision.json
+```
+
+Use the exact path from the list as `$former_target`. Choose `--action remove` instead of `forget` to archive installed copies. Preview always emits JSON; resolve accepts that complete saved JSON. Do not edit the preview. Each decision changes ownership, so generate the next preview after resolving the previous location.
+
+- **Forget / Leave files and stop managing them:** releases ownership without touching any installed file. Re-enabling that target later reports the existing copies as unmanaged; review them and use `adopt` to take ownership again.
+- **Remove:** renames the previously owned skill directories, or the individual global instructions file, into a dated `ratatoskr-backups` folder beside the former location. Whole skill directories include hand edits, runtime artifacts, untracked files and empty directories; unrelated skills in the same skills folder stay untouched. If a former skill directory overlaps a current target, only its stale owned files move. Nothing is deleted. The printed archive path contains `receipt.json`, with the complete reviewed fingerprints and original-to-archive path mapping. To recover, check that each original destination is absent, then move each archived entry from `moves` back to its original path. Ownership is not automatically restored. These archives are separate from `ratatoskr restore` workspace backups.
+
+Previews call out owned files whose bytes or executable state differ from the manifest, including missing files. Resolution rechecks the full location, file permissions, manifest and target configuration under `apply.lock`. A changed preview is refused with “changed since preview; review again”. Failed moves or ownership writes roll moves back; any rollback failure reports the exact original and remaining archive paths. Symlinks, corrupt manifests, and manifests belonging to another source or machine remain hard errors.
+
+The desktop offers the same choices in **Review changes → Former target locations**, followed by a verified preview and a separate confirmation.
+
 ## Codex legacy cut-over
 
 Codex's preset installs skills in `.agents/skills`. Codex also discovers `~/.codex/skills`; same-named copies can both appear. When Codex is enabled, **Review changes** lists legacy duplicates even in staging. Live Apply (including CLI/background sync) refuses to proceed until you explicitly retire the old copy or choose **Keep both copies**. Nothing changes before that choice.

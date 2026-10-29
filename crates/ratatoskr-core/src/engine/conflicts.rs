@@ -110,7 +110,7 @@ pub fn preview_resolution(
     action: ConflictAction,
 ) -> Result<ResolutionPreview> {
     let desired = desired(settings)?;
-    let owned = manifest(settings, &desired)?;
+    let owned = manifest(settings)?;
     resolution_preview(settings, path, action, None, &desired, &owned)
 }
 
@@ -285,7 +285,7 @@ pub(crate) fn resolve_conflict_locked(settings: &Settings, expected: &str) -> Re
     )?;
     let source_edit = expected.get("source_edit").and_then(|v| v.as_str());
     let desired = desired(settings)?;
-    let original = manifest(settings, &desired)?;
+    let original = manifest(settings)?;
     let review = resolution_preview(settings, &path, action, source_edit, &desired, &original)?;
     ensure!(
         serde_json::to_value(&review)? == expected,
@@ -440,7 +440,7 @@ pub fn preview_source_edit(
     text: &str,
 ) -> Result<ResolutionPreview> {
     let desired = desired(settings)?;
-    let owned = manifest(settings, &desired)?;
+    let owned = manifest(settings)?;
     let file = desired.files.get(path).context("No mapped source file")?;
     crate::content::validate_source_replacement(settings, &file.source, text.as_bytes())?;
     resolution_preview(
