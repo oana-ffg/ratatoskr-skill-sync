@@ -27,6 +27,9 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo test --locked -p ratatoskr-core --example verify_release_artifact
+      - name: Sync through a real launchd schedule
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p ratatoskr-skill-sync --test end_to_end -- --ignored
       - name: Compare macOS launchd plist bytes with PR base
         if: runner.os == 'macOS' && github.event_name == 'pull_request'
         env:
