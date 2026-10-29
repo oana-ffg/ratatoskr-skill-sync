@@ -2,12 +2,13 @@
 // on disposable CI machines only: the app shares its single-instance record and
 // app data with any installed copy. See docs/development.md.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
+  writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -38,6 +39,52 @@ before(() => {
   workspace = createWorkspace();
 });
 
+const lastRun = () => JSON.parse(workspace.ratatoskr("job-status")).last_run;
+/** The latest run, once one has finished at or after `since` (Unix seconds). */
+const finishedSince = (since) => {
+  const run = lastRun();
+  return run?.finished_at >= since && run;
+};
+
+/** Records sync state and running Git/Ratatoskr processes beside a failure. */
+function diagnose(name) {
+  const section = (title, read) => {
+    try {
+      return `## ${title}\n${read()}`;
+    } catch (error) {
+      return `## ${title}\nUnavailable: ${error.message}`;
+    }
+  };
+  const state = join(workspace.state, workspace.machine);
+  const report = [
+    section("job-status", () => workspace.ratatoskr("job-status")),
+    section("sync.stdout.log", () =>
+      readFileSync(join(state, "sync.stdout.log"), "utf8"),
+    ),
+    section("sync.stderr.log", () =>
+      readFileSync(join(state, "sync.stderr.log"), "utf8"),
+    ),
+    section("processes", () =>
+      process.platform === "win32"
+        ? execFileSync(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-Command",
+              "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'git|ratatoskr' } | Format-List ProcessId,ParentProcessId,CommandLine",
+            ],
+            { encoding: "utf8" },
+          )
+        : execFileSync("ps", ["-axo", "pid,ppid,command"], { encoding: "utf8" })
+            .split("\n")
+            .filter((line) => /git|ratatoskr/.test(line))
+            .join("\n"),
+    ),
+  ].join("\n\n");
+  writeFileSync(join(results, `${name}-diagnostics.txt`), report);
+  console.error(`Diagnostics for ${name}:\n${report}`);
+}
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -52,6 +99,7 @@ function freePort() {
 /** Starts the app against the fixture workspace, logging its output for CI artifacts. */
 async function launch(name, args = []) {
   const port = await freePort();
+  const launchedAt = Math.floor(Date.now() / 1000);
   const log = createWriteStream(join(results, `${name}.log`));
   const child = spawn(app, args, {
     env: {
@@ -67,6 +115,7 @@ async function launch(name, args = []) {
   const running = () => child.exitCode === null && child.signalCode === null;
   return {
     port,
+    launchedAt,
     running,
     async stop() {
       if (running()) child.kill();
@@ -75,14 +124,15 @@ async function launch(name, args = []) {
   };
 }
 
-/** Runs a journey, keeping a screenshot and any app error banners when it fails. */
+/** Runs a journey, keeping a screenshot, app error banners and sync diagnostics on failure. */
 async function drive(name, journey) {
   const desktop = await launch(name);
   try {
     const session = await Session.start(desktop.port, desktop.running);
     try {
-      await journey(session);
+      await journey(session, desktop);
     } catch (error) {
+      diagnose(name);
       await session.screenshot(join(results, `${name}.png`));
       const messages = await session.texts("//*[@role='alert']");
       if (messages.length)
@@ -96,7 +146,8 @@ async function drive(name, journey) {
   }
 }
 
-/** Windows tray sync runs every minute; pausing keeps the reviewed Apply deterministic. */
+/** Windows tray sync holds sync.lock while it runs at launch and every minute. Pausing
+ * it after the launch run keeps the edits and reviewed Apply below deterministic. */
 async function traySync(session, action, result) {
   if (process.platform !== "win32") return;
   await session.click(nav("Settings"));
@@ -109,8 +160,14 @@ test(
   "the app creates, edits, publishes and applies a skill through the real core",
   { skip: disabled },
   () =>
-    drive("editor", async (session) => {
+    drive("editor", async (session, desktop) => {
       await session.element("//h2[normalize-space(.)='No skills yet']", 60000);
+      if (process.platform === "win32")
+        await until(
+          "the launch tray sync",
+          () => finishedSince(desktop.launchedAt),
+          60000,
+        );
       await traySync(session, "Pause sync", "Resume sync");
 
       await session.click(button("＋ New skill"));
@@ -132,8 +189,8 @@ test(
       const editor = labelled("Skill Markdown editor");
       await session.click(editor);
       // Ctrl/Cmd+End, release modifiers, then type at the end of the body.
-      const modifier = process.platform === "darwin" ? "" : "";
-      await session.type(editor, `${modifier}`);
+      const modifier = process.platform === "darwin" ? "\uE03D" : "\uE009";
+      await session.type(editor, `${modifier}\uE010\uE000`);
       await session.type(editor, "Written in the native editor.");
       await session.click(button("Save"));
       await until("the edit on the remote", () =>
@@ -169,17 +226,14 @@ test(
         "macOS background sync uses launchd; see the CLI end-to-end journeys"),
   },
   async () => {
-    const startedAt = Math.floor(Date.now() / 1000);
     const tray = await launch("tray", ["--background"]);
     try {
-      const lastRun = () =>
-        JSON.parse(workspace.ratatoskr("job-status")).last_run;
-      await until(
-        "the startup sync",
-        () => lastRun()?.finished_at >= startedAt && lastRun(),
+      const launchRun = await until(
+        "the launch sync",
+        () => finishedSince(tray.launchedAt),
         60000,
       );
-      assert.equal(lastRun().error, null);
+      assert.equal(launchRun.error, null);
       workspace.publish("Add tray-check", {
         "skills/tray-check/SKILL.md": skill(
           "tray-check",
@@ -192,6 +246,9 @@ test(
       await until("the interval sync", () => existsSync(staged), 120000);
       assert.match(readFileSync(staged, "utf8"), /Synced by the tray\./);
       assert.ok(tray.running(), "The tray app exited while syncing");
+    } catch (error) {
+      diagnose("tray");
+      throw error;
     } finally {
       await tray.stop();
     }
