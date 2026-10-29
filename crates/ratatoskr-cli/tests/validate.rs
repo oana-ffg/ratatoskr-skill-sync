@@ -43,15 +43,18 @@ fn validates_without_config_and_emits_human_and_json_reports() {
         "{}",
         String::from_utf8_lossy(&human.stderr)
     );
+    let stdout = String::from_utf8(human.stdout).unwrap();
     assert!(
-        String::from_utf8(human.stdout).unwrap().contains(
+        stdout.contains(
             "remote: 1 skill installation across 1 harness rendered; 0 problem occurrences"
         )
     );
+    assert!(!stdout.contains("WARNING"), "{stdout}");
     let json = validate(&root, true);
     assert!(json.status.success());
     let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(report["problems"], serde_json::json!([]));
+    assert_eq!(report["warnings"], serde_json::json!([]));
     assert_eq!(report["profiles"][0]["harnesses"][0]["skills_rendered"], 1);
     assert!(!root.join(".validation").exists());
     assert!(!root.join("relative-invalid-config.toml").exists());
@@ -211,5 +214,157 @@ fn undefined_path_reports_only_affected_machines_and_uses_singular_labels() {
     assert!(
         output.contains("2 profiles; 1 distinct problem; 1 problem occurrence"),
         "{output}"
+    );
+}
+
+#[test]
+fn reports_selector_values_that_can_never_match() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    source(&root);
+    fs::write(
+        root.join("skills/review-code/SKILL.md"),
+        "\
+---
+name: review-code
+description: Review code
+---
+Shared.
+<!-- only harness=cdex -->
+Typo.
+<!-- /only -->
+<!-- only os=mac -->
+Mac.
+<!-- /only -->
+<!-- only harness=codex,cluade -->
+Mixed.
+<!-- /only -->
+<!-- only harness=codex -->
+Known.
+<!-- /only -->
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("skills/review-code/notes.md"),
+        "<!-- only machine=brunnr -->\nNope.\n<!-- /only -->\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("skills/review-code/skill.toml"),
+        "[target]\nmachines = ['remtoe']\nharnesses = ['cluade']\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("skills/review-code/variants/harness=codx")).unwrap();
+    fs::write(
+        root.join("skills/review-code/variants/harness=codx/SKILL.md"),
+        "Variant.\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("skills/review-code/variants/harness=codex")).unwrap();
+    fs::create_dir_all(root.join("global")).unwrap();
+    fs::write(
+        root.join("global/AGENTS.md"),
+        "<!-- only harness=cursro -->\nTypo.\n<!-- /only -->\n",
+    )
+    .unwrap();
+    let human = validate(&root, false);
+    assert!(
+        human.status.success(),
+        "{}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    for expected in [
+        "WARNING skills/review-code/SKILL.md: Unknown harness `cdex` never matches; known: codex",
+        "WARNING skills/review-code/SKILL.md: Unknown os `mac` never matches; known: linux, macos, windows",
+        "WARNING skills/review-code/SKILL.md: Unknown harness `cluade` never matches; known: codex",
+        "WARNING skills/review-code/notes.md: Unknown machine `brunnr` never matches; known: remote",
+        "WARNING skills/review-code/skill.toml: Unknown machine `remtoe` never matches; known: remote",
+        "WARNING skills/review-code/skill.toml: Unknown harness `cluade` never matches; known: codex",
+        "WARNING skills/review-code/variants/harness=codx: Unknown harness `codx` never matches; known: codex",
+        "WARNING global/AGENTS.md: Unknown harness `cursro` never matches; known: codex",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected}\n{stdout}");
+    }
+    assert!(!stdout.contains("Unknown harness `codex`"), "{stdout}");
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("WARNING "))
+            .count(),
+        8
+    );
+    let json = validate(&root, true);
+    assert!(json.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        report["problems"].as_array().unwrap().is_empty(),
+        "{report}"
+    );
+    assert_eq!(report["warnings"].as_array().unwrap().len(), 8);
+}
+
+#[test]
+fn selector_scan_failures_are_problems_and_missing_optional_paths_are_not() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("machines")).unwrap();
+    fs::write(root.join("harnesses.toml"), "[codex]\nskills_dir='skills'\nglobal_file='AGENTS.md'\n[codex.roots]\nlinux='{{af:home}}/.agents'\n").unwrap();
+    fs::write(
+        root.join("machines/remote.toml"),
+        "os='linux'\nmode='live'\nhome='/remote/home'\nharnesses=['codex']\n",
+    )
+    .unwrap();
+    let clean = validate(&root, false);
+    assert!(
+        clean.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    let clean_out = String::from_utf8(clean.stdout).unwrap();
+    assert!(!clean_out.contains("ERROR "), "{clean_out}");
+    assert!(
+        clean_out.contains("1 profile; 0 distinct problems; 0 problem occurrences"),
+        "{clean_out}"
+    );
+
+    fs::create_dir_all(root.join("skills/parked")).unwrap();
+    fs::write(root.join("skills/parked/skill.toml"), "enabled = false\n").unwrap();
+    fs::write(
+        root.join("skills/parked/broken.md"),
+        "<!-- only os=mac -->\nOpen.\n",
+    )
+    .unwrap();
+    fs::write(root.join("skills/parked/variants"), "not-a-directory").unwrap();
+    let failed = validate(&root, true);
+    assert_eq!(failed.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let problems = report["problems"].as_array().unwrap();
+    assert!(
+        problems.iter().any(|problem| {
+            problem["path"] == "skills/parked/broken.md"
+                && problem["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Unclosed only block")
+        }),
+        "{report}"
+    );
+    assert!(
+        problems.iter().any(|problem| {
+            problem["path"] == "skills/parked/variants"
+                && problem["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Could not inspect ")
+        }),
+        "{report}"
+    );
+    assert!(
+        problems
+            .iter()
+            .all(|problem| problem["path"] != "global/AGENTS.md" && problem["path"] != "skills"),
+        "{report}"
     );
 }

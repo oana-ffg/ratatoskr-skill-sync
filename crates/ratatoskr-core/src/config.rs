@@ -219,6 +219,8 @@ pub(crate) fn protected_write(
     Ok(())
 }
 
+const IDENTIFIER_HINT: &str = "Use 1-64 lowercase ASCII letters, digits, and hyphens; hyphens cannot start, end, or double. For example, `review-code`";
+
 pub(crate) fn identifier(value: &str) -> Result<()> {
     ensure!(
         !value.is_empty()
@@ -229,7 +231,7 @@ pub(crate) fn identifier(value: &str) -> Result<()> {
             && value
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
-        "Invalid identifier: {value:?}"
+        "Invalid identifier: {value:?}. {IDENTIFIER_HINT}"
     );
     Ok(())
 }

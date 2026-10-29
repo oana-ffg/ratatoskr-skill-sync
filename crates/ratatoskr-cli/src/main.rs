@@ -320,6 +320,9 @@ fn run() -> Result<i32> {
                     .join(", ");
                 println!("ERROR {}: {} [{}]", problem.path, problem.message, contexts);
             }
+            for warning in &report.warnings {
+                println!("WARNING {}: {}", warning.path, warning.message);
+            }
             println!(
                 "{}; {}; {}",
                 counted(report.profiles.len(), "profile", "profiles"),
@@ -656,6 +659,23 @@ fn run() -> Result<i32> {
                 Action::Sync => sync(&settings)?,
                 _ => plan(&settings)?,
             };
+            // `changes` is the post-apply plan. The counts are the writes `apply` performed
+            // under its lock, including when `--json` is set.
+            if matches!(command, Action::Apply)
+                && !cli.json
+                && let Some(applied) = report.applied
+            {
+                let total = applied.added + applied.updated + applied.removed;
+                if total > 0 {
+                    println!(
+                        "Applied {}: {} added, {} updated, {} removed.",
+                        counted(total, "change", "changes"),
+                        applied.added,
+                        applied.updated,
+                        applied.removed
+                    );
+                }
+            }
             show(&report, cli.json)?;
             if matches!(command, Action::Status)
                 && (!report.changes.is_empty()

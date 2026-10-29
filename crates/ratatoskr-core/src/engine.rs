@@ -24,7 +24,7 @@ use std::{
 use validation::RenderDiagnostics;
 pub use validation::{
     HarnessValidation, ProfileValidation, ValidationContext, ValidationProblem, ValidationReport,
-    validate_source,
+    ValidationWarning, validate_source,
 };
 use walkdir::WalkDir;
 
@@ -46,6 +46,31 @@ pub struct InstallTarget {
     pub project: Option<PathBuf>,
 }
 
+/// Writes performed by the `apply` call that returned this plan.
+/// `plan` and `status` leave [`Plan::applied`] unset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct AppliedChanges {
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+}
+
+impl AppliedChanges {
+    fn from_changes(changes: &[Change]) -> Self {
+        let count = |action: &str| {
+            changes
+                .iter()
+                .filter(|change| change.action == action)
+                .count()
+        };
+        Self {
+            added: count("add"),
+            updated: count("update"),
+            removed: count("remove"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Plan {
     pub source: PathBuf,
@@ -61,6 +86,10 @@ pub struct Plan {
     pub projects: Vec<ProjectStatus>,
     pub content_status: crate::ContentStatus,
     pub revision: String,
+    /// Counts from the writes this apply performed under its lock.
+    /// Absent for `plan` and `status`, which do not write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied: Option<AppliedChanges>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -130,6 +159,24 @@ fn runtime(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == "__pycache__")
         || path.file_name().is_some_and(|n| n == ".DS_Store")
         || path.extension().is_some_and(|n| n == "pyc")
+}
+
+/// Finder and Python drop these beside real skill directories. A symlink keeps its
+/// own error even when its name looks like a runtime artifact.
+pub(crate) fn skills_root_runtime_file(entry: &fs::DirEntry) -> Result<bool> {
+    let kind = entry.file_type()?;
+    Ok(runtime(&entry.path()) && !kind.is_dir() && !kind.is_symlink())
+}
+
+pub(crate) fn require_skill_directory(entry: &fs::DirEntry) -> Result<()> {
+    let kind = entry.file_type()?;
+    let name = entry.file_name().to_string_lossy().into_owned();
+    ensure!(!kind.is_symlink(), "Skills root entry is a symlink: {name}");
+    ensure!(
+        kind.is_dir(),
+        "Skills root must contain directories only: {name}"
+    );
+    Ok(())
 }
 
 pub(crate) fn file_paths(root: &Path) -> Result<BTreeMap<PathBuf, PathBuf>> {
@@ -714,6 +761,10 @@ fn render_harness(
                 None => continue,
             };
             let skill_path = skill.path();
+            // `.DS_Store` and `.pyc` files are ignored inside a skill; ignore them at the root too.
+            if skills_root_runtime_file(&skill)? {
+                continue;
+            }
             let skill_label = skill.file_name().to_string_lossy().into_owned();
             let skill_result = render_skill(
                 rendering,
@@ -763,10 +814,7 @@ fn render_skill(
     } = *rendering;
     let machine_name = scope.machine;
     let skill_path = skill.path();
-    ensure!(
-        skill.file_type()?.is_dir(),
-        "Skills root must contain directories only"
-    );
+    require_skill_directory(skill)?;
     let skill_name = skill
         .file_name()
         .into_string()
@@ -969,16 +1017,21 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
         manifest.source == settings.source && manifest.machine == settings.machine,
         "Ownership manifest belongs to another source or machine"
     );
-    for path in manifest.files.keys() {
-        ensure!(
-            desired
+    let stray: Vec<&PathBuf> = manifest
+        .files
+        .keys()
+        .filter(|path| {
+            !desired
                 .allowed
                 .iter()
-                .any(|(skills, global)| path.starts_with(skills) || path == global),
-            "Ownership path outside current targets: {}",
-            path.display()
-        );
-    }
+                .any(|(skills, global)| path.starts_with(skills) || *path == global)
+        })
+        .collect();
+    ensure!(
+        stray.is_empty(),
+        "{}",
+        stale_ownership_message(&settings.machine, &stray)
+    );
     for root in &manifest.roots {
         ensure!(
             desired
@@ -989,6 +1042,23 @@ fn manifest(settings: &Settings, desired: &Desired) -> Result<Manifest> {
         );
     }
     Ok(manifest)
+}
+
+fn stale_ownership_message(machine: &str, stray: &[&PathBuf]) -> String {
+    let first = stray
+        .first()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let more = if stray.len() > 1 {
+        format!(" (and {} more)", stray.len() - 1)
+    } else {
+        String::new()
+    };
+    // Releasing these files is intentionally not offered here. The previous configuration has to
+    // be restored until ownership of a removed target is designed explicitly.
+    format!(
+        "Ownership path outside current targets: {first}{more}\nRatatoskr still owns files from an earlier configuration of machine `{machine}`. This happens after removing an agent from the profile's `harnesses`, switching `mode` between staging and live, or changing an agent's roots. Restore the previous setting to keep managing these files; owned files are never forgotten silently."
+    )
 }
 
 fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Result<Plan> {
@@ -1122,6 +1192,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
             .map(|p| project_status(p))
             .collect(),
         revision: format!("{:x}", revision.finalize()),
+        applied: None,
     })
 }
 
@@ -1148,6 +1219,9 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     let desired = desired(settings)?;
     let old = manifest(settings, &desired)?;
     let preflight = preflight(settings, &desired, &old)?;
+    // Count the plan computed under the lock. A later unlocked `plan` can disagree if the
+    // checkout changes between the two calls.
+    let applied = AppliedChanges::from_changes(&preflight.changes);
     if let Some(expected) = expected {
         ensure!(
             serde_json::to_value(&preflight)? == expected,
@@ -1206,7 +1280,9 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     };
     atomic_write(&manifest_path(settings), &serde_json::to_vec_pretty(&new)?)?;
     drop(lock);
-    plan(settings)
+    let mut report = plan(settings)?;
+    report.applied = Some(applied);
+    Ok(report)
 }
 
 pub(crate) fn detach_project(settings: &Settings, project: &Path) -> Result<()> {

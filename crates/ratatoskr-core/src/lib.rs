@@ -36,10 +36,10 @@ pub use content::{
 };
 pub use content::{SourceDocument, read_source_file, source_files, write_source_file};
 pub use engine::{
-    Change, Conflict, ConflictAction, HarnessValidation, Plan, ProfileValidation,
-    ResolutionPreview, ValidationContext, ValidationProblem, ValidationReport, adopt, apply,
-    apply_reviewed, plan, preview_resolution, preview_source_edit, read_conflict_source,
-    resolve_conflict, restore_backup, validate_source,
+    AppliedChanges, Change, Conflict, ConflictAction, HarnessValidation, Plan, ProfileValidation,
+    ResolutionPreview, ValidationContext, ValidationProblem, ValidationReport, ValidationWarning,
+    adopt, apply, apply_reviewed, plan, preview_resolution, preview_source_edit,
+    read_conflict_source, resolve_conflict, restore_backup, validate_source,
 };
 pub use git::{
     ContentStatus, ProjectStatus, add_project, content_status, project_status, push_content,
