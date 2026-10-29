@@ -44,7 +44,12 @@
       })
       .catch((e) => (statusError = errorText(e)));
   });
-  $effect(() => ondirty(creating));
+  // Report synchronously: opening a newly created skill must not see the
+  // dialog's dirty state from before it closed.
+  function setCreating(value: boolean) {
+    creating = value;
+    ondirty(value);
+  }
   const visible = $derived(
     workspace.skills.filter(
       (s) =>
@@ -77,7 +82,7 @@
           description,
         }),
       );
-      creating = false;
+      setCreating(false);
       onopen({ name: newName, project, enabled: true });
     } catch (e) {
       onerror(e);
@@ -94,7 +99,7 @@
           >{/if}
       </h1>
     </div>
-    <button class="primary" onclick={() => (creating = true)}
+    <button class="primary" onclick={() => setCreating(true)}
       >＋ New skill</button
     >
   </div>
@@ -180,7 +185,7 @@
     >
   </div>
 </section>
-{#if creating}<Dialog title="Create a skill" onclose={() => (creating = false)}
+{#if creating}<Dialog title="Create a skill" onclose={() => setCreating(false)}
     ><label
       >Name<input
         bind:value={newName}
@@ -199,6 +204,6 @@
         disabled={!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(newName) ||
           !description.trim()}
         onclick={create}>Create skill</button
-      ><button onclick={() => (creating = false)}>Cancel</button>
+      ><button onclick={() => setCreating(false)}>Cancel</button>
     </footer></Dialog
   >{/if}
