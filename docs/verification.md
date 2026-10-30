@@ -1,5 +1,7 @@
 # Verification
 
+This document records historical verification results and gaps. References to outstanding acceptance steps do not impose manual pre-release testing; the current release gates are defined in [releases.md](releases.md).
+
 Initial draft prepared on macOS Apple Silicon on 2026-10-16. The owner explicitly authorized a direct push to main for this draft and plans a later Claude review. Normal subsequent changes follow AGENTS.md.
 
 ## Local results

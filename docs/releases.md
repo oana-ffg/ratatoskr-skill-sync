@@ -31,7 +31,7 @@
 - Remove nine unused desktop commands left over from the redesign. Newer commands or the workspace snapshot already cover them.
 - Require Apple Developer ID signing and notarization for official macOS release builds, including verification of the desktop app and bundled helper. Release automation stops if publisher credentials or notarization acceptance are missing.
 - Use `com.firefungames.ratatoskr` as the macOS bundle identifier while preserving existing configuration, update history, restart intent and background-job continuity. Windows identity and the update-signature trust root remain unchanged.
-- Build candidates in CI, then sign and notarize the Mac artifacts on a local publisher Mac. Apple private keys stay in the local encrypted secret manager. Real signed-artifact and old-install update acceptance are still required before publication.
+- Build candidates in CI, then sign and notarize the Mac artifacts on a local publisher Mac. Apple private keys stay in the local encrypted secret manager. Publication requires green CI and the signed-artifact verification described below, followed by owner approval; no manual pre-release testing is required.
 
 ## v0.2.15 release notes
 
