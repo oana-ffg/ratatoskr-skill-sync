@@ -48,7 +48,7 @@ Core edits use shared template-parser ranges. YAML scalar ranges come from a con
 
 Save uses the core's validation of the exact submitted draft, independently of live preview timing or stale diagnostics. Failed saves keep the draft and display the core's reason. A new save attempt clears the previous action error. Preview installation details appear only for a completed, successful render that includes the skill.
 
-`npm run test:screenshots` runs Playwright for the dark-only app and writes every main screen to `docs/screenshots/`. It asserts the editor's condition header, value pill, inline unreachable-section warning and live preview, checks realistic long frontmatter and the source-mode gutter, then routes through all screens, expands grouped files, exercises credential controls and rejects page errors. The fixture is public synthetic data, not a snapshot of a personal content repository. Native dialogs, real login registration, live OS notifications, and installed update/relaunch behavior require platform acceptance testing.
+`npm run test:screenshots` runs Playwright for the dark-only app and writes every main screen to `docs/screenshots/`. It asserts the editor's condition header, value pill, inline unreachable-section warning and live preview, checks realistic long frontmatter and the source-mode gutter, then routes through all screens, expands grouped files, exercises credential controls and rejects page errors. The fixture is public synthetic data, not a snapshot of a personal content repository. These screenshot tests do not establish native dialog, login registration, OS notification, or installed update/relaunch behavior; report remaining automation coverage gaps.
 
 ## Content publication status
 
