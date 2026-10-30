@@ -1,5 +1,11 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
-import { test, expect, vi, beforeEach } from "vitest";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/svelte";
+import { test, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { mockIPC, clearMocks, mockWindows } from "@tauri-apps/api/mocks";
 import App from "./App.svelte";
 import { fixture, fixtureIPC } from "../tests/fixture";
@@ -263,4 +269,53 @@ test("failed publication refreshes content status and exposes retry", async () =
   await waitFor(() =>
     expect(screen.queryByText("Content checkout needs attention")).toBeNull(),
   );
+});
+
+test("creating a skill opens it in the editor without an unsaved-changes prompt", async () => {
+  // The skill editor sizes its description with ResizeObserver, which jsdom lacks.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  onTestFinished(() => {
+    vi.unstubAllGlobals();
+  });
+  // The new skill is opened by name; reuse the fixture skill so it can be read.
+  const created = vi.fn();
+  mockIPC((cmd, args) => {
+    if (cmd !== "create_desktop_skill")
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    created(args);
+    return fixture.workspace;
+  });
+  render(App);
+  await screen.findByRole("heading", { name: /Skills/ });
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "＋ New skill" }),
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Create a skill" });
+  await fireEvent.input(within(dialog).getByLabelText("Name"), {
+    target: { value: "recordings" },
+  });
+  await fireEvent.input(within(dialog).getByLabelText("Description"), {
+    target: { value: "A freshly created skill." },
+  });
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Create skill" }),
+  );
+  expect(
+    await screen.findByRole("textbox", { name: "Skill Markdown editor" }),
+  ).toBeVisible();
+  expect(created).toHaveBeenCalledWith({
+    name: "recordings",
+    project: null,
+    description: "A freshly created skill.",
+  });
+  expect(
+    screen.queryByRole("dialog", { name: "You have unsaved changes" }),
+  ).toBeNull();
 });
