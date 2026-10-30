@@ -1,5 +1,16 @@
 # Releases and signed updates
 
+## v0.2.19 release notes
+
+- **Project skill work no longer alerts on every save.** Background sync used to fail and alert as soon as a registered project had uncommitted or unpushed skill work. The alert included file counts, so each additional edited file sent a new notification. Sync now succeeds until work has been pending for over an hour, tracked separately for each skill, for other project skill source files and for unpushed commits. The alert then names those items without counts, so continued editing does not repeat it. Project inspection errors still alert immediately. After upgrading, expect one recovery notification if the previous alert was still current.
+- **Former target locations are now explicit decisions.** Removing a harness from a machine, switching between staging and live, or changing a target path no longer fails on ownership left behind. Plan lists each former location as a pending decision, and Apply, reviewed Apply and background sync wait until every decision is resolved. **Remove** archives the previously owned files beside their former target with a recovery receipt. **Forget** stops managing them without touching any file. Both are available in **Review changes → Former target locations** and through `ratatoskr stale-target list|preview|resolve`. See [former target locations](usage.md#former-target-locations).
+- `apply` reports the files it added, updated and removed, in text and in JSON `applied`, instead of only saying generated files are up to date.
+- `validate` warns about selector values that can never match, such as a misspelled harness, OS or `[target]` entry. The warnings do not change the exit code.
+- Finder `.DS_Store` files and Python `.pyc` files beside skill directories and inside `variants/` are ignored instead of blocking every plan. Other stray files, symlinks and Windows junctions are refused by name.
+- Conflict copy-back and source-edit previews label their diff sides correctly. Previously the diff read backwards.
+- Invalid identifiers now state the accepted form.
+- Fix the desktop asking about unsaved changes right after a new skill was created.
+
 ## v0.2.18 release notes
 
 - **Desktop edits to the central content checkout are now saved, committed and pushed to the deploy branch's upstream automatically.** This applies to global instructions, skills, configuration, agent targets, conflict copy-back and source restoration. Only the changed paths are committed, with your normal Git identity, signing and hooks. A failed commit keeps the saved file. A failed push keeps the local commit and reports **saved and committed locally but NOT pushed**. A persistent warning shows uncommitted and unpushed content, and **Push now** retries. Project edits and all CLI `skill` commands remain write-only.
