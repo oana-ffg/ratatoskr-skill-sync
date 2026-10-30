@@ -1122,6 +1122,109 @@ fn project_monitor_detects_only_unpushed_skill_commits() {
 }
 
 #[test]
+fn sync_alerts_once_for_project_skill_work_left_pending_past_the_grace_period() {
+    let mut f = Fixture::new();
+    f.settings.updates.automatic = false;
+    f.settings.alert_command = vec![
+        "git".into(),
+        "-C".into(),
+        f.settings.source.display().to_string(),
+        "config".into(),
+        "--add".into(),
+        "ratatoskr.alert".into(),
+    ];
+    for (name, checkout) in [
+        ("content", &f.settings.source),
+        ("project", &f.root.join("project")),
+    ] {
+        let remote = f.root.join(format!("{name}.git"));
+        fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "--bare", "-b", "main"]);
+        fs::create_dir_all(checkout).unwrap();
+        git(checkout, &["init", "-b", "main"]);
+        git(checkout, &["config", "user.name", "Ratatoskr tests"]);
+        git(checkout, &["config", "user.email", "tests@localhost"]);
+        git(checkout, &["config", "commit.gpgsign", "false"]);
+        if name == "project" {
+            fs::create_dir_all(checkout.join("agent-skills/skills/notes")).unwrap();
+            fs::write(checkout.join(".ratatoskr.toml"), "source='agent-skills'\n").unwrap();
+            fs::write(checkout.join("agent-skills/skills/notes/skill.toml"), "").unwrap();
+            fs::write(
+                checkout.join("agent-skills/skills/notes/SKILL.md"),
+                "---\nname: notes\ndescription: Take notes\n---\nInitial\n",
+            )
+            .unwrap();
+        }
+        git(checkout, &["add", "."]);
+        git(checkout, &["commit", "-m", "Initial"]);
+        git(
+            checkout,
+            &["remote", "add", "origin", &format!("../{name}.git")],
+        );
+        git(checkout, &["push", "-u", "origin", "main"]);
+    }
+    let project = f.root.join("project");
+    let config = f.root.join("config.toml");
+    save(&config, &f.settings).unwrap();
+    add_project(&config, &project, "agent-skills").unwrap();
+    let settings = load(&config).unwrap();
+    let alerts = || {
+        Command::new("git")
+            .arg("-C")
+            .arg(&settings.source)
+            .args(["config", "--get-all", "ratatoskr.alert"])
+            .output()
+            .map(|output| String::from_utf8(output.stdout).unwrap())
+            .unwrap()
+    };
+
+    // Work in progress syncs without an alert.
+    let skill = project.join("agent-skills/skills/notes");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: notes\ndescription: Take notes\n---\nDraft\n",
+    )
+    .unwrap();
+    sync(&settings).unwrap();
+    assert!(f.output().exists());
+    assert_eq!(alerts(), "");
+
+    // Once the work is an hour old, one alert names it without file counts.
+    let ledger_path = settings.state_dir.join("test/project-work.json");
+    let mut ledger: serde_json::Value =
+        serde_json::from_slice(&fs::read(&ledger_path).unwrap()).unwrap();
+    for since in ledger["first_seen"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .flat_map(|items| items.as_object_mut().unwrap().values_mut())
+    {
+        *since = 0.into();
+    }
+    fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+    let error = format!("{:#}", sync(&settings).unwrap_err());
+    assert!(
+        error.contains(&format!(
+            "project skill work pending for over an hour: {} (skill notes)",
+            project.display()
+        )),
+        "{error}"
+    );
+    assert_eq!(alerts().lines().count(), 1);
+    fs::create_dir(skill.join("scripts")).unwrap();
+    fs::write(skill.join("scripts/run.sh"), "echo notes").unwrap();
+    assert!(sync(&settings).is_err());
+    assert_eq!(alerts().lines().count(), 1);
+
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "-m", "Notes"]);
+    git(&project, &["push"]);
+    sync(&settings).unwrap();
+    assert_eq!(alerts().lines().count(), 2);
+    assert!(alerts().contains("operation recovered"));
+}
+
+#[test]
 fn sync_refuses_dirty_content_without_modifying_it() {
     let f = Fixture::new();
     git(&f.settings.source, &["init", "-b", "main"]);
