@@ -113,34 +113,66 @@ async function launch(workspace, name, args = []) {
     port,
     launchedAt,
     running,
+    /** Terminates the app, forcing it if it has not exited within ten seconds. */
     async stop() {
-      if (running()) child.kill();
-      await exited;
+      if (!running()) return;
+      child.kill();
+      const timeout = new Promise((resolve) => setTimeout(resolve, 10000));
+      if ((await Promise.race([exited.then(() => true), timeout])) !== true) {
+        child.kill("SIGKILL");
+        await exited;
+      }
     },
   };
+}
+
+/** Runs a failure-diagnostic or cleanup step. After an earlier failure, a problem
+ * here is appended to that failure instead of replacing it. */
+async function attempt(failure, what, step) {
+  try {
+    await step();
+  } catch (problem) {
+    if (!failure) throw problem;
+    failure.message += `\n${what} also failed: ${problem.message}`;
+  }
 }
 
 /** Runs a journey, keeping a screenshot, app error banners and sync diagnostics on failure. */
 async function drive(name, journey) {
   const workspace = createWorkspace();
   const desktop = await launch(workspace, name);
+  let session;
+  let failure;
   try {
-    const session = await Session.start(desktop.port, desktop.running);
-    try {
-      await journey(session, desktop, workspace);
-    } catch (error) {
-      diagnose(workspace, name);
-      await session.screenshot(join(results, `${name}.png`));
-      const messages = await session.texts("//*[@role='alert']");
-      if (messages.length)
-        error.message += `\nApp alerts: ${messages.join(" | ")}`;
-      throw error;
-    } finally {
-      await session.end();
+    session = await Session.start(desktop.port, desktop.running);
+    await journey(session, desktop, workspace);
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    if (failure) {
+      await attempt(failure, "Recording sync diagnostics", () =>
+        diagnose(workspace, name),
+      );
     }
+    if (failure && session) {
+      await attempt(failure, "Taking a screenshot", () =>
+        session.screenshot(join(results, `${name}.png`)),
+      );
+      await attempt(failure, "Reading app alerts", async () => {
+        const messages = await session.texts("//*[@role='alert']");
+        if (messages.length)
+          failure.message += `\nApp alerts: ${messages.join(" | ")}`;
+      });
+    }
+    if (session)
+      await attempt(failure, "Ending the WebDriver session", () =>
+        session.end(),
+      );
   } finally {
     await desktop.stop();
   }
+  if (failure) throw failure;
 }
 
 /** Opens a screen and waits for `arrived`. The app shows its unsaved-changes guard
@@ -259,7 +291,9 @@ test(
       assert.match(readFileSync(staged, "utf8"), /Synced by the tray\./);
       assert.ok(tray.running(), "The tray app exited while syncing");
     } catch (error) {
-      diagnose(workspace, "tray");
+      await attempt(error, "Recording sync diagnostics", () =>
+        diagnose(workspace, "tray"),
+      );
       throw error;
     } finally {
       await tray.stop();

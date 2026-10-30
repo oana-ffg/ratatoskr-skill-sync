@@ -4,6 +4,8 @@
 import { writeFile } from "node:fs/promises";
 
 const ELEMENT = "element-6066-11e4-a52e-4f735466cecf";
+// Every request has a deadline, so a stalled server cannot outlive a wait.
+const REQUEST_TIMEOUT = 15000;
 
 /** Literal for an XPath expression; the test text never contains both quote kinds. */
 export function xpathString(text) {
@@ -46,7 +48,9 @@ export class Session {
       "the embedded WebDriver server",
       async () => {
         if (!isRunning()) throw new Error("The app exited during startup");
-        const response = await fetch(`${base}/status`);
+        const response = await fetch(`${base}/status`, {
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT),
+        });
         return response.ok && (await response.json()).value?.ready;
       },
       60000,
@@ -93,10 +97,6 @@ export class Session {
     await this.command("POST", `/element/${id}/value`, { text });
   }
 
-  async text(xpath) {
-    return this.command("GET", `/element/${await this.element(xpath)}/text`);
-  }
-
   /** Text of every element matching `xpath`, without waiting. */
   async texts(xpath) {
     const found = await this.command("POST", "/elements", {
@@ -127,6 +127,7 @@ async function request(base, method, path, body) {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT),
   });
   const payload = await response.json();
   if (!response.ok || payload.value?.error) {
