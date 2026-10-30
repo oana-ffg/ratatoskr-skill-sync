@@ -18,6 +18,9 @@ pub struct ProjectStatus {
     pub outgoing_commits: Option<usize>,
     pub upstream: Option<String>,
     pub error: Option<String>,
+    /// Repository-relative paths behind `changed_files`, including rename origins.
+    #[serde(skip)]
+    pub(crate) changed_paths: Vec<PathBuf>,
 }
 
 impl ProjectStatus {
@@ -41,16 +44,20 @@ impl ContentStatus {
     }
 }
 
-fn changed_file_count(bytes: &[u8]) -> usize {
+/// `git status --porcelain=v1 -z` entries as their paths; renames and copies
+/// carry their origin as a second path.
+fn status_entries(bytes: &[u8]) -> Vec<Vec<PathBuf>> {
+    let path = |bytes: &[u8]| PathBuf::from(String::from_utf8_lossy(bytes).into_owned());
     let mut records = bytes.split(|b| *b == 0).filter(|r| !r.is_empty());
-    let mut count = 0;
+    let mut entries = Vec::new();
     while let Some(record) = records.next() {
-        count += 1;
+        let mut paths = vec![path(record.get(3..).unwrap_or_default())];
         if record.iter().take(2).any(|b| matches!(b, b'R' | b'C')) {
-            records.next();
+            paths.extend(records.next().map(path));
         }
+        entries.push(paths);
     }
-    count
+    entries
 }
 
 pub fn content_status(settings: &Settings) -> ContentStatus {
@@ -67,10 +74,11 @@ pub fn content_status(settings: &Settings) -> ContentStatus {
             Path::new(top.trim()).canonicalize()? == settings.source.canonicalize()?,
             "Content source must be the Git checkout root"
         );
-        status.changed_files = changed_file_count(&git(
+        status.changed_files = status_entries(&git(
             &settings.source,
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        )?);
+        )?)
+        .len();
         status.upstream = Some(
             String::from_utf8(git(
                 &settings.source,
@@ -283,6 +291,7 @@ pub fn project_status(root: &Path) -> ProjectStatus {
         outgoing_commits: None,
         upstream: None,
         error: None,
+        changed_paths: Vec::new(),
     };
     let result: Result<()> = (|| {
         no_symlinks(root)?;
@@ -311,7 +320,9 @@ pub fn project_status(root: &Path) -> ProjectStatus {
                 ".ratatoskr.toml",
             ],
         )?;
-        status.changed_files = changed_file_count(&changes);
+        let entries = status_entries(&changes);
+        status.changed_files = entries.len();
+        status.changed_paths = entries.into_iter().flatten().collect();
         if let Ok(upstream) = git(
             root,
             &[
@@ -530,31 +541,7 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
         .into());
     }
     let plan = apply(settings)?;
-    let pending: Vec<_> = plan
-        .projects
-        .iter()
-        .filter(|project| project.needs_attention())
-        .map(|project| {
-            format!(
-                "{} ({} uncommitted skill files, {} unpushed skill commits)",
-                project.root.display(),
-                project.changed_files,
-                project
-                    .outgoing_commits
-                    .map_or("unknown: missing upstream".into(), |n| n.to_string())
-            )
-        })
-        .collect();
-    if !pending.is_empty() {
-        return Err(crate::tray::Problem::message(
-            "Project work pending",
-            format!(
-                "Outputs synced; project skill work needs attention: {}",
-                pending.join("; ")
-            ),
-        )
-        .into());
-    }
+    crate::project_work::check(settings, &plan.projects)?;
     Ok(plan)
 }
 
@@ -616,6 +603,21 @@ fn validate_deploy_branch(settings: &Settings) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_entries_keep_rename_origins_with_their_entry() {
+        let entries = status_entries(b"R  skills/new/SKILL.md\0skills/old/SKILL.md\0?? a b.txt\0");
+        assert_eq!(
+            entries,
+            [
+                vec![
+                    PathBuf::from("skills/new/SKILL.md"),
+                    PathBuf::from("skills/old/SKILL.md")
+                ],
+                vec![PathBuf::from("a b.txt")],
+            ]
+        );
+    }
 
     #[test]
     fn failed_update_still_syncs_and_alerts_independently() {

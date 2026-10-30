@@ -21,6 +21,7 @@ pub mod tray;
 pub use schedule::migrate_windows_schedule;
 mod notifications;
 mod process;
+mod project_work;
 mod protection;
 mod secrets;
 pub use notifications::AlertSettings;
