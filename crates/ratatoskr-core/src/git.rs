@@ -283,6 +283,23 @@ fn git_command(root: &Path, args: &[&str], paths: Option<&[PathBuf]>) -> Result<
     Ok(output.stdout)
 }
 
+/// Where a registered project keeps its skills. Reading it is a marker lookup and needs no Git
+/// process. Editor reads call this constantly; `project_status` reports the repository's health.
+pub(crate) fn project_source(root: &Path) -> Result<PathBuf> {
+    project_marker(root).map(|(_, source)| source)
+}
+
+fn project_marker(root: &Path) -> Result<(Marker, PathBuf)> {
+    no_symlinks(root)?;
+    let marker_path = root.join(".ratatoskr.toml");
+    no_symlinks(&marker_path)?;
+    let marker: Marker = toml::from_str(&fs::read_to_string(marker_path)?)?;
+    let source = root.join(relative(&marker.source)?);
+    no_symlinks(&source)?;
+    ensure!(source.is_dir(), "Project skill source is missing");
+    Ok((marker, source))
+}
+
 pub fn project_status(root: &Path) -> ProjectStatus {
     let mut status = ProjectStatus {
         root: root.into(),
@@ -294,14 +311,7 @@ pub fn project_status(root: &Path) -> ProjectStatus {
         changed_paths: Vec::new(),
     };
     let result: Result<()> = (|| {
-        no_symlinks(root)?;
-        let marker_path = root.join(".ratatoskr.toml");
-        no_symlinks(&marker_path)?;
-        let marker: Marker = toml::from_str(&fs::read_to_string(marker_path)?)?;
-        let relative_source = relative(&marker.source)?;
-        let source = root.join(relative_source);
-        no_symlinks(&source)?;
-        ensure!(source.is_dir(), "Project skill source is missing");
+        let (marker, source) = project_marker(root)?;
         status.source = Some(source);
         let top = String::from_utf8(git(root, &["rev-parse", "--show-toplevel"])?)?;
         ensure!(
@@ -431,6 +441,12 @@ fn sync_locked(
     desktop: bool,
 ) -> Result<Plan> {
     let mut run = crate::jobs::start(settings)?;
+    // Tray runs own and bound their log handles in `recorded_sync`.
+    let log_rotation = if desktop {
+        Ok(())
+    } else {
+        crate::jobs::rotate_logs(settings)
+    };
     #[cfg(target_os = "macos")]
     let desktop_health = if desktop {
         Ok(())
@@ -476,6 +492,9 @@ fn sync_locked(
         crate::notifications::outcome(settings, sync_error.as_deref())
     };
     let mut errors = Vec::new();
+    if let Err(error) = log_rotation {
+        errors.push(format!("Log rotation failed: {error:#}"));
+    }
     #[cfg(target_os = "macos")]
     if let Err(error) = desktop_health {
         errors.push(format!("Desktop update monitoring failed: {error:#}"));

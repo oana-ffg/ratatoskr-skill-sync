@@ -124,21 +124,54 @@
   );
   $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
+  // These depend on the target, not on the text being typed.
+  let targetDetails:
+    | {
+        key: string;
+        options: ValueOption[];
+        destination: string;
+      }
+    | undefined;
+  async function detailsFor(machine: string, harness: string) {
+    const key = JSON.stringify([skill.name, machine, harness]);
+    if (targetDetails?.key !== key) {
+      targetDetails = {
+        key,
+        options: await api.values(machine, harness),
+        destination: await api.command<string>("preview_install_path", {
+          name: skill.name,
+          project: skill.project,
+          machine,
+          harness,
+        }),
+      };
+    }
+    return targetDetails;
+  }
   const validation = createLivePreview(
-    async (input: {
-      markdown: string;
-      metadata: string;
-      machine: string;
-      harness: string;
-    }) => {
+    async (
+      input: {
+        markdown: string;
+        metadata: string;
+        machine: string;
+        harness: string;
+      },
+      proceed: () => void,
+    ) => {
       const a = await api.analyze(
         skill.name,
         input.markdown,
         input.machine,
         input.harness,
       );
+      proceed();
       const v = await api.view(input.markdown, input.metadata);
-      const options = await api.values(input.machine, input.harness);
+      proceed();
+      const { options, destination } = await detailsFor(
+        input.machine,
+        input.harness,
+      );
+      proceed();
       // Rendering is authoritative. Inactive or excluded drafts deliberately return no files.
       let files: PreviewFile[] = [];
       let alternate: PreviewFile[][] = [];
@@ -169,18 +202,14 @@
       } catch (e) {
         error = errorText(e);
       }
-      const destination = await api.command<string>("preview_install_path", {
-        name: skill.name,
-        project: skill.project,
-        machine: input.machine,
-        harness: input.harness,
-      });
+      proceed();
       const changed = await api.command<number[]>("different_preview_lines", {
         text: files.find((f) => f.path === "SKILL.md")?.body ?? "",
         versions: alternate.map(
           (files) => files.find((f) => f.path === "SKILL.md")?.body ?? "",
         ),
       });
+      proceed();
       const renderedSkill = files.find((f) => f.path === "SKILL.md")?.text;
       const description = renderedSkill
         ? (await api.view(renderedSkill, input.metadata)).description

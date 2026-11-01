@@ -72,9 +72,21 @@ fn settings() -> Reply<Settings> {
     core::load(&config()?).map_err(|e| format!("{e:#}"))
 }
 fn snapshot() -> Reply<Snapshot> {
+    snapshot_with(None)
+}
+/// `current` is a plan the caller just computed, so it is not rendered a second time.
+fn snapshot_with(current: Option<Plan>) -> Reply<Snapshot> {
     let path = config()?;
     let settings = settings()?;
-    let mut plan = core::plan(&settings).unwrap_or_else(|error| Plan {
+    let planned = match current {
+        Some(mut plan) => {
+            // Reviewed Apply compares this plan with its own preflight, which has no counts.
+            plan.applied = None;
+            Ok(plan)
+        }
+        None => core::plan(&settings),
+    };
+    let mut plan = planned.unwrap_or_else(|error| Plan {
         content_status: core::content_status(&settings),
         source: settings.source.clone(),
         machine: settings.machine.clone(),
@@ -135,15 +147,22 @@ fn snapshot() -> Reply<Snapshot> {
         legacy: core::legacy_duplicates(&settings).map_err(|e| format!("{e:#}"))?,
     })
 }
+/// A mutation that ends in an up-to-date plan, which the snapshot reuses.
+fn mutate_with_plan(action: impl FnOnce(&Settings) -> anyhow::Result<Plan>) -> Reply<Snapshot> {
+    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+    let plan = action(&settings()?).map_err(|e| format!("{e:#}"))?;
+    snapshot_with(Some(plan))
+}
 fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapshot> {
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     action(&settings()?).map_err(|e| format!("{e:#}"))?;
     snapshot()
 }
 
-// Source publication includes Git network I/O. Keep the UI thread responsive;
-// MUTATION and the core operation locks are acquired inside the worker.
-async fn source_mutation<T: Send + 'static>(
+// Synchronous Tauri commands run on the main thread, so anything that touches the disk, a
+// process or the network would freeze the window. MUTATION and the core operation locks are
+// acquired inside the worker. `main_thread_commands_stay_trivial` enforces this.
+async fn off_main_thread<T: Send + 'static>(
     action: impl FnOnce() -> Reply<T> + Send + 'static,
 ) -> Reply<T> {
     tauri::async_runtime::spawn_blocking(action)
@@ -152,71 +171,80 @@ async fn source_mutation<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub(crate) fn read_workspace() -> Reply<Option<Snapshot>> {
-    if !config()?.try_exists().map_err(|e| e.to_string())? {
-        return Ok(None);
-    }
-    snapshot().map(Some)
+pub(crate) async fn read_workspace() -> Reply<Option<Snapshot>> {
+    off_main_thread(move || {
+        if !config()?.try_exists().map_err(|e| e.to_string())? {
+            return Ok(None);
+        }
+        snapshot().map(Some)
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn connect_workspace(
+pub(crate) async fn connect_workspace(
     source: String,
     machine: String,
     create: bool,
     remote: Option<String>,
     clone_name: Option<String>,
 ) -> Reply<Snapshot> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    let path = config()?;
-    if create {
-        core::create_content(&path, &PathBuf::from(source), &machine, None)
-    } else if let Some(remote) = remote.filter(|r| !r.trim().is_empty()) {
-        let parent = PathBuf::from(source);
-        let name = clone_name
-            .filter(|n| !n.is_empty())
-            .ok_or("Choose a new checkout folder name")?;
-        let leaf = std::path::Path::new(&name);
-        if leaf.components().count() != 1
-            || !leaf
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-        {
-            return Err("Checkout name must be one folder name".into());
+    off_main_thread(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        let path = config()?;
+        if create {
+            core::create_content(&path, &PathBuf::from(source), &machine, None)
+        } else if let Some(remote) = remote.filter(|r| !r.trim().is_empty()) {
+            let parent = PathBuf::from(source);
+            let name = clone_name
+                .filter(|n| !n.is_empty())
+                .ok_or("Choose a new checkout folder name")?;
+            let leaf = std::path::Path::new(&name);
+            if leaf.components().count() != 1
+                || !leaf
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err("Checkout name must be one folder name".into());
+            }
+            core::clone_content(&path, &remote, &parent.join(leaf), &machine, None)
+        } else {
+            core::initialize(&path, &PathBuf::from(source), &machine, None)
         }
-        core::clone_content(&path, &remote, &parent.join(leaf), &machine, None)
-    } else {
-        core::initialize(&path, &PathBuf::from(source), &machine, None)
-    }
-    .map_err(|e| format!("{e:#}"))?;
-    snapshot()
+        .map_err(|e| format!("{e:#}"))?;
+        snapshot()
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn read_content_status() -> Reply<core::ContentStatus> {
-    Ok(core::content_status(&settings()?))
+pub(crate) async fn read_content_status() -> Reply<core::ContentStatus> {
+    off_main_thread(move || Ok(core::content_status(&settings()?))).await
 }
 
 #[tauri::command]
 pub(crate) async fn push_content() -> Reply<Snapshot> {
-    source_mutation(move || mutate(core::push_content)).await
+    off_main_thread(move || mutate(core::push_content)).await
 }
 
 #[tauri::command]
-pub(crate) fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
-    mutate(|s| core::apply_reviewed(s, &expected_plan).map(|_| ()))
+pub(crate) async fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
+    off_main_thread(move || mutate_with_plan(|s| core::apply_reviewed(s, &expected_plan))).await
 }
 
 #[tauri::command]
-pub(crate) fn read_global_instructions() -> Reply<core::SourceDocument> {
-    core::read_global_instructions(&settings()?).map_err(|e| format!("{e:#}"))
+pub(crate) async fn read_global_instructions() -> Reply<core::SourceDocument> {
+    off_main_thread(move || {
+        core::read_global_instructions(&settings()?).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn save_global_instructions(
     markdown: String,
     expected_hash: String,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -232,42 +260,67 @@ pub(crate) async fn save_global_instructions(
     .await
 }
 #[tauri::command]
-pub(crate) fn analyze_global_instructions(
+pub(crate) async fn analyze_global_instructions(
     markdown: String,
     machine: String,
     harness: String,
 ) -> Reply<core::TemplateAnalysis> {
-    core::analyze_global_instructions(&settings()?, &markdown, &machine, &harness)
-        .map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::analyze_global_instructions(&settings()?, &markdown, &machine, &harness)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn preview_global_instructions(
+pub(crate) async fn preview_global_instructions(
     markdown: String,
     machine: String,
     harness: String,
 ) -> Reply<String> {
-    core::preview_global_instructions(&settings()?, &markdown, &machine, &harness)
-        .map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::preview_global_instructions(&settings()?, &markdown, &machine, &harness)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn preview_global_instructions_path(machine: String, harness: String) -> Reply<PathBuf> {
-    core::preview_global_instructions_path(&settings()?, &machine, &harness)
-        .map_err(|e| format!("{e:#}"))
+pub(crate) async fn preview_global_instructions_path(
+    machine: String,
+    harness: String,
+) -> Reply<PathBuf> {
+    off_main_thread(move || {
+        core::preview_global_instructions_path(&settings()?, &machine, &harness)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn add_monitored_project(root: String, source: String) -> Reply<Snapshot> {
-    mutate(|_| {
-        core::add_project(&core::default_config_path()?, &PathBuf::from(root), &source).map(|_| ())
+pub(crate) async fn add_monitored_project(root: String, source: String) -> Reply<Snapshot> {
+    off_main_thread(move || {
+        mutate(|_| {
+            core::add_project(&core::default_config_path()?, &PathBuf::from(root), &source)
+                .map(|_| ())
+        })
     })
+    .await
 }
 #[tauri::command]
-pub(crate) fn remove_monitored_project(root: String) -> Reply<Snapshot> {
-    mutate(|_| core::remove_project(&core::default_config_path()?, &PathBuf::from(root)))
+pub(crate) async fn remove_monitored_project(root: String) -> Reply<Snapshot> {
+    off_main_thread(move || {
+        mutate(|_| core::remove_project(&core::default_config_path()?, &PathBuf::from(root)))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn read_source_skill(name: String, project: Option<PathBuf>) -> Reply<SkillDocument> {
-    core::read_skill(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
+pub(crate) async fn read_source_skill(
+    name: String,
+    project: Option<PathBuf>,
+) -> Reply<SkillDocument> {
+    off_main_thread(move || {
+        core::read_skill(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn set_skill_enabled(
@@ -275,7 +328,7 @@ pub(crate) async fn set_skill_enabled(
     project: Option<PathBuf>,
     enabled: bool,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -300,7 +353,7 @@ pub(crate) async fn archive_source_skill(
     name: String,
     project: Option<PathBuf>,
 ) -> Reply<ArchivedSkill> {
-    source_mutation(move || {
+    off_main_thread(move || {
         let mut path = PathBuf::new();
         let workspace = mutate(|s| {
             path = core::desktop_source_edit(s, project.as_deref(), Edit::Archive { name: &name })?
@@ -313,7 +366,7 @@ pub(crate) async fn archive_source_skill(
 }
 #[tauri::command]
 pub(crate) async fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(s, None, Edit::RestoreBackup { directory: &backup })
                 .map(|_| ())
@@ -326,35 +379,43 @@ pub(crate) async fn sync_workspace(app: tauri::AppHandle) -> Reply<Snapshot> {
     #[cfg(windows)]
     {
         crate::tray::request_sync(&app);
-        snapshot()
+        off_main_thread(snapshot).await
     }
     #[cfg(not(windows))]
     let _ = app;
     #[cfg(not(windows))]
-    tauri::async_runtime::spawn_blocking(|| mutate(|s| core::sync(s).map(|_| ())))
-        .await
-        .map_err(|e| e.to_string())?
+    off_main_thread(|| mutate_with_plan(core::sync)).await
 }
 #[tauri::command]
-pub(crate) fn preview_schedule(seconds: u32) -> Reply<core::Schedule> {
-    let helper = detected_helper().map_err(|e| format!("{e:#}"))?;
-    core::schedule_plan(&settings()?, &config()?, &helper, seconds).map_err(|e| format!("{e:#}"))
+pub(crate) async fn preview_schedule(seconds: u32) -> Reply<core::Schedule> {
+    off_main_thread(move || {
+        let helper = detected_helper().map_err(|e| format!("{e:#}"))?;
+        core::schedule_plan(&settings()?, &config()?, &helper, seconds)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn enable_schedule(seconds: u32) -> Reply<String> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    let settings = settings()?;
-    let helper = detected_helper().map_err(|e| format!("{e:#}"))?;
-    let plan = core::schedule_plan(&settings, &config()?, &helper, seconds)
-        .map_err(|e| format!("{e:#}"))?;
-    core::install_schedule(&settings, &plan).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("Installed {}", plan.label))
+pub(crate) async fn enable_schedule(seconds: u32) -> Reply<String> {
+    off_main_thread(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        let settings = settings()?;
+        let helper = detected_helper().map_err(|e| format!("{e:#}"))?;
+        let plan = core::schedule_plan(&settings, &config()?, &helper, seconds)
+            .map_err(|e| format!("{e:#}"))?;
+        core::install_schedule(&settings, &plan).map_err(|e| format!("{e:#}"))?;
+        Ok(format!("Installed {}", plan.label))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn disable_schedule() -> Reply<String> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    core::remove_schedule(&settings()?).map_err(|e| format!("{e:#}"))?;
-    Ok("Background schedule removed.".into())
+pub(crate) async fn disable_schedule() -> Reply<String> {
+    off_main_thread(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        core::remove_schedule(&settings()?).map_err(|e| format!("{e:#}"))?;
+        Ok("Background schedule removed.".into())
+    })
+    .await
 }
 
 fn install_desktop_update(
@@ -394,49 +455,58 @@ pub(crate) fn set_desktop_busy(app: tauri::AppHandle, busy: bool) {
     crate::update_scheduler::set_busy(&app, busy);
 }
 #[tauri::command]
-pub(crate) fn background_status(app: tauri::AppHandle) -> Reply<Option<serde_json::Value>> {
-    #[cfg(windows)]
-    {
-        crate::tray::status(&app)
-            .and_then(|s| serde_json::to_value(s).map(Some).map_err(Into::into))
-            .map_err(|e| format!("{e:#}"))
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        Ok(None)
-    }
+pub(crate) async fn background_status(app: tauri::AppHandle) -> Reply<Option<serde_json::Value>> {
+    off_main_thread(move || {
+        #[cfg(windows)]
+        {
+            crate::tray::status(&app)
+                .and_then(|s| serde_json::to_value(s).map(Some).map_err(Into::into))
+                .map_err(|e| format!("{e:#}"))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = app;
+            Ok(None)
+        }
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn set_background_preferences(
+pub(crate) async fn set_background_preferences(
     app: tauri::AppHandle,
     paused: Option<bool>,
     interval_seconds: Option<u32>,
 ) -> Reply<()> {
-    #[cfg(windows)]
-    {
-        crate::tray::set_preferences(&app, paused, interval_seconds)
-            .map_err(|e| format!("{e:#}"))?;
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, paused, interval_seconds);
-        Err("Tray sync is Windows-only".into())
-    }
+    off_main_thread(move || {
+        #[cfg(windows)]
+        {
+            crate::tray::set_preferences(&app, paused, interval_seconds)
+                .map_err(|e| format!("{e:#}"))?;
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (app, paused, interval_seconds);
+            Err("Tray sync is Windows-only".into())
+        }
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn migrate_background(app: tauri::AppHandle) -> Reply<()> {
-    #[cfg(windows)]
-    {
-        crate::tray::request_migration(&app);
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        Err("Tray sync is Windows-only".into())
-    }
+pub(crate) async fn migrate_background(app: tauri::AppHandle) -> Reply<()> {
+    off_main_thread(move || {
+        #[cfg(windows)]
+        {
+            crate::tray::request_migration(&app);
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = app;
+            Err("Tray sync is Windows-only".into())
+        }
+    })
+    .await
 }
 
 fn desktop_updater(
@@ -703,15 +773,18 @@ fn update_context() -> Reply<UpdateContext> {
 }
 
 #[tauri::command]
-pub(crate) fn read_update_settings() -> Reply<UpdateStatus> {
-    let context = update_context()?;
-    let settings = context.settings();
-    Ok(UpdateStatus {
-        endpoint: settings.endpoint().into(),
-        override_active: settings.override_active(),
-        automatic: settings.automatic,
-        time: settings.time.clone(),
+pub(crate) async fn read_update_settings() -> Reply<UpdateStatus> {
+    off_main_thread(move || {
+        let context = update_context()?;
+        let settings = context.settings();
+        Ok(UpdateStatus {
+            endpoint: settings.endpoint().into(),
+            override_active: settings.override_active(),
+            automatic: settings.automatic,
+            time: settings.time.clone(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -751,16 +824,19 @@ pub(crate) fn restart_desktop(app: tauri::AppHandle) -> Reply<()> {
 }
 
 #[tauri::command]
-pub(crate) fn preview_conflict(
+pub(crate) async fn preview_conflict(
     path: PathBuf,
     action: core::ConflictAction,
 ) -> Reply<core::ResolutionPreview> {
-    core::preview_resolution(&settings()?, &path, action).map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::preview_resolution(&settings()?, &path, action).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
 pub(crate) async fn resolve_conflict(expected: String) -> Reply<String> {
-    source_mutation(move || {
+    off_main_thread(move || {
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
         core::desktop_source_edit(
             &settings()?,
@@ -779,8 +855,11 @@ pub(crate) async fn resolve_conflict(expected: String) -> Reply<String> {
 }
 
 #[tauri::command]
-pub(crate) fn preview_agent(target: core::AgentTarget) -> Reply<core::SourceDocument> {
-    core::preview_agent_target(&settings()?, &target).map_err(|e| format!("{e:#}"))
+pub(crate) async fn preview_agent(target: core::AgentTarget) -> Reply<core::SourceDocument> {
+    off_main_thread(move || {
+        core::preview_agent_target(&settings()?, &target).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -809,47 +888,65 @@ pub(crate) async fn preview_skill(
 }
 
 #[tauri::command]
-pub(crate) fn login_enabled(app: tauri::AppHandle) -> Reply<bool> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+pub(crate) async fn login_enabled(app: tauri::AppHandle) -> Reply<bool> {
+    off_main_thread(move || {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn set_login_enabled(app: tauri::AppHandle, enabled: bool) -> Reply<bool> {
-    use tauri_plugin_autostart::ManagerExt;
-    let result = (|| -> Reply<bool> {
-        let manager = app.autolaunch();
-        if enabled {
-            manager.enable()
-        } else {
-            manager.disable()
-        }
-        .map_err(|e| e.to_string())?;
-        manager.is_enabled().map_err(|e| e.to_string())
-    })();
-    #[cfg(windows)]
-    crate::tray::login_outcome(&app, &result).map_err(|e| format!("{e:#}"))?;
-    result
+pub(crate) async fn set_login_enabled(app: tauri::AppHandle, enabled: bool) -> Reply<bool> {
+    off_main_thread(move || {
+        use tauri_plugin_autostart::ManagerExt;
+        let result = (|| -> Reply<bool> {
+            let manager = app.autolaunch();
+            if enabled {
+                manager.enable()
+            } else {
+                manager.disable()
+            }
+            .map_err(|e| e.to_string())?;
+            manager.is_enabled().map_err(|e| e.to_string())
+        })();
+        #[cfg(windows)]
+        crate::tray::login_outcome(&app, &result).map_err(|e| format!("{e:#}"))?;
+        result
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn read_conflict_source(path: PathBuf) -> Reply<core::SourceDocument> {
-    core::read_conflict_source(&settings()?, &path).map_err(|e| format!("{e:#}"))
+pub(crate) async fn read_conflict_source(path: PathBuf) -> Reply<core::SourceDocument> {
+    off_main_thread(move || {
+        core::read_conflict_source(&settings()?, &path).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn preview_source_edit(path: PathBuf, text: String) -> Reply<core::ResolutionPreview> {
-    core::preview_source_edit(&settings()?, &path, &text).map_err(|e| format!("{e:#}"))
+pub(crate) async fn preview_source_edit(
+    path: PathBuf,
+    text: String,
+) -> Reply<core::ResolutionPreview> {
+    off_main_thread(move || {
+        core::preview_source_edit(&settings()?, &path, &text).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn analyze_skill(
+pub(crate) async fn analyze_skill(
     name: String,
     markdown: String,
     machine: String,
     harness: String,
 ) -> Reply<core::TemplateAnalysis> {
-    core::analyze_skill(&settings()?, &name, &markdown, &machine, &harness)
-        .map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::analyze_skill(&settings()?, &name, &markdown, &machine, &harness)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -857,7 +954,7 @@ pub(crate) async fn add_agent_target(
     target: core::AgentTarget,
     expected_hash: String,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -895,7 +992,7 @@ pub(crate) async fn save_skill_draft(
     markdown_hash: String,
     metadata_hash: String,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -914,8 +1011,11 @@ pub(crate) async fn save_skill_draft(
     .await
 }
 #[tauri::command]
-pub(crate) fn read_structured_source(file: String) -> Reply<core::StructuredSource> {
-    core::structured_source(&settings()?, &file).map_err(|e| format!("{e:#}"))
+pub(crate) async fn read_structured_source(file: String) -> Reply<core::StructuredSource> {
+    off_main_thread(move || {
+        core::structured_source(&settings()?, &file).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn save_structured_source(
@@ -923,7 +1023,7 @@ pub(crate) async fn save_structured_source(
     hash: String,
     values: toml::Table,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -940,15 +1040,21 @@ pub(crate) async fn save_structured_source(
     .await
 }
 #[tauri::command]
-pub(crate) fn list_values(machine: String, harness: String) -> Reply<Vec<core::ValueOption>> {
-    core::value_options(&settings()?, &machine, &harness).map_err(|e| format!("{e:#}"))
+pub(crate) async fn list_values(machine: String, harness: String) -> Reply<Vec<core::ValueOption>> {
+    off_main_thread(move || {
+        core::value_options(&settings()?, &machine, &harness).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn list_skill_resources(
+pub(crate) async fn list_skill_resources(
     name: String,
     project: Option<PathBuf>,
 ) -> Reply<Vec<core::Resource>> {
-    core::skill_resources(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::skill_resources(&settings()?, project.as_deref(), &name).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn add_skill_resource(
@@ -957,7 +1063,7 @@ pub(crate) async fn add_skill_resource(
     file: String,
     from: PathBuf,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -980,7 +1086,7 @@ pub(crate) async fn rename_source_skill(
     new_name: String,
     expected_hash: String,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -1021,40 +1127,61 @@ pub(crate) async fn choose_resource(app: tauri::AppHandle) -> Reply<Option<Strin
     .map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub(crate) fn read_local_settings() -> Reply<core::LocalConfiguration> {
-    core::local_configuration(&config()?).map_err(|e| format!("{e:#}"))
+pub(crate) async fn read_local_settings() -> Reply<core::LocalConfiguration> {
+    off_main_thread(move || core::local_configuration(&config()?).map_err(|e| format!("{e:#}")))
+        .await
 }
 #[tauri::command]
-pub(crate) fn save_local_settings(candidate: Settings, expected_hash: String) -> Reply<Snapshot> {
-    mutate(|_| {
-        core::save_local_configuration(&core::default_config_path()?, &candidate, &expected_hash)
+pub(crate) async fn save_local_settings(
+    candidate: Settings,
+    expected_hash: String,
+) -> Reply<Snapshot> {
+    off_main_thread(move || {
+        mutate(|_| {
+            core::save_local_configuration(
+                &core::default_config_path()?,
+                &candidate,
+                &expected_hash,
+            )
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn preview_legacy_resolution(name: String) -> Reply<core::LegacyResolution> {
-    core::preview_legacy_resolution(&settings()?, &name).map_err(|e| format!("{e:#}"))
+pub(crate) async fn preview_legacy_resolution(name: String) -> Reply<core::LegacyResolution> {
+    off_main_thread(move || {
+        core::preview_legacy_resolution(&settings()?, &name).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn resolve_legacy(expected: String) -> Reply<PathBuf> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    core::resolve_legacy(&settings()?, &expected).map_err(|e| format!("{e:#}"))
+pub(crate) async fn resolve_legacy(expected: String) -> Reply<PathBuf> {
+    off_main_thread(move || {
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        core::resolve_legacy(&settings()?, &expected).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
-pub(crate) fn skill_target_statuses()
+pub(crate) async fn skill_target_statuses()
 -> Reply<std::collections::BTreeMap<String, std::collections::BTreeMap<String, bool>>> {
-    core::skill_target_statuses(&settings()?).map_err(|e| format!("{e:#}"))
+    off_main_thread(move || core::skill_target_statuses(&settings()?).map_err(|e| format!("{e:#}")))
+        .await
 }
 
 #[tauri::command]
-pub(crate) fn preview_install_path(
+pub(crate) async fn preview_install_path(
     name: String,
     project: Option<PathBuf>,
     machine: String,
     harness: String,
 ) -> Reply<PathBuf> {
-    core::preview_install_path(&settings()?, project.as_deref(), &name, &machine, &harness)
-        .map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::preview_install_path(&settings()?, project.as_deref(), &name, &machine, &harness)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn create_desktop_skill(
@@ -1062,7 +1189,7 @@ pub(crate) async fn create_desktop_skill(
     project: Option<PathBuf>,
     description: String,
 ) -> Reply<Snapshot> {
-    source_mutation(move || {
+    off_main_thread(move || {
         mutate(|s| {
             core::desktop_source_edit(
                 s,
@@ -1118,23 +1245,75 @@ pub(crate) async fn choose_project_source(
 }
 
 #[tauri::command]
-pub(crate) fn keep_legacy(expected: String) -> Reply<Snapshot> {
-    mutate(|s| core::keep_legacy(s, &expected))
+pub(crate) async fn keep_legacy(expected: String) -> Reply<Snapshot> {
+    off_main_thread(move || mutate(|s| core::keep_legacy(s, &expected))).await
 }
 
 #[tauri::command]
-pub(crate) fn preview_stale_target(
+pub(crate) async fn preview_stale_target(
     path: PathBuf,
     action: core::StaleAction,
 ) -> Reply<core::StalePreview> {
-    core::preview_stale_target(&settings()?, &path, action).map_err(|e| format!("{e:#}"))
+    off_main_thread(move || {
+        core::preview_stale_target(&settings()?, &path, action).map_err(|e| format!("{e:#}"))
+    })
+    .await
 }
 
 #[tauri::command]
 pub(crate) async fn resolve_stale_target(expected: String) -> Reply<Option<PathBuf>> {
-    source_mutation(move || {
+    off_main_thread(move || {
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
         core::resolve_stale_target(&settings()?, &expected).map_err(|e| format!("{e:#}"))
     })
     .await
+}
+
+#[cfg(test)]
+mod main_thread_tests {
+    /// Each of these only touches memory or asks Tauri to do something quick. A new command
+    /// that touches the disk, a process or the network belongs in `off_main_thread`.
+    const ALLOWED_ON_MAIN_THREAD: &[&str] = &[
+        "runtime_platform",
+        "set_app_error_listener",
+        "set_desktop_busy",
+        "restart_desktop",
+        "editor_view",
+        "edit_skill_draft",
+        "different_preview_lines",
+    ];
+
+    #[test]
+    fn main_thread_commands_stay_trivial() {
+        let source = include_str!("commands.rs");
+        let mut synchronous = Vec::new();
+        for command in source.split("#[tauri::command]\n").skip(1) {
+            let signature = command
+                .lines()
+                .find(|line| line.contains(" fn "))
+                .expect("a Tauri command has a signature");
+            if !signature.contains("async fn") {
+                let name = signature
+                    .split(" fn ")
+                    .nth(1)
+                    .and_then(|rest| rest.split(['(', '<']).next())
+                    .expect("a Tauri command has a name");
+                synchronous.push(name);
+            }
+        }
+        let unexpected: Vec<_> = synchronous
+            .iter()
+            .filter(|name| !ALLOWED_ON_MAIN_THREAD.contains(name))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "These commands would block the window; move them off the main thread: {unexpected:?}"
+        );
+        assert!(
+            ALLOWED_ON_MAIN_THREAD
+                .iter()
+                .all(|name| synchronous.contains(name)),
+            "Remove stale entries from ALLOWED_ON_MAIN_THREAD: {synchronous:?}"
+        );
+    }
 }

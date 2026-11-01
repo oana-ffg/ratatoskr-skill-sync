@@ -1,4 +1,4 @@
-use super::{Output, RenderScope, render_scope_inner};
+use super::{Output, RenderScope, ValidationFocus, render_scope_inner};
 use crate::config::no_symlinks;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -111,6 +111,24 @@ impl RenderDiagnostics {
 /// Render every source profile without configuration, Git, temporary files or output I/O.
 /// Destination ownership and host-specific live-home checks belong to `plan`/`apply`.
 pub fn validate_source(source: &Path) -> Result<ValidationReport> {
+    validate_scope(source, None, None)
+}
+
+/// Checks only what one edit can break, on every profile. `content` is the source holding the
+/// edited skill, which is a project's own folder for a project skill.
+pub(crate) fn validate_focus(
+    source: &Path,
+    content: &Path,
+    focus: ValidationFocus<'_>,
+) -> Result<ValidationReport> {
+    validate_scope(source, Some(content), Some(focus))
+}
+
+fn validate_scope(
+    source: &Path,
+    content: Option<&Path>,
+    focus: Option<ValidationFocus<'_>>,
+) -> Result<ValidationReport> {
     let source = std::path::absolute(source)?;
     no_symlinks(&source)?;
     ensure!(
@@ -119,6 +137,10 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
         source.display()
     );
     let source = source.canonicalize()?;
+    let content = match content {
+        Some(content) => content.canonicalize()?,
+        None => source.clone(),
+    };
     let machines = source.join("machines");
     no_symlinks(&machines)?;
     let mut profiles = fs::read_dir(&machines)
@@ -144,9 +166,10 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
             &RenderScope {
                 source: &source,
                 machine: &machine,
-                content: &source,
+                content: &content,
                 project: None,
                 output: Output::Validation,
+                focus,
             },
             &mut diagnostics,
         );
@@ -158,7 +181,8 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
         });
         for ((path, message), contexts) in diagnostics.problems {
             let path = path
-                .strip_prefix(&source)?
+                .strip_prefix(&content)
+                .or_else(|_| path.strip_prefix(&source))?
                 .components()
                 .map(|component| component.as_os_str().to_string_lossy())
                 .collect::<Vec<_>>()
@@ -169,7 +193,16 @@ pub fn validate_source(source: &Path) -> Result<ValidationReport> {
                 .extend(contexts);
         }
     }
-    let scan = selector_vocabulary_problems(&source, &summaries);
+    // The library-wide selector scan belongs to full validation. Rendering the edited
+    // skill or file on every profile already reports what this edit can break.
+    let scan = if focus.is_none() {
+        selector_vocabulary_problems(&source, &summaries)
+    } else {
+        SelectorScan {
+            warnings: vec![],
+            inspections: vec![],
+        }
+    };
     let profile_contexts: Vec<ValidationContext> = summaries
         .iter()
         .map(|profile| ValidationContext {

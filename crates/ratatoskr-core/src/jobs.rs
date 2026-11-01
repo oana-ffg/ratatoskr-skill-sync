@@ -75,6 +75,24 @@ pub(crate) fn finish(settings: &Settings, mut run: JobRun, error: Option<&str>) 
     atomic_write(&path, &serde_json::to_vec(&history)?)
 }
 
+/// launchd appends every run's output to these logs and never trims them.
+const LOG_ROTATE_BYTES: u64 = 1024 * 1024;
+
+/// Keeps one previous log per file, so each log is bounded at twice the limit. Renaming is safe
+/// while launchd holds this run's descriptor: the next run opens a new file at the same path.
+pub(crate) fn rotate_logs(settings: &Settings) -> Result<()> {
+    let state = settings.state_dir.join(&settings.machine);
+    for filename in ["sync.stdout.log", "sync.stderr.log"] {
+        let path = state.join(filename);
+        no_symlinks(&path)?;
+        if path.try_exists()? && fs::metadata(&path)?.len() >= LOG_ROTATE_BYTES {
+            fs::rename(&path, state.join(format!("{filename}.1")))
+                .with_context(|| format!("Rotate {filename}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn read_tail(path: &Path) -> Result<String> {
     no_symlinks(path)?;
     if !path.try_exists()? {
@@ -177,4 +195,38 @@ pub fn detect_helper(executable: &Path, search_path: Option<&std::ffi::OsStr>) -
     anyhow::bail!(
         "No bundled or standalone ratatoskr helper found. Install the CLI or use a packaged desktop build."
     )
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn logs_rotate_at_the_limit_and_keep_one_previous_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let state = settings.state_dir.join("test");
+        fs::create_dir_all(&state).unwrap();
+        // Absent logs are fine, because a desktop-only install never creates them.
+        rotate_logs(&settings).unwrap();
+        let log = state.join("sync.stdout.log");
+        fs::write(&log, "small").unwrap();
+        rotate_logs(&settings).unwrap();
+        assert_eq!(fs::read_to_string(&log).unwrap(), "small");
+        let limit = usize::try_from(LOG_ROTATE_BYTES).unwrap();
+        fs::write(&log, vec![b'a'; limit]).unwrap();
+        rotate_logs(&settings).unwrap();
+        assert!(!log.exists());
+        assert_eq!(
+            fs::metadata(state.join("sync.stdout.log.1")).unwrap().len(),
+            LOG_ROTATE_BYTES
+        );
+        fs::write(&log, vec![b'b'; limit]).unwrap();
+        rotate_logs(&settings).unwrap();
+        assert_eq!(fs::read(state.join("sync.stdout.log.1")).unwrap()[0], b'b');
+    }
 }

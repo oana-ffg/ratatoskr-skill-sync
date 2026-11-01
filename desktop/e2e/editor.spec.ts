@@ -338,3 +338,39 @@ test("the Find button and shortcut search the skill body", async ({ page }) => {
   await field.pressSequentially(word);
   await expect(page.locator(".cm-searchMatch").first()).toBeVisible();
 });
+
+test("typing a sentence over a slow backend keeps backend work bounded", async ({
+  page,
+}) => {
+  const backend = editorFixture();
+  const sentence = "Typing this sentence must not stack up preview work.";
+  let running = 0;
+  let mostAtOnce = 0;
+  let previews = 0;
+  let details = 0;
+  await installFixture(page, async (cmd, args) => {
+    if (cmd === "list_values" || cmd === "preview_install_path") details++;
+    if (cmd !== "preview_skill") return backend.invoke(cmd, args);
+    previews++;
+    running++;
+    mostAtOnce = Math.max(mostAtOnce, running);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    running--;
+    return backend.invoke(cmd, args);
+  });
+  await openEditor(page);
+  const previewsBefore = previews;
+  const detailsBefore = details;
+  const editor = page.getByRole("textbox", { name: "Skill Markdown editor" });
+  await editor.click();
+  await editor.press("ControlOrMeta+End");
+  // Slower than the debounce, so each key used to start another full load.
+  await page.keyboard.type(sentence, { delay: 200 });
+  await expect(page.locator(".status-pill")).toHaveText("✓ Valid");
+  // Each run previews the selected agent plus the other enabled agents in parallel.
+  const targets = 2;
+  expect(mostAtOnce).toBeLessThanOrEqual(targets);
+  // Far below one run per key: a run takes 300ms, and there were 52 keys over 10 seconds.
+  expect(previews - previewsBefore).toBeLessThanOrEqual(30 * targets);
+  expect(details - detailsBefore, "target details do not change with the text").toBe(0);
+});

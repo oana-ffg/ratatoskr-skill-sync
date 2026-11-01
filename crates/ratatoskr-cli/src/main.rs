@@ -798,7 +798,9 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("Ratatoskr: {error:#}");
+            // The background log has no other way to say when a failure happened.
+            let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z");
+            eprintln!("{time} Ratatoskr: {error:#}");
             std::process::exit(2);
         }
     }
