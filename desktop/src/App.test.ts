@@ -314,6 +314,7 @@ test("creating a skill opens it in the editor without an unsaved-changes prompt"
     name: "recordings",
     project: null,
     description: "A freshly created skill.",
+    onProgress: expect.anything(),
   });
   expect(
     screen.queryByRole("dialog", { name: "You have unsaved changes" }),

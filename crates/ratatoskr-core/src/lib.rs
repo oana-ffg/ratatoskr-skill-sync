@@ -2,7 +2,9 @@
 pub(crate) const SUPPORTED_OS: [&str; 3] = ["linux", "macos", "windows"];
 
 mod desktop_source;
-pub use desktop_source::{DesktopSourceEdit, desktop_source_edit};
+pub use desktop_source::{
+    DesktopSourceEdit, SourceEditStage, desktop_source_edit, desktop_source_edit_with_progress,
+};
 mod legacy;
 pub use legacy::*;
 mod editor;
@@ -48,7 +50,7 @@ pub use engine::{
 };
 pub use git::{
     ContentStatus, ProjectStatus, add_project, content_status, project_status, push_content,
-    remove_project, sync,
+    push_content_with_progress, remove_project, sync,
 };
 pub use jobs::{JobRun, JobStatus, detect_helper, job_log, job_status};
 pub use presets::{

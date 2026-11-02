@@ -13,6 +13,7 @@
     type ContentStatus,
     type Skill,
   } from "./api";
+  import { watchMutationProgress } from "./mutation-progress";
   import { watchWindow } from "./window-refresh";
   import { runStartupUpdate } from "./update-policy";
   import { listen } from "@tauri-apps/api/event";
@@ -53,6 +54,17 @@
   let unsaved = $state(false);
   let epoch = $state(0);
   let busy = $state(false);
+  let saving = $state(false);
+  let progress = $state<{ text: string; started: number } | null>(null);
+  let stageSeconds = $state(0);
+  $effect(() => {
+    const stage = progress;
+    if (!stage) return;
+    const timer = setInterval(() => {
+      stageSeconds = Math.floor((Date.now() - stage.started) / 1000);
+    }, 1000);
+    return () => clearInterval(timer);
+  });
   let error = $state("");
   setContext("ratatoskr-errors", { message: () => error });
   let pending = $state<(() => void) | null>(null);
@@ -188,6 +200,7 @@
   }
   async function save() {
     busy = true;
+    saving = true;
     error = "";
     try {
       if (skill) await editor?.save();
@@ -197,6 +210,7 @@
     } catch (e) {
       fail(e);
     } finally {
+      saving = false;
       busy = false;
     }
   }
@@ -224,6 +238,10 @@
         }
       },
     ).catch(fail);
+    const stopProgress = watchMutationProgress((text) => {
+      progress = text === null ? null : { text, started: Date.now() };
+      stageSeconds = 0;
+    });
     let stopAppErrors: (() => void) | undefined;
     const ageTimer = setInterval(() => (now = Date.now()), 10_000);
     const stopRefresh = watchWindow(
@@ -284,6 +302,7 @@
     return () => {
       disposed = true;
       clearInterval(ageTimer);
+      stopProgress();
       stopRefresh();
       stopAppErrors?.();
       cleanup?.();
@@ -387,13 +406,26 @@
         >{#if skill}<span>›</span><strong>{skill.name}</strong>{/if}
       </div>
       <div class="top-actions">
-        {#if unsaved && (skill || screen === "Global instructions" || screen === "Agents & machines" || screen === "Settings")}<span
-            class="unsaved-indicator">Unsaved changes</span
-          ><button disabled={busy} onclick={discard}>Discard</button><button
-            class="primary"
-            disabled={busy}
-            onclick={save}>{busy ? "Saving…" : "Save"}</button
-          >{/if}
+        <div class="save-buttons">
+          {#if (unsaved || saving) && (skill || screen === "Global instructions" || screen === "Agents & machines" || screen === "Settings")}
+            <span class="unsaved-indicator">Unsaved changes</span>
+            <button disabled={busy} onclick={discard}>Discard</button>
+            <button class="primary" disabled={busy} onclick={save}
+              >{busy ? "Saving…" : "Save"}</button
+            >
+          {/if}
+        </div>
+        <p
+          class="save-progress"
+          role="status"
+          aria-label="Save progress"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {progress
+            ? `${progress.text}${stageSeconds >= 3 ? ` ${stageSeconds}s` : ""}`
+            : ""}
+        </p>
       </div>
     </header>
     {#if workspace && contentNeedsAttention}
