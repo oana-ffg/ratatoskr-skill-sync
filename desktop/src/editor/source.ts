@@ -39,7 +39,14 @@ export class SourceText {
 const initialSource = Facet.define<string, string>({
   combine: (values) => values.at(-1) ?? "",
 });
-export const setSource = StateEffect.define<string>();
+/**
+ * Replaces the exact source. A snapshot only fits the document it was taken from, so it does not
+ * survive being mapped through a change. When history joins a burst of typing into one undo step
+ * that keeps only the oldest snapshot, the one matching the document that undo restores.
+ */
+export const setSource = StateEffect.define<string>({
+  map: (source, changes) => (changes.empty ? source : undefined),
+});
 export const sourceField = StateField.define<SourceText>({
   create: (state) => new SourceText(state.facet(initialSource)),
   update(value, tr) {
@@ -61,6 +68,25 @@ export const sourceField = StateField.define<SourceText>({
     return new SourceText(source);
   },
 });
+/** The smallest single replacement turning `current` into `next`, so the rest of the document,
+ * and the caret and scroll position anchored in it, stay put.
+ */
+export function minimalChange(current: string, next: string) {
+  const limit = Math.min(current.length, next.length);
+  let start = 0;
+  while (start < limit && current[start] === next[start]) start++;
+  let end = 0;
+  while (
+    end < limit - start &&
+    current[current.length - 1 - end] === next[next.length - 1 - end]
+  )
+    end++;
+  return {
+    from: start,
+    to: current.length - end,
+    insert: next.slice(start, next.length - end),
+  };
+}
 export function sourceExtension(source: string) {
   return [
     initialSource.of(source),

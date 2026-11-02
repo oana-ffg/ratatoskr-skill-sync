@@ -1,6 +1,6 @@
 import { render, waitFor } from "@testing-library/svelte";
 import { test, expect, vi } from "vitest";
-import { EditorView } from "@codemirror/view";
+import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { undo } from "@codemirror/commands";
 import MarkdownEditor from "./MarkdownEditor.svelte";
 import { fixture, oracle } from "../../tests/fixture";
@@ -105,4 +105,81 @@ test("realistic multi-paragraph skill hides whole frontmatter blocks and enables
   );
   expect(view.state.field(sourceField).source).toBe(document.markdown);
   expect(changed).not.toHaveBeenCalled();
+});
+
+function typeBurst(view: EditorView, position: number, text: string) {
+  for (const [index, char] of [...text].entries())
+    view.dispatch({
+      changes: { from: position + index, insert: char },
+      selection: { anchor: position + index + 1 },
+      userEvent: "input.type",
+    });
+}
+
+function mountSource(value: string) {
+  const changed = vi.fn();
+  const rendered = render(MarkdownEditor, {
+    label: "Editor",
+    value,
+    analysis: { blocks: [], variables: [], diagnostics: [] },
+    frontmatter: null,
+    onchange: changed,
+    onselection: vi.fn(),
+    onblock: vi.fn(),
+  });
+  const view = EditorView.findFromDOM(
+    rendered.container.querySelector(".cm-editor") as HTMLElement,
+  )!;
+  return { ...rendered, view, changed };
+}
+
+test("undoing a burst of typing restores the exact source, line endings included", () => {
+  const original = "first\r\nsecond\nthird\r\n";
+  const { view, changed } = mountSource(original);
+  typeBurst(view, 5, "abc");
+  expect(view.state.field(sourceField).source).toBe(
+    "firstabc\r\nsecond\nthird\r\n",
+  );
+  undo(view);
+  expect(view.state.doc.toString()).toBe("first\nsecond\nthird\n");
+  expect(view.state.field(sourceField).source).toBe(original);
+  expect(changed).toHaveBeenLastCalledWith(original);
+  view.dispatch({ changes: { from: 0, insert: "!" }, userEvent: "input.type" });
+  expect(view.state.field(sourceField).source).toBe(`!${original}`);
+});
+
+test("Shift+Mod+Z redoes on every platform", () => {
+  const mac = /Mac/.test(navigator.platform);
+  const { view } = mountSource("text");
+  typeBurst(view, 4, "!");
+  undo(view);
+  expect(
+    runScopeHandlers(
+      view,
+      new KeyboardEvent("keydown", {
+        key: "Z",
+        keyCode: 90,
+        shiftKey: true,
+        ctrlKey: !mac,
+        metaKey: mac,
+      }),
+      "editor",
+    ),
+  ).toBe(true);
+  expect(view.state.doc.toString()).toBe("text!");
+});
+
+test("a reload from outside ends the undo history instead of replaying it on the new text", async () => {
+  const { view, rerender } = mountSource("Deleted at the end.");
+  view.dispatch({
+    changes: { from: 18, to: 19 },
+    userEvent: "delete.backward",
+  });
+  await rerender({ value: "A different file." });
+  await waitFor(() =>
+    expect(view.state.field(sourceField).source).toBe("A different file."),
+  );
+  undo(view);
+  expect(view.state.doc.toString()).toBe("A different file.");
+  expect(view.state.field(sourceField).source).toBe("A different file.");
 });
