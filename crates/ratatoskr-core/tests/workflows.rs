@@ -4168,7 +4168,7 @@ fn stale_harness_groups_global_and_project_targets_in_one_decision() {
     assert!(plan(&f.settings).unwrap().conflicts.is_empty());
 }
 
-/// Git rejects the verbatim `\\\\?\\` paths that `canonicalize` returns on Windows.
+/// Git rejects the verbatim `\\?\` paths that `canonicalize` returns on Windows.
 fn git_path(path: &Path) -> String {
     dunce::simplified(path).to_string_lossy().replace('\\', "/")
 }
