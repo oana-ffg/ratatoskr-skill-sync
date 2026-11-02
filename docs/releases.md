@@ -1,5 +1,14 @@
 # Releases and signed updates
 
+## v0.2.20 release notes
+
+- **The desktop is much faster and no longer freezes during slow work.** Every command that touches the disk, a process or the network now runs off the main thread, including Apply. Editing no longer copies the library to disk: live preview renders only the skill being edited, from memory, and only one preview runs at a time instead of stacking up. Measured on a real library: one preview went from 850 ms and 0.9 MB written to 0.5 ms and nothing written, 64 previews at once from 35.8 s to 6 ms, the Library's skill statuses from 2.3 s to 8 ms, `plan` from 725 ms and 25 Git processes to 136 ms and 12, and the local part of Save from 890 ms to 7 ms.
+- **Save, Apply and Sync now say what they are doing.** A line below Save shows the step actually running: getting the latest content, checking and saving, committing, pushing to the named remote and branch, and refreshing. Each step shows elapsed seconds after three seconds, so a slow network doesn't look frozen. **Push now**, Apply and other source edits use the same line, as does **Sync now** on macOS. Save still waits for the push, so a finished Save means the content is published. The top bar is 16 px taller to make room for this line.
+- **Saving checks what you changed.** A broken unrelated skill no longer blocks previewing or saving another skill. An existing problem in the skill you are editing no longer blocks a partial fix, while new problems are still refused. Enabling a skill refuses new problems on any machine, not only this one.
+- **Project skills can be read and saved while the project's Git checkout is unhealthy.** `plan` and `apply` still refuse a broken project.
+- **Background sync stops rewriting files when nothing changed.** The manifest and alert ledger are written only on a change, and launchd logs rotate at 1 MiB. Job logs load only when you open them in Activity instead of with every workspace refresh. Log lines from background runs are now timestamped.
+- **Returning to the window reuses data less than 15 seconds old**, so a change made elsewhere can take up to a minute to appear.
+
 ## v0.2.19 release notes
 
 - **Project skill work no longer alerts on every save.** Background sync used to fail and alert as soon as a registered project had uncommitted or unpushed skill work. The alert included file counts, so each additional edited file sent a new notification. Sync now succeeds until work has been pending for over an hour. This also applies to projects without an upstream branch, and is tracked separately for each skill, other project skill source files, unpushed commits and a missing upstream branch. The alert then names those items without counts, so continued editing does not repeat it. Project inspection errors still alert immediately. After upgrading, expect one recovery notification if the previous alert was still current.
