@@ -1,3 +1,4 @@
+use crate::SourceEditStage;
 use crate::{
     Plan, Settings, apply,
     config::{atomic_write, no_symlinks, relative},
@@ -157,8 +158,9 @@ fn commit_count(settings: &Settings, range: &str) -> Result<usize> {
 }
 
 // Caller holds sync.lock then apply.lock throughout freshness, write and publication.
-fn prepare_source_edit(settings: &Settings) -> Result<String> {
+fn prepare_source_edit(settings: &Settings, progress: &dyn Fn(SourceEditStage)) -> Result<String> {
     let remote = validate_deploy_branch(settings)?;
+    progress(SourceEditStage::Fetching);
     git(&settings.source, &["fetch", "--", &remote])
         .context("Fetch content before saving; source was not written")?;
     let clean = git(
@@ -221,9 +223,11 @@ pub(crate) fn publish_source_edit<T>(
     settings: &Settings,
     scopes: &[PathBuf],
     message: &str,
+    progress: &dyn Fn(SourceEditStage),
     write: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
-    let remote = prepare_source_edit(settings)?;
+    let remote = prepare_source_edit(settings, progress)?;
+    progress(SourceEditStage::Writing);
     let before = source_fingerprints(scopes)?;
     let result = write()?;
     let after = source_fingerprints(scopes)
@@ -250,6 +254,7 @@ pub(crate) fn publish_source_edit<T>(
             )?
             .is_empty()
             {
+                progress(SourceEditStage::Committing);
                 git_paths(
                     &settings.source,
                     &["commit", "--only", "-m", message],
@@ -260,11 +265,20 @@ pub(crate) fn publish_source_edit<T>(
         })();
         commit.context("Source saved in place but Git commit failed; NOT pushed")?;
     }
-    push_to_upstream(settings, &remote).context("saved and committed locally but NOT pushed")?;
+    push_to_upstream(settings, &remote, progress)
+        .context("saved and committed locally but NOT pushed")?;
     Ok(result)
 }
 
-fn push_to_upstream(settings: &Settings, remote: &str) -> Result<()> {
+fn push_to_upstream(
+    settings: &Settings,
+    remote: &str,
+    progress: &dyn Fn(SourceEditStage),
+) -> Result<()> {
+    progress(SourceEditStage::Pushing {
+        remote: remote.into(),
+        branch: settings.deploy_branch.clone(),
+    });
     // Explicit refspec ignores push.default and remote.*.push customizations.
     git(
         &settings.source,
@@ -279,11 +293,20 @@ fn push_to_upstream(settings: &Settings, remote: &str) -> Result<()> {
 }
 
 pub fn push_content(settings: &Settings) -> Result<()> {
+    push_content_with_progress(settings, &|_| {})
+}
+
+/// Push existing commits, reporting the destination immediately before Git runs.
+pub fn push_content_with_progress(
+    settings: &Settings,
+    progress: &dyn Fn(SourceEditStage),
+) -> Result<()> {
     settings.validate()?;
     let _sync = crate::config::operation_lock(settings, "sync.lock")?;
     let _apply = crate::config::operation_lock(settings, "apply.lock")?;
     let remote = validate_deploy_branch(settings)?;
-    push_to_upstream(settings, &remote).context("saved and committed locally but NOT pushed")
+    push_to_upstream(settings, &remote, progress)
+        .context("saved and committed locally but NOT pushed")
 }
 
 #[derive(Deserialize, Serialize)]

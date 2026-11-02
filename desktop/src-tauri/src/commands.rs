@@ -11,6 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use tauri::ipc::Channel;
 use tauri_plugin_updater::UpdaterExt;
 
 static MUTATION: Mutex<()> = Mutex::new(());
@@ -147,15 +148,60 @@ fn snapshot_with(current: Option<Plan>) -> Reply<Snapshot> {
         legacy: core::legacy_duplicates(&settings).map_err(|e| format!("{e:#}"))?,
     })
 }
+// A channel belongs to one invocation, so a finished command retains no sender.
+// Progress is advisory: a closed window must never interrupt publication.
+struct MutationProgress(Option<Channel<String>>);
+
+impl MutationProgress {
+    fn send(&self, message: String) {
+        if let Some(channel) = &self.0
+            && let Err(error) = channel.send(message)
+        {
+            eprintln!("Ratatoskr: cannot show save progress: {error:#}");
+        }
+    }
+
+    fn stage(&self, stage: core::SourceEditStage) {
+        self.send(match stage {
+            core::SourceEditStage::Fetching => "Getting the latest content…".into(),
+            core::SourceEditStage::Writing => "Checking and saving your changes…".into(),
+            core::SourceEditStage::Committing => "Committing…".into(),
+            core::SourceEditStage::Pushing { remote, branch } => {
+                format!("Pushing to {remote}/{branch}…")
+            }
+        });
+    }
+
+    fn edit(
+        &self,
+        settings: &Settings,
+        project: Option<&std::path::Path>,
+        edit: Edit<'_>,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        core::desktop_source_edit_with_progress(settings, project, edit, &|stage| self.stage(stage))
+    }
+}
+
 /// A mutation that ends in an up-to-date plan, which the snapshot reuses.
-fn mutate_with_plan(action: impl FnOnce(&Settings) -> anyhow::Result<Plan>) -> Reply<Snapshot> {
+fn mutate_with_plan(
+    progress: &MutationProgress,
+    action: impl FnOnce(&Settings) -> anyhow::Result<Plan>,
+) -> Reply<Snapshot> {
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     let plan = action(&settings()?).map_err(|e| format!("{e:#}"))?;
+    progress.send("Refreshing…".into());
     snapshot_with(Some(plan))
 }
 fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapshot> {
+    mutate_with_progress(&MutationProgress(None), action)
+}
+fn mutate_with_progress(
+    progress: &MutationProgress,
+    action: impl FnOnce(&Settings) -> anyhow::Result<()>,
+) -> Reply<Snapshot> {
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     action(&settings()?).map_err(|e| format!("{e:#}"))?;
+    progress.send("Refreshing…".into());
     snapshot()
 }
 
@@ -227,13 +273,29 @@ pub(crate) async fn read_content_status() -> Reply<core::ContentStatus> {
 }
 
 #[tauri::command]
-pub(crate) async fn push_content() -> Reply<Snapshot> {
-    off_main_thread(move || mutate(core::push_content)).await
+pub(crate) async fn push_content(on_progress: Channel<String>) -> Reply<Snapshot> {
+    off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            core::push_content_with_progress(s, &|stage| progress.stage(stage))
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) async fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
-    off_main_thread(move || mutate_with_plan(|s| core::apply_reviewed(s, &expected_plan))).await
+pub(crate) async fn apply_workspace(
+    on_progress: Channel<String>,
+    expected_plan: String,
+) -> Reply<Snapshot> {
+    off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_plan(&progress, |s| {
+            progress.send("Applying changes…".into());
+            core::apply_reviewed(s, &expected_plan)
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -245,20 +307,23 @@ pub(crate) async fn read_global_instructions() -> Reply<core::SourceDocument> {
 }
 #[tauri::command]
 pub(crate) async fn save_global_instructions(
+    on_progress: Channel<String>,
     markdown: String,
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                None,
-                Edit::GlobalInstructions {
-                    markdown: &markdown,
-                    expected_hash: &expected_hash,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    None,
+                    Edit::GlobalInstructions {
+                        markdown: &markdown,
+                        expected_hash: &expected_hash,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -328,21 +393,24 @@ pub(crate) async fn read_source_skill(
 }
 #[tauri::command]
 pub(crate) async fn set_skill_enabled(
+    on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
     enabled: bool,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                project.as_deref(),
-                Edit::SetEnabled {
-                    name: &name,
-                    enabled,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    project.as_deref(),
+                    Edit::SetEnabled {
+                        name: &name,
+                        enabled,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -354,13 +422,16 @@ pub(crate) struct ArchivedSkill {
 }
 #[tauri::command]
 pub(crate) async fn archive_source_skill(
+    on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
 ) -> Reply<ArchivedSkill> {
     off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
         let mut path = PathBuf::new();
-        let workspace = mutate(|s| {
-            path = core::desktop_source_edit(s, project.as_deref(), Edit::Archive { name: &name })?
+        let workspace = mutate_with_progress(&progress, |s| {
+            path = progress
+                .edit(s, project.as_deref(), Edit::Archive { name: &name })?
                 .ok_or_else(|| anyhow::anyhow!("Archive returned no path"))?;
             Ok(())
         })?;
@@ -369,26 +440,42 @@ pub(crate) async fn archive_source_skill(
     .await
 }
 #[tauri::command]
-pub(crate) async fn restore_workspace(backup: PathBuf) -> Reply<Snapshot> {
+pub(crate) async fn restore_workspace(
+    on_progress: Channel<String>,
+    backup: PathBuf,
+) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(s, None, Edit::RestoreBackup { directory: &backup })
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(s, None, Edit::RestoreBackup { directory: &backup })
                 .map(|_| ())
         })
     })
     .await
 }
 #[tauri::command]
-pub(crate) async fn sync_workspace(app: tauri::AppHandle) -> Reply<Snapshot> {
+pub(crate) async fn sync_workspace(
+    app: tauri::AppHandle,
+    on_progress: Channel<String>,
+) -> Reply<Snapshot> {
     #[cfg(windows)]
     {
+        let _ = on_progress;
         crate::tray::request_sync(&app);
         off_main_thread(snapshot).await
     }
     #[cfg(not(windows))]
     let _ = app;
     #[cfg(not(windows))]
-    off_main_thread(|| mutate_with_plan(core::sync)).await
+    off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_plan(&progress, |s| {
+            progress.send("Syncing…".into());
+            core::sync(s)
+        })
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn preview_schedule(seconds: u32) -> Reply<core::Schedule> {
@@ -839,21 +926,26 @@ pub(crate) async fn preview_conflict(
 }
 
 #[tauri::command]
-pub(crate) async fn resolve_conflict(expected: String) -> Reply<String> {
+pub(crate) async fn resolve_conflict(
+    on_progress: Channel<String>,
+    expected: String,
+) -> Reply<String> {
     off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-        core::desktop_source_edit(
-            &settings()?,
-            None,
-            Edit::ResolveConflict {
-                expected: &expected,
-            },
-        )
-        .and_then(|p| {
-            p.ok_or_else(|| anyhow::anyhow!("Conflict resolution returned no backup path"))
-        })
-        .map(|p| p.display().to_string())
-        .map_err(|e| format!("{e:#}"))
+        progress
+            .edit(
+                &settings()?,
+                None,
+                Edit::ResolveConflict {
+                    expected: &expected,
+                },
+            )
+            .and_then(|p| {
+                p.ok_or_else(|| anyhow::anyhow!("Conflict resolution returned no backup path"))
+            })
+            .map(|p| p.display().to_string())
+            .map_err(|e| format!("{e:#}"))
     })
     .await
 }
@@ -955,20 +1047,23 @@ pub(crate) async fn analyze_skill(
 
 #[tauri::command]
 pub(crate) async fn add_agent_target(
+    on_progress: Channel<String>,
     target: core::AgentTarget,
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                None,
-                Edit::AddAgentTarget {
-                    target: &target,
-                    expected_hash: &expected_hash,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    None,
+                    Edit::AddAgentTarget {
+                        target: &target,
+                        expected_hash: &expected_hash,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -989,6 +1084,7 @@ pub(crate) fn edit_skill_draft(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn save_skill_draft(
+    on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
     markdown: String,
@@ -997,19 +1093,21 @@ pub(crate) async fn save_skill_draft(
     metadata_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                project.as_deref(),
-                Edit::SkillDraft {
-                    name: &name,
-                    markdown: &markdown,
-                    metadata: &metadata,
-                    markdown_hash: &markdown_hash,
-                    metadata_hash: &metadata_hash,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    project.as_deref(),
+                    Edit::SkillDraft {
+                        name: &name,
+                        markdown: &markdown,
+                        metadata: &metadata,
+                        markdown_hash: &markdown_hash,
+                        metadata_hash: &metadata_hash,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -1023,22 +1121,25 @@ pub(crate) async fn read_structured_source(file: String) -> Reply<core::Structur
 }
 #[tauri::command]
 pub(crate) async fn save_structured_source(
+    on_progress: Channel<String>,
     file: String,
     hash: String,
     values: toml::Table,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                None,
-                Edit::StructuredSource {
-                    file: &file,
-                    hash: &hash,
-                    values,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    None,
+                    Edit::StructuredSource {
+                        file: &file,
+                        hash: &hash,
+                        values,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -1062,46 +1163,52 @@ pub(crate) async fn list_skill_resources(
 }
 #[tauri::command]
 pub(crate) async fn add_skill_resource(
+    on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
     file: String,
     from: PathBuf,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                project.as_deref(),
-                Edit::AddResource {
-                    name: &name,
-                    file: &file,
-                    from: &from,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    project.as_deref(),
+                    Edit::AddResource {
+                        name: &name,
+                        file: &file,
+                        from: &from,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
 }
 #[tauri::command]
 pub(crate) async fn rename_source_skill(
+    on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
     new_name: String,
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                project.as_deref(),
-                Edit::Rename {
-                    name: &name,
-                    new_name: &new_name,
-                    expected_hash: &expected_hash,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    project.as_deref(),
+                    Edit::Rename {
+                        name: &name,
+                        new_name: &new_name,
+                        expected_hash: &expected_hash,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -1137,11 +1244,14 @@ pub(crate) async fn read_local_settings() -> Reply<core::LocalConfiguration> {
 }
 #[tauri::command]
 pub(crate) async fn save_local_settings(
+    on_progress: Channel<String>,
     candidate: Settings,
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|_| {
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |_| {
+            progress.stage(core::SourceEditStage::Writing);
             core::save_local_configuration(
                 &core::default_config_path()?,
                 &candidate,
@@ -1189,21 +1299,24 @@ pub(crate) async fn preview_install_path(
 }
 #[tauri::command]
 pub(crate) async fn create_desktop_skill(
+    on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
     description: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        mutate(|s| {
-            core::desktop_source_edit(
-                s,
-                project.as_deref(),
-                Edit::Create {
-                    name: &name,
-                    description: &description,
-                },
-            )
-            .map(|_| ())
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_progress(&progress, |s| {
+            progress
+                .edit(
+                    s,
+                    project.as_deref(),
+                    Edit::Create {
+                        name: &name,
+                        description: &description,
+                    },
+                )
+                .map(|_| ())
         })
     })
     .await
@@ -1274,7 +1387,9 @@ pub(crate) async fn resolve_stale_target(expected: String) -> Reply<Option<PathB
 }
 
 #[cfg(test)]
-mod main_thread_tests {
+mod command_tests {
+    use std::collections::BTreeSet;
+
     /// Each of these only touches memory or asks Tauri to do something quick. A new command
     /// that touches the disk, a process or the network belongs in `off_main_thread`.
     const ALLOWED_ON_MAIN_THREAD: &[&str] = &[
@@ -1287,24 +1402,55 @@ mod main_thread_tests {
         "different_preview_lines",
     ];
 
-    #[test]
-    fn main_thread_commands_stay_trivial() {
-        let source = include_str!("commands.rs");
-        let mut synchronous = Vec::new();
-        for command in source.split("#[tauri::command]\n").skip(1) {
-            let signature = command
-                .lines()
-                .find(|line| line.contains(" fn "))
-                .expect("a Tauri command has a signature");
-            if !signature.contains("async fn") {
+    /// Each command's name, its signature line, and its whole declaration.
+    fn commands() -> Vec<(&'static str, &'static str, &'static str)> {
+        include_str!("commands.rs")
+            .split("#[tauri::command]\n")
+            .skip(1)
+            .map(|command| {
+                let signature = command
+                    .lines()
+                    .find(|line| line.contains(" fn "))
+                    .expect("a Tauri command has a signature");
                 let name = signature
                     .split(" fn ")
                     .nth(1)
                     .and_then(|rest| rest.split(['(', '<']).next())
                     .expect("a Tauri command has a name");
-                synchronous.push(name);
-            }
-        }
+                let (declaration, _) = command.split_once('{').expect("a Tauri command has a body");
+                (name, signature, declaration)
+            })
+            .collect()
+    }
+
+    /// A listed command without the parameter gets an unused channel. An unlisted command
+    /// with it fails every call, and only a native run would notice.
+    #[test]
+    fn progress_commands_match_the_frontend_list() {
+        let listed: BTreeSet<&str> = include_str!("../../src/mutation-progress.ts")
+            .split("new Set([")
+            .nth(1)
+            .and_then(|rest| rest.split("])").next())
+            .expect("the frontend lists its progress commands")
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .collect();
+        let reporting: BTreeSet<&str> = commands()
+            .into_iter()
+            .filter(|(_, _, declaration)| declaration.contains("on_progress: Channel<String>"))
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(listed, reporting);
+    }
+
+    #[test]
+    fn main_thread_commands_stay_trivial() {
+        let synchronous: Vec<_> = commands()
+            .into_iter()
+            .filter(|(_, signature, _)| !signature.contains("async fn"))
+            .map(|(name, _, _)| name)
+            .collect();
         let unexpected: Vec<_> = synchronous
             .iter()
             .filter(|name| !ALLOWED_ON_MAIN_THREAD.contains(name))

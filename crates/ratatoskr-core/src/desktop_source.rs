@@ -194,6 +194,15 @@ impl DesktopSourceEdit<'_> {
     }
 }
 
+/// Actual work about to start during a desktop source edit or explicit push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceEditStage {
+    Fetching,
+    Writing,
+    Committing,
+    Pushing { remote: String, branch: String },
+}
+
 /// Serializes a complete desktop save with sync and apply. Project edits remain
 /// write-only; central edits use the user's Git identity and configured upstream.
 /// The returned path is the archive/backup receipt for operations producing one.
@@ -201,6 +210,17 @@ pub fn desktop_source_edit(
     settings: &Settings,
     project: Option<&Path>,
     edit: DesktopSourceEdit<'_>,
+) -> Result<Option<PathBuf>> {
+    desktop_source_edit_with_progress(settings, project, edit, &|_| {})
+}
+
+/// Like `desktop_source_edit`, reporting each stage immediately before it starts.
+/// The callback runs synchronously under the operation locks; keep it cheap.
+pub fn desktop_source_edit_with_progress(
+    settings: &Settings,
+    project: Option<&Path>,
+    edit: DesktopSourceEdit<'_>,
+    progress: &dyn Fn(SourceEditStage),
 ) -> Result<Option<PathBuf>> {
     settings.validate()?;
     // Match sync_locked -> apply. Never acquire sync.lock from inside apply.lock.
@@ -219,14 +239,18 @@ pub fn desktop_source_edit(
             ),
             "This action does not accept a project scope"
         );
+        progress(SourceEditStage::Writing);
         return edit.write(settings, project);
     }
     let paths = edit.paths(settings)?;
     if paths.is_empty() {
+        progress(SourceEditStage::Writing);
         return edit.write(settings, None);
     }
     let message = format!("Ratatoskr editor: {}", edit.message());
-    git::publish_source_edit(settings, &paths, &message, || edit.write(settings, None))
+    git::publish_source_edit(settings, &paths, &message, progress, || {
+        edit.write(settings, None)
+    })
 }
 
 #[cfg(test)]

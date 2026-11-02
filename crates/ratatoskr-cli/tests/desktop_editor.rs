@@ -1,4 +1,5 @@
-use ratatoskr_core::{self as core, DesktopSourceEdit as Edit, Settings};
+use ratatoskr_core::{self as core, DesktopSourceEdit as Edit, Settings, SourceEditStage as Stage};
+use std::cell::RefCell;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -105,14 +106,22 @@ impl Fixture {
         git(&self.remote(), &["show", &format!("main:{file}")])
     }
     fn save_global(&self, text: &str) -> anyhow::Result<Option<PathBuf>> {
+        self.save_global_with_progress(text, &|_| {})
+    }
+    fn save_global_with_progress(
+        &self,
+        text: &str,
+        progress: &dyn Fn(Stage),
+    ) -> anyhow::Result<Option<PathBuf>> {
         let current = core::read_global_instructions(&self.settings).unwrap();
-        core::desktop_source_edit(
+        core::desktop_source_edit_with_progress(
             &self.settings,
             None,
             Edit::GlobalInstructions {
                 markdown: text,
                 expected_hash: &current.hash,
             },
+            progress,
         )
     }
     fn cli(&self, args: &[&str]) -> Output {
@@ -763,4 +772,151 @@ fn desktop_refuses_wrong_branch_missing_upstream_and_failed_fetch_before_writing
         fs::read(f.settings.source.join("global/AGENTS.md")).unwrap(),
         original
     );
+}
+
+fn push_stage() -> Stage {
+    Stage::Pushing {
+        remote: "origin".into(),
+        branch: "main".into(),
+    }
+}
+
+#[test]
+fn central_edit_reports_real_stages_in_order_and_waits_for_publication() {
+    let f = Fixture::new();
+    let head = f.head();
+    let stages = RefCell::new(vec![]);
+    f.save_global_with_progress("Progress save\n", &|stage| {
+        match stage {
+            Stage::Fetching | Stage::Writing => {
+                assert_eq!(f.head(), head);
+                assert_eq!(
+                    fs::read_to_string(f.settings.source.join("global/AGENTS.md")).unwrap(),
+                    "Original global instructions\n"
+                );
+            }
+            Stage::Committing => {
+                assert_eq!(f.head(), head);
+                assert_eq!(
+                    fs::read_to_string(f.settings.source.join("global/AGENTS.md")).unwrap(),
+                    "Progress save\n"
+                );
+            }
+            Stage::Pushing { .. } => {
+                assert_ne!(f.head(), head);
+                assert_eq!(git(&f.remote(), &["rev-parse", "main"]), head);
+            }
+        }
+        stages.borrow_mut().push(stage);
+    })
+    .unwrap();
+    assert_eq!(
+        *stages.borrow(),
+        vec![
+            Stage::Fetching,
+            Stage::Writing,
+            Stage::Committing,
+            push_stage()
+        ]
+    );
+    assert_eq!(f.head(), git(&f.remote(), &["rev-parse", "main"]));
+}
+
+#[test]
+fn unchanged_edit_and_return_to_head_skip_commit_progress() {
+    let f = Fixture::new();
+    let head = f.head();
+    for dirty in [false, true] {
+        if dirty {
+            fs::write(
+                f.settings.source.join("global/AGENTS.md"),
+                "Uncommitted draft\n",
+            )
+            .unwrap();
+        }
+        let stages = RefCell::new(vec![]);
+        f.save_global_with_progress("Original global instructions\n", &|stage| {
+            stages.borrow_mut().push(stage)
+        })
+        .unwrap();
+        assert_eq!(
+            *stages.borrow(),
+            vec![Stage::Fetching, Stage::Writing, push_stage()]
+        );
+        assert_eq!(f.head(), head);
+    }
+}
+
+#[test]
+fn failed_fetch_reports_no_later_stages() {
+    let f = Fixture::new();
+    git(
+        &f.settings.source,
+        &["remote", "set-url", "origin", "../missing.git"],
+    );
+    let stages = RefCell::new(vec![]);
+    let error = f
+        .save_global_with_progress("Draft\n", &|stage| stages.borrow_mut().push(stage))
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("source was not written"));
+    assert_eq!(*stages.borrow(), vec![Stage::Fetching]);
+    assert_eq!(
+        fs::read_to_string(f.settings.source.join("global/AGENTS.md")).unwrap(),
+        "Original global instructions\n"
+    );
+}
+
+#[test]
+fn failed_push_reports_destination_and_preserves_existing_error_and_commit() {
+    let f = Fixture::new();
+    git(
+        &f.settings.source,
+        &["config", "remote.origin.pushurl", "../offline.git"],
+    );
+    let stages = RefCell::new(vec![]);
+    let error = f
+        .save_global_with_progress("Local progress commit\n", &|stage| {
+            stages.borrow_mut().push(stage)
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("saved and committed locally but NOT pushed"));
+    assert_eq!(
+        *stages.borrow(),
+        vec![
+            Stage::Fetching,
+            Stage::Writing,
+            Stage::Committing,
+            push_stage()
+        ]
+    );
+    assert_eq!(core::content_status(&f.settings).outgoing_commits, Some(1));
+    stages.borrow_mut().clear();
+    let error =
+        core::push_content_with_progress(&f.settings, &|stage| stages.borrow_mut().push(stage))
+            .unwrap_err();
+    assert!(format!("{error:#}").contains("saved and committed locally but NOT pushed"));
+    assert_eq!(*stages.borrow(), vec![push_stage()]);
+}
+
+#[test]
+fn project_edit_reports_only_writing() {
+    let mut f = Fixture::new();
+    let project = f.root.join("progress-project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    git(&project, &["init", "-b", "feature"]);
+    core::add_project(&f.config, &project, "agent-skills").unwrap();
+    f.settings = core::load(&f.config).unwrap();
+    let stages = RefCell::new(vec![]);
+    core::desktop_source_edit_with_progress(
+        &f.settings,
+        Some(&project),
+        Edit::Create {
+            name: "progress",
+            description: "Project progress",
+        },
+        &|stage| stages.borrow_mut().push(stage),
+    )
+    .unwrap();
+    assert_eq!(*stages.borrow(), vec![Stage::Writing]);
+    assert!(!f.settings.source.join(".git/FETCH_HEAD").exists());
 }
