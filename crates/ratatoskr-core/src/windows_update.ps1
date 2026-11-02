@@ -126,7 +126,7 @@ function Report-RecoveryFailure($Plan, [string]$Failure) {
 
 function Start-SupervisedUpdate([string]$Path) {
     $root = Split-Path -Parent $Path
-    $plan = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $plan = [IO.File]::ReadAllText($Path) | ConvertFrom-Json
     $installer = Join-Path $root 'installer.exe'
     if ((Get-UpdateHash $installer) -ne $plan.sha256) { throw 'Staged installer hash mismatch' }
     $parentProcess = Get-Process -Id $plan.parent
@@ -165,7 +165,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         # The recovered tray reports ordinary install failures from the ledger.
         # If recovery/reporting failed, alert from this independent process too.
         try {
-            $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
+            $plan = [IO.File]::ReadAllText($PlanPath) | ConvertFrom-Json
             Report-RecoveryFailure $plan "$failure. Update evidence: $(Split-Path -Parent $PlanPath)"
         }
         catch { [Console]::Error.WriteLine("Update failure: $failure; fallback reporting failed: $($_.Exception.Message)") }

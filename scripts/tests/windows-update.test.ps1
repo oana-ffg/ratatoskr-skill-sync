@@ -75,7 +75,7 @@ Assert-Equal $result.error $null
 
 # Exercise the complete supervisor entry point with a real failing executable.
 # Only tray launch is replaced; all paths, backups and state are disposable.
-$transaction = Join-Path $root 'entry-point'
+$transaction = Join-Path $root ('entry point-' + [char]0xE6 + [char]0x96EA)
 New-Item -ItemType Directory -Path $transaction, (Join-Path $transaction 'backup') | Out-Null
 Copy-Item "$env:SystemRoot\System32\where.exe" (Join-Path $transaction 'installer.exe')
 foreach ($name in @('ratatoskr-desktop.exe', 'ratatoskr.exe')) {
@@ -84,7 +84,7 @@ foreach ($name in @('ratatoskr-desktop.exe', 'ratatoskr.exe')) {
 }
 $parent = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru
 $plan = @{ parent = $parent.Id; data = $transaction; desktop = Join-Path $transaction 'ratatoskr-desktop.exe'; version = '0.2.19'; sha256 = Get-UpdateHash (Join-Path $transaction 'installer.exe') }
-$plan | ConvertTo-Json | Set-Content (Join-Path $transaction 'plan.json')
+[IO.File]::WriteAllText((Join-Path $transaction 'plan.json'), ($plan | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 $driver = Join-Path $transaction 'driver.ps1'
 @'
 param($Supervisor, $UpdatePlan)
@@ -92,7 +92,7 @@ param($Supervisor, $UpdatePlan)
 function Start-SyncTray($Plan) { [IO.File]::WriteAllText((Join-Path $Plan.data 'restarted'), 'yes') }
 Start-SupervisedUpdate $UpdatePlan
 '@ | Set-Content $driver
-$supervisorProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $driver, $Supervisor, (Join-Path $transaction 'plan.json')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $transaction 'stderr.log')
+$supervisorProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-File', "`"$driver`"", "`"$Supervisor`"", "`"$(Join-Path $transaction 'plan.json')`"") -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $transaction 'stderr.log')
 $null = $supervisorProcess.Handle
 $readyDeadline = [datetime]::UtcNow.AddSeconds(10)
 while (-not (Test-Path -LiteralPath (Join-Path $transaction 'ready'))) {
