@@ -533,12 +533,35 @@ fn install_downloaded_update(
     } else {
         crate::window_lifecycle::prepare_restart(app)?;
     }
-    let result = update.install(bytes);
-    #[cfg(any(windows, target_os = "macos"))]
-    if result.is_err() {
-        crate::window_lifecycle::cancel_restart(app)?;
+    #[cfg(windows)]
+    {
+        let result = core::windows_update::supervise(
+            &std::env::current_exe()?,
+            &core::updates::desktop_data_dir()?,
+            &app.config().identifier,
+            &update.version,
+            &bytes,
+        );
+        if let Err(error) = result {
+            crate::window_lifecycle::cancel_restart(app)?;
+            return Err(error);
+        }
+        // The supervisor acknowledged its process handle before this exit. It
+        // starts NSIS only after our executable has completely stopped.
+        crate::instance::release();
+        app.cleanup_before_exit();
+        std::process::exit(0);
     }
-    result.map_err(Into::into)
+    #[cfg(not(windows))]
+    let result = update.install(bytes);
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "macos")]
+        if result.is_err() {
+            crate::window_lifecycle::cancel_restart(app)?;
+        }
+        result.map_err(Into::into)
+    }
 }
 
 #[tauri::command]
@@ -604,12 +627,21 @@ fn desktop_updater(
     app: &tauri::AppHandle,
     settings: &core::updates::UpdateSettings,
 ) -> anyhow::Result<tauri_plugin_updater::Updater> {
-    Ok(app
+    let builder = app
         .updater_builder()
         .pubkey(settings.tauri_public_key()?)
         .endpoints(vec![settings.endpoint().parse()?])?
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?)
+        .timeout(std::time::Duration::from_secs(60));
+    // CI's real signed-update journey trusts only its generated TLS certificate.
+    // This feature is forbidden in release builds by main.rs.
+    #[cfg(feature = "e2e-webdriver")]
+    let builder = if let Some(path) = std::env::var_os("RATATOSKR_E2E_UPDATE_CA") {
+        let certificate = reqwest::Certificate::from_der(&std::fs::read(path)?)?;
+        builder.configure_client(move |client| client.add_root_certificate(certificate.clone()))
+    } else {
+        builder
+    };
+    Ok(builder.build()?)
 }
 
 struct Nightly {
@@ -686,9 +718,10 @@ pub(crate) async fn automatic_update(
                 },
             )
         })();
-        let report = result
-            .as_ref()
-            .map_or(true, |outcome| outcome.checked || outcome.installed);
+        let report = (cfg!(windows) && launch)
+            || result
+                .as_ref()
+                .map_or(true, |outcome| outcome.checked || outcome.installed);
         let result = result.map(|outcome| {
             if install {
                 outcome.installed

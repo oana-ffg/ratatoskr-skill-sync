@@ -37,6 +37,10 @@ fn report(app: &tauri::AppHandle, result: &Result<bool, String>) {
         } else {
             result.as_ref().err().cloned()
         };
+        #[cfg(windows)]
+        let error = error.or(ratatoskr_core::windows_update::failure(
+            &ratatoskr_core::updates::desktop_data_dir()?,
+        )?);
         if let Some(error) = &error {
             eprintln!("Ratatoskr desktop update: {error}");
         }

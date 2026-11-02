@@ -33,6 +33,8 @@ mod schedule;
 mod setup;
 mod template;
 pub mod updates;
+#[cfg(windows)]
+pub mod windows_update;
 
 pub use config::{Settings, default_config_path, initialize, load, save};
 pub use content::{PreviewFile, PreviewTarget, preview_skill, preview_targets};

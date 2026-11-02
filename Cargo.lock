@@ -3510,6 +3510,7 @@ dependencies = [
  "chrono",
  "dunce",
  "ratatoskr-core",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "tauri",

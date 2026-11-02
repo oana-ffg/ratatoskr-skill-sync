@@ -15,7 +15,7 @@
     "test:screenshots": "npm run prepare:fixtures && playwright test screenshots.spec.ts windows-tray.spec.ts --project=chromium --output=test-results/screenshots",
     "test:ui": "npm run prepare:fixtures && playwright test editor.spec.ts instructions.spec.ts only-block.spec.ts projects.spec.ts --output=test-results/ui",
     "build:native-e2e": "tauri build --debug --no-bundle --features e2e-webdriver --config native-e2e/tauri.conf.json",
-    "test:native": "node --test native-e2e/*.test.mjs",
+    "test:native": "node --test --test-concurrency=1 native-e2e/*.test.mjs",
     "prepare:fixtures": "node scripts/prepare-fixtures.mjs"
   },
   "dependencies": {

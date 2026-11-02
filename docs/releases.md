@@ -1,5 +1,53 @@
 # Releases and signed updates
 
+## Windows update recovery
+
+The old Windows updater, including 0.2.18, 0.2.19 and 0.2.20, exits the tray after launching NSIS in
+passive mode. If installation aborts, the installer can remain on its failure
+page and never restart the tray. Sync and tray notifications then stop. Downloading
+a newer release cannot repair an already stopped updater; a running older
+updater also performs its next handoff using its existing code.
+
+If affected, close the aborted setup window and run the Windows setup executable
+from the [official releases](https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest).
+Open Ratatoskr afterward and check **Activity** for a new successful sync. The
+installer preserves your content checkout and configuration. Restarting the old
+app alone may retry the same update before its first sync, so reinstall before
+restarting when that retry also aborts.
+
+The supervisor change in this repository takes effect after installing a build
+that contains it. It waits for the old desktop process to exit before starting
+NSIS, uses silent mode with a two-minute deadline, and restarts the hidden tray
+on success or failure. On failure it restores the previous desktop and CLI
+executables and retains both the backup and any partially installed executables.
+Successful manifest checks do not erase an installation failure. It clears once
+the app runs the failed version or newer, through a later supervised installation
+or a manual setup. After a failed or skipped rollback only a later supervised installation clears
+it, because the running version does not prove the other files are intact. Failed restarts trigger a Windows
+notification from the independent supervisor, without requiring the tray.
+If Windows refuses to terminate a timed-out installer, the supervisor preserves
+the files and alerts instead of racing an installer that could still overwrite them.
+
+Evidence from the three most recent update attempts is retained under
+`%APPDATA%\io.github.oana-ffg.ratatoskr-skill-sync\windows-install-*`; each holds
+a full set of binaries, about 45 MB, and older ones are removed when the next
+update starts. If one cannot be removed, that update stops and reports the folder. The latest outcome is `windows-install-result.json` beside those folders.
+Executable rollback restores sync but does not roll back all NSIS registry or
+shortcut changes; rerun the installer if installation was interrupted partway.
+Windows notification settings can suppress toasts. Detecting arbitrary tray
+termination outside an update still needs a separate watchdog or external
+freshness monitor; this change supervises the update transaction only.
+
+Two options for that separate policy are an opt-in per-user Windows task that
+checks a tray heartbeat every five minutes and restarts/alerts when sync is
+expected, or an external monitor that alerts when the machine's last successful
+sync becomes stale. The local watchdog must distinguish an intentional **Quit**
+or disabled login startup from a crash; an external monitor needs an explicitly
+configured destination. Neither is installed by this change.
+
+Release publishers should repeat the recovery notice in the first release that
+ships the supervisor. Publishing that notice or a release is a separate action.
+
 ## v0.2.20 release notes
 
 - **The desktop is much faster and no longer freezes during slow work.** Every command that touches the disk, a process or the network now runs off the main thread, including Apply. Editing no longer copies the library to disk: live preview renders only the skill being edited, from memory, and only one preview runs at a time instead of stacking up. Measured on a real library: one preview went from 850 ms and 0.9 MB written to 0.5 ms and nothing written, 64 previews at once from 35.8 s to 6 ms, the Library's skill statuses from 2.3 s to 8 ms, `plan` from 725 ms and 25 Git processes to 136 ms and 12, and the local part of Save from 890 ms to 7 ms.
