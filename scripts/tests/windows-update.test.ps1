@@ -44,6 +44,10 @@ catch { $caught = $true }
 Assert-Equal $caught $true
 Assert-Equal $child.HasExited $true
 
+$predecessor = Start-UpdateProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60'
+Assert-Equal (Wait-Predecessor $predecessor 100) $false
+Assert-Equal $predecessor.HasExited $true
+
 $child = Start-UpdateProcess "$env:SystemRoot\System32\cmd.exe" '/c exit 0'
 Wait-Installer $child 5000
 Assert-Equal $child.ExitCode 0

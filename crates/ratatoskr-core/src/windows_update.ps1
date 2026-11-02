@@ -58,6 +58,16 @@ function Wait-Installer($Child, [int]$TimeoutMilliseconds = 120000) {
     if ($Child.ExitCode -ne 0) { throw "Installer failed with exit code $($Child.ExitCode)" }
 }
 
+function Wait-Predecessor($Parent, [int]$TimeoutMilliseconds = 30000) {
+    if ($Parent.WaitForExit($TimeoutMilliseconds)) { return $true }
+    # Readiness means the idle-checked app has committed to exiting. Its cleanup
+    # may have removed the tray already; a stuck exit must not strand sync.
+    try { $Parent.Kill() }
+    catch { if (-not $Parent.HasExited) { throw } }
+    if (-not $Parent.WaitForExit(10000)) { throw 'Desktop shutdown timed out and the predecessor could not be stopped' }
+    return $false
+}
+
 function Invoke-UpdateTransaction([scriptblock]$Install, [scriptblock]$Restore, [scriptblock]$Restart, [scriptblock]$Report) {
     $failure = $null
     $unsafeToRestore = $false
@@ -136,8 +146,9 @@ function Start-SupervisedUpdate([string]$Path) {
     # this wait to a different process after the original desktop exits.
     $null = $parentProcess.Handle
     [IO.File]::WriteAllText((Join-Path $root 'ready'), 'ready')
-    if (-not $parentProcess.WaitForExit(30000)) { throw 'Desktop did not exit; installation was not started' }
+    $exitedInTime = Wait-Predecessor $parentProcess
     $failure = Invoke-UpdateTransaction -Install {
+        if (-not $exitedInTime) { throw 'Desktop shutdown timed out; the stuck predecessor was stopped and the previous version will restart' }
         # Silent mode cannot sit indefinitely on an NSIS "Installation Aborted"
         # page. No /R: only this supervisor owns restart, including on failure.
         $directoryArgument = '/D=' + (Split-Path -Parent $plan.desktop)
