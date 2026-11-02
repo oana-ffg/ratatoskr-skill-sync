@@ -63,8 +63,7 @@
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
   // These depend on the target, not on the text being typed.
   let targetDetails:
-    | { key: string; options: ValueOption[]; path: string }
-    | undefined;
+    { key: string; options: ValueOption[]; path: string } | undefined;
   async function detailsFor(machine: string, harness: string) {
     const key = JSON.stringify([machine, harness]);
     if (targetDetails?.key !== key) {

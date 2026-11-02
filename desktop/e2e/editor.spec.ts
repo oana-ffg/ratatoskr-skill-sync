@@ -372,5 +372,8 @@ test("typing a sentence over a slow backend keeps backend work bounded", async (
   expect(mostAtOnce).toBeLessThanOrEqual(targets);
   // Far below one run per key: a run takes 300ms, and there were 52 keys over 10 seconds.
   expect(previews - previewsBefore).toBeLessThanOrEqual(30 * targets);
-  expect(details - detailsBefore, "target details do not change with the text").toBe(0);
+  expect(
+    details - detailsBefore,
+    "target details do not change with the text",
+  ).toBe(0);
 });

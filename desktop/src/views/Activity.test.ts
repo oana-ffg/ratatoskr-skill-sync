@@ -17,16 +17,11 @@ test("Windows activity uses the shared run ledger and replaces scheduled-task co
         error: null,
         migration_error: null,
       };
+    if (cmd === "read_job_log") return "Latest in-process sync outcome";
     return fixtureIPC(cmd, args as Record<string, unknown>);
   });
   render(Activity, {
-    workspace: {
-      ...fixture.workspace,
-      jobs: {
-        ...fixture.workspace.jobs,
-        log: "Latest in-process sync outcome",
-      },
-    },
+    workspace: fixture.workspace,
     onrefresh: vi.fn(),
     onupdate: vi.fn(),
     onerror: vi.fn(),
@@ -40,4 +35,22 @@ test("Windows activity uses the shared run ledger and replaces scheduled-task co
   ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Review schedule…" })).toBeNull();
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("the log is requested by this screen, and is not part of the workspace snapshot", async () => {
+  const logReads = vi.fn(() => "Fetched on demand");
+  mockIPC((cmd, args) => {
+    if (cmd === "read_job_log") return logReads();
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  expect(fixture.workspace.jobs).not.toHaveProperty("log");
+  render(Activity, {
+    workspace: fixture.workspace,
+    onrefresh: vi.fn(),
+    onupdate: vi.fn(),
+    onerror: vi.fn(),
+    ondirty: vi.fn(),
+  });
+  expect(await screen.findByText("Fetched on demand")).toBeVisible();
+  expect(logReads).toHaveBeenCalledTimes(1);
 });

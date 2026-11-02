@@ -301,6 +301,8 @@ test("all main screens", async ({ page }) => {
   ).toHaveCount(0);
   await expect(page.getByText("Refresh paused while editing")).toHaveCount(0);
   refreshError = true;
+  // Focus reuses a recent snapshot, so let this one age past the throttle.
+  await page.clock.runFor(20_000);
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.getByRole("alert")).toContainText(
     "Fixture sync history is unavailable",

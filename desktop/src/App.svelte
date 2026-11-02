@@ -108,6 +108,7 @@
   }
   let snapshotAt = $state<number | null>(null);
   let now = $state(Date.now());
+  const FOCUS_REFRESH_MS = 15_000;
   let refreshError = $state("");
   let deferred = $state(false);
   let windowVisible = $state(false);
@@ -226,8 +227,13 @@
     let stopAppErrors: (() => void) | undefined;
     const ageTimer = setInterval(() => (now = Date.now()), 10_000);
     const stopRefresh = watchWindow(
-      () => {
-        if (ready) void refresh();
+      (reason) => {
+        // Switching between apps must not rescan everything each time. The minute timer and
+        // reviewed Apply cover staleness, and a failed refresh retries on the next focus.
+        const recent =
+          snapshotAt !== null && Date.now() - snapshotAt < FOCUS_REFRESH_MS;
+        if (ready && !(reason === "focus" && recent && !refreshError))
+          void refresh();
       },
       (e) => fail(`Automatic workspace refresh: ${errorText(e)}`),
       { onVisibility: (visible) => (windowVisible = visible) },

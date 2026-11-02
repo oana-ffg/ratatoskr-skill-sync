@@ -659,25 +659,11 @@ pub(crate) fn save_skill_draft_locked(
         "Fix conditional-block errors before saving"
     );
     let selected = crate::content::source(settings, project)?;
-    // Description limits apply after conditions and variables are rendered for
-    // each target, rather than to the combined template text above. Only this skill
-    // can change, so only this skill is rendered, on every machine × harness.
-    let validate = |draft| {
-        crate::engine::validate_focus(
-            &settings.source,
-            &selected,
-            crate::engine::ValidationFocus::Skill { name, draft },
-        )
-    };
-    let before = validate(None)?;
-    let after = validate(Some(crate::engine::SkillDraft { markdown, metadata }))?;
-    let skill_path = format!("skills/{name}");
-    let prefix = format!("{skill_path}/");
-    ensure_no_new_problems(
-        &before,
-        &after,
-        |path| path == skill_path || path.starts_with(&prefix),
-        "Skill change",
+    ensure_valid_skill_draft(
+        settings,
+        &selected,
+        name,
+        crate::engine::SkillDraft { markdown, metadata },
     )?;
     let root = selected.join("skills").join(name);
     if markdown != current.markdown {
@@ -691,6 +677,34 @@ pub(crate) fn save_skill_draft_locked(
         return Err(error);
     }
     Ok(())
+}
+
+/// Description limits apply after conditions and variables are rendered for each target, rather
+/// than to the template text. Only this skill can change, so only this skill is rendered, on
+/// every machine × harness, and nothing is written.
+pub(crate) fn ensure_valid_skill_draft(
+    settings: &Settings,
+    selected: &Path,
+    name: &str,
+    draft: crate::engine::SkillDraft<'_>,
+) -> Result<()> {
+    let validate = |draft| {
+        crate::engine::validate_focus(
+            &settings.source,
+            selected,
+            crate::engine::ValidationFocus::Skill { name, draft },
+        )
+    };
+    let before = validate(None)?;
+    let after = validate(Some(draft))?;
+    let skill_path = format!("skills/{name}");
+    let prefix = format!("{skill_path}/");
+    ensure_no_new_problems(
+        &before,
+        &after,
+        |path| path == skill_path || path.starts_with(&prefix),
+        "Skill change",
+    )
 }
 
 /// Existing problems elsewhere must not block incremental repairs, while new

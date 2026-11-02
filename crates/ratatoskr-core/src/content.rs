@@ -181,20 +181,16 @@ pub fn read_skill(
     })
 }
 
-fn validate_draft(
+fn validate_new_skill(
     settings: &Settings,
     selected_source: &Path,
     name: &str,
-    file: &str,
-    text: &str,
-    create: bool,
+    markdown: &str,
 ) -> Result<()> {
     let (_temp, candidate) = draft_workspace(settings, selected_source)?;
     let skill = candidate.source.join("skills").join(name);
-    if create {
-        write_scratch(&skill.join("skill.toml"), b"")?;
-    }
-    write_scratch(&skill.join(relative(file)?), text.as_bytes())?;
+    write_scratch(&skill.join("skill.toml"), b"")?;
+    write_scratch(&skill.join("SKILL.md"), markdown.as_bytes())?;
     validate_sources(&candidate)
 }
 
@@ -218,7 +214,19 @@ pub fn write_skill_file(
         hash(&fs::read(&path)?) == expected_hash,
         "Source changed since opening the editor. Reload before saving."
     );
-    validate_draft(settings, &selected, name, file, text, false)?;
+    let document = read_skill(settings, project, name)?;
+    let draft = if file == "SKILL.md" {
+        crate::engine::SkillDraft {
+            markdown: text,
+            metadata: &document.metadata,
+        }
+    } else {
+        crate::engine::SkillDraft {
+            markdown: &document.markdown,
+            metadata: text,
+        }
+    };
+    crate::editor::ensure_valid_skill_draft(settings, &selected, name, draft)?;
     atomic_write(&path, text.as_bytes())
 }
 
@@ -233,7 +241,7 @@ pub fn create_skill(
     let target = selected.join("skills").join(name);
     no_symlinks(&target)?;
     ensure!(!target.try_exists()?, "Skill already exists");
-    validate_draft(settings, &selected, name, "SKILL.md", markdown, true)?;
+    validate_new_skill(settings, &selected, name, markdown)?;
     fs::create_dir_all(target.parent().context("Missing parent")?)?;
     let draft = tempfile::tempdir_in(target.parent().context("Missing parent")?)?;
     atomic_write(&draft.path().join("SKILL.md"), markdown.as_bytes())?;

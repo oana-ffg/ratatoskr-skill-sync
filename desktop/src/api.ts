@@ -131,7 +131,6 @@ export interface Jobs {
   helper_update_error: string | null;
   desktop_update_error: string | null;
   background_error: string | null;
-  log: string;
 }
 export interface Legacy {
   name: string;

@@ -50,7 +50,7 @@ pub use git::{
     ContentStatus, ProjectStatus, add_project, content_status, project_status, push_content,
     remove_project, sync,
 };
-pub use jobs::{JobRun, JobStatus, detect_helper, job_status};
+pub use jobs::{JobRun, JobStatus, detect_helper, job_log, job_status};
 pub use presets::{
     AgentPreset, AgentTarget, add_agent_target, agent_presets, preview_agent_target,
 };

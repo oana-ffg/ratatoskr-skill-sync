@@ -26,7 +26,6 @@ pub struct JobStatus {
     pub helper_update_error: Option<String>,
     pub desktop_update_error: Option<String>,
     pub background_error: Option<String>,
-    pub log: String,
 }
 
 fn now() -> Result<u64> {
@@ -116,6 +115,26 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
     } else {
         None
     };
+    Ok(JobStatus {
+        background_error: crate::tray::problem(settings)?.map(|problem| problem.message),
+        last_run,
+        current_error: crate::notifications::current_error(settings, "notification.json")?,
+        helper_update_error: crate::notifications::current_error(
+            settings,
+            "helper-update-notification.json",
+        )?,
+        desktop_update_error: crate::notifications::current_error(
+            settings,
+            "desktop-update-notification.json",
+        )?,
+    })
+}
+
+/// Recent background activity, up to 128 KiB. It is separate from [`job_status`] because every
+/// workspace refresh needs the status, while only the Activity screen shows the log.
+pub fn job_log(settings: &Settings) -> Result<String> {
+    settings.validate()?;
+    let state = settings.state_dir.join(&settings.machine);
     let history = state.join("sync-history.json");
     no_symlinks(&history)?;
     let mut log = if history.try_exists()? {
@@ -141,20 +160,7 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
             log.push_str(&format!("{filename} (last 64 KiB)\n{tail}\n"));
         }
     }
-    Ok(JobStatus {
-        background_error: crate::tray::problem(settings)?.map(|problem| problem.message),
-        last_run,
-        current_error: crate::notifications::current_error(settings, "notification.json")?,
-        helper_update_error: crate::notifications::current_error(
-            settings,
-            "helper-update-notification.json",
-        )?,
-        desktop_update_error: crate::notifications::current_error(
-            settings,
-            "desktop-update-notification.json",
-        )?,
-        log,
-    })
+    Ok(log)
 }
 
 /// Bundled sibling first, then a standalone CLI on PATH. Missing helpers are explicit errors.

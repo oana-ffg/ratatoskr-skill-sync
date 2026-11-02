@@ -218,6 +218,10 @@ pub(crate) async fn connect_workspace(
 }
 
 #[tauri::command]
+pub(crate) async fn read_job_log() -> Reply<String> {
+    off_main_thread(|| core::job_log(&settings()?).map_err(|e| format!("{e:#}"))).await
+}
+#[tauri::command]
 pub(crate) async fn read_content_status() -> Reply<core::ContentStatus> {
     off_main_thread(move || Ok(core::content_status(&settings()?))).await
 }

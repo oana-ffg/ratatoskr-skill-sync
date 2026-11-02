@@ -20,11 +20,11 @@ test("Windows tray settings in dark mode", async ({ page }) => {
     finished_at: lastSuccess,
     error: null,
   };
-  workspace.jobs.log = "Sync completed successfully";
   await page.exposeFunction(
     "fixtureIPC",
     (cmd: string, args: Record<string, unknown>) => {
       if (cmd === "read_workspace") return workspace;
+      if (cmd === "read_job_log") return "Sync completed successfully";
       if (cmd === "login_enabled") return true;
       if (cmd === "read_local_settings")
         return {

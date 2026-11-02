@@ -89,6 +89,7 @@ impl Library {
         )
     }
 
+    #[cfg(unix)]
     fn state(&self, file: &str) -> PathBuf {
         self.settings.state_dir.join("test").join(file)
     }
@@ -165,16 +166,52 @@ fn saving_still_validates_every_machine_and_harness() {
 }
 
 #[test]
-fn a_draft_preview_and_save_leave_no_files_behind_in_the_source() {
+fn a_draft_preview_and_save_leave_no_files_behind() {
     let library = Library::new(3);
     let before = every_file(&library.settings.source);
     library.preview(SKILL).unwrap();
     assert_eq!(every_file(&library.settings.source), before);
     assert!(!library.settings.state_dir.exists());
+    library
+        .save(&SKILL.replace("Review changes.", "Saved."))
+        .unwrap();
+    assert_eq!(every_file(&library.settings.source), before);
 }
 
 #[test]
-fn preview_cost_does_not_grow_with_the_library() {
+fn toggling_a_skill_does_not_render_the_library() {
+    let library = Library::new(1);
+    // Rendering this skill at all would fail, so success proves it is never touched.
+    let broken = library.settings.source.join("skills/broken");
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join("SKILL.md"), "not a skill").unwrap();
+    fs::write(broken.join("skill.toml"), "not = valid = toml").unwrap();
+    ratatoskr_core::disable_skill(&library.settings, None, "review", true).unwrap();
+    ratatoskr_core::disable_skill(&library.settings, None, "review", false).unwrap();
+}
+
+#[test]
+fn enabling_a_skill_still_refuses_new_problems_on_any_machine() {
+    let library = Library::new(0);
+    fs::write(
+        library.settings.source.join("machines/other.toml"),
+        "os='macos'\nmode='staging'\nharnesses=['codex']\n",
+    )
+    .unwrap();
+    library.add(
+        "review",
+        "---\nname: review\ndescription: Review\n---\n<!-- only machine=other -->{{af:missing}}<!-- /only -->Body.\n",
+    );
+    let skill = library.settings.source.join("skills/review/skill.toml");
+    fs::write(&skill, "enabled = false\n").unwrap();
+    let error =
+        ratatoskr_core::disable_skill(&library.settings, None, "review", false).unwrap_err();
+    assert!(format!("{error:#}").contains("other/codex"), "{error:#}");
+    assert_eq!(fs::read_to_string(&skill).unwrap(), "enabled = false\n");
+}
+
+#[test]
+fn typing_a_sentence_stays_cheap_on_a_large_library() {
     let library = Library::new(600);
     let started = Instant::now();
     // One sentence of typing. The old preview took about a second per call on a smaller library.

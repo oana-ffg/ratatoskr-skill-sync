@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::LazyLock};
 
 pub(crate) fn selectors_match(selectors: &toml::Table, context: &toml::Table) -> Result<bool> {
     let mut matched = true;
@@ -76,7 +76,7 @@ pub(crate) fn render(source: &str, context: &toml::Table, markdown: bool) -> Res
     } else {
         output.push_str(source);
     }
-    let variables = variable_regex()?;
+    let variables = variable_regex();
     let mut rendered = String::new();
     let mut position = 0;
     for caps in variables.captures_iter(&output) {
@@ -284,11 +284,13 @@ fn diagnostic(
 
 /// One parser serves deployment and editor analysis; ranges internally use UTF-8 bytes.
 pub(crate) fn parse_blocks(source: &str) -> Result<(Vec<ParsedBlock>, Vec<TemplateDiagnostic>)> {
-    let tags = Regex::new(r"<!--\s*(only\b.*?)-->|<!--\s*(/only)\s*-->")?;
+    static TAGS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"<!--\s*(only\b.*?)-->|<!--\s*(/only)\s*-->").expect("valid constant regex")
+    });
     let mut blocks = Vec::new();
     let mut diagnostics = Vec::new();
     let mut active: Option<(std::ops::Range<usize>, OnlySelectors)> = None;
-    for caps in tags.captures_iter(source) {
+    for caps in TAGS.captures_iter(source) {
         let tag = caps.get(0).context("Missing template match")?;
         if caps.get(2).is_some() {
             if let Some((opening, selectors)) = active.take() {
@@ -356,8 +358,10 @@ fn variable_value(name: &str, context: &toml::Table) -> Result<String> {
     }
 }
 
-fn variable_regex() -> Result<Regex> {
-    Ok(Regex::new(r"\{\{af:([^{}]+)\}\}")?)
+fn variable_regex() -> &'static Regex {
+    static VARIABLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\{\{af:([^{}]+)\}\}").expect("valid constant regex"));
+    &VARIABLE
 }
 
 pub fn analyze_skill(
@@ -441,7 +445,7 @@ fn analyze_template(
             reachable,
         });
     }
-    let regex = variable_regex()?;
+    let regex = variable_regex();
     let mut variables = Vec::new();
     for caps in regex.captures_iter(markdown) {
         let tag = caps.get(0).context("Missing variable match")?;

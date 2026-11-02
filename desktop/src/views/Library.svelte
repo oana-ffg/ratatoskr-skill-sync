@@ -34,15 +34,21 @@
   onMount(() => {
     scope = initialScope;
   });
+  let statusRequest = 0;
   $effect(() => {
     workspace.skills;
+    // Requests can overlap, and an older answer must not replace a newer one.
+    const request = ++statusRequest;
     void api
       .command<Record<string, Record<string, boolean>>>("skill_target_statuses")
       .then((s) => {
+        if (request !== statusRequest) return;
         statuses = s;
         statusError = "";
       })
-      .catch((e) => (statusError = errorText(e)));
+      .catch((e) => {
+        if (request === statusRequest) statusError = errorText(e);
+      });
   });
   // Report synchronously: opening a newly created skill must not see the
   // dialog's dirty state from before it closed.

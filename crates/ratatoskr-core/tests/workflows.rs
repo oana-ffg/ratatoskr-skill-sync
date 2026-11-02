@@ -2007,7 +2007,11 @@ fn background_status_records_failure_and_ledger_without_alert_command() {
     assert!(status.last_run.as_ref().unwrap().finished_at.is_some());
     assert!(status.last_run.unwrap().error.is_some());
     assert!(status.current_error.is_some());
-    assert!(status.log.contains("Sync failed"));
+    assert!(
+        ratatoskr_core::job_log(&f.settings)
+            .unwrap()
+            .contains("Sync failed")
+    );
 }
 
 #[test]
@@ -2692,7 +2696,11 @@ fn tray_runs_record_success_conflicts_and_configuration_errors_in_existing_ledge
     let status = ratatoskr_core::job_status(&f.settings).unwrap();
     assert!(status.last_run.as_ref().unwrap().finished_at.is_some());
     assert!(status.last_run.as_ref().unwrap().error.is_none());
-    assert!(status.log.contains("sync.stdout.log"));
+    assert!(
+        ratatoskr_core::job_log(&f.settings)
+            .unwrap()
+            .contains("sync.stdout.log")
+    );
     fs::write(f.output().join("SKILL.md"), "Hand edit").unwrap();
     assert!(ratatoskr_core::recorded_sync(&config).is_err());
     let status = ratatoskr_core::job_status(&f.settings).unwrap();
@@ -2706,7 +2714,11 @@ fn tray_runs_record_success_conflicts_and_configuration_errors_in_existing_ledge
             .unwrap()
             .contains("conflicts")
     );
-    assert!(status.log.contains("sync.stderr.log"));
+    assert!(
+        ratatoskr_core::job_log(&f.settings)
+            .unwrap()
+            .contains("sync.stderr.log")
+    );
     assert_eq!(
         fs::read_to_string(f.output().join("SKILL.md")).unwrap(),
         "Hand edit"

@@ -475,10 +475,12 @@ fn run() -> Result<i32> {
                 }
             }
         }
-        Action::JobStatus => println!(
-            "{}",
-            serde_json::to_string_pretty(&core::job_status(&load(&path)?)?)?
-        ),
+        Action::JobStatus => println!("{}", {
+            let settings = load(&path)?;
+            let mut report = serde_json::to_value(core::job_status(&settings)?)?;
+            report["log"] = core::job_log(&settings)?.into();
+            serde_json::to_string_pretty(&report)?
+        }),
         Action::Agent { action } => match action {
             AgentCommand::Presets => {
                 println!("{}", serde_json::to_string_pretty(&core::agent_presets())?)
