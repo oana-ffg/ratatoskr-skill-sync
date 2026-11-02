@@ -183,9 +183,13 @@ impl MutationProgress {
 }
 
 /// A mutation that ends in an up-to-date plan, which the snapshot reuses.
-fn mutate_with_plan(action: impl FnOnce(&Settings) -> anyhow::Result<Plan>) -> Reply<Snapshot> {
+fn mutate_with_plan(
+    progress: &MutationProgress,
+    action: impl FnOnce(&Settings) -> anyhow::Result<Plan>,
+) -> Reply<Snapshot> {
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     let plan = action(&settings()?).map_err(|e| format!("{e:#}"))?;
+    progress.send("Refreshing…".into());
     snapshot_with(Some(plan))
 }
 fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapshot> {
@@ -280,8 +284,18 @@ pub(crate) async fn push_content(on_progress: Channel<String>) -> Reply<Snapshot
 }
 
 #[tauri::command]
-pub(crate) async fn apply_workspace(expected_plan: String) -> Reply<Snapshot> {
-    off_main_thread(move || mutate_with_plan(|s| core::apply_reviewed(s, &expected_plan))).await
+pub(crate) async fn apply_workspace(
+    on_progress: Channel<String>,
+    expected_plan: String,
+) -> Reply<Snapshot> {
+    off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_plan(&progress, |s| {
+            progress.send("Applying changes…".into());
+            core::apply_reviewed(s, &expected_plan)
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -441,16 +455,27 @@ pub(crate) async fn restore_workspace(
     .await
 }
 #[tauri::command]
-pub(crate) async fn sync_workspace(app: tauri::AppHandle) -> Reply<Snapshot> {
+pub(crate) async fn sync_workspace(
+    app: tauri::AppHandle,
+    on_progress: Channel<String>,
+) -> Reply<Snapshot> {
     #[cfg(windows)]
     {
+        let _ = on_progress;
         crate::tray::request_sync(&app);
         off_main_thread(snapshot).await
     }
     #[cfg(not(windows))]
     let _ = app;
     #[cfg(not(windows))]
-    off_main_thread(|| mutate_with_plan(core::sync)).await
+    off_main_thread(move || {
+        let progress = MutationProgress(Some(on_progress));
+        mutate_with_plan(&progress, |s| {
+            progress.send("Syncing…".into());
+            core::sync(s)
+        })
+    })
+    .await
 }
 #[tauri::command]
 pub(crate) async fn preview_schedule(seconds: u32) -> Reply<core::Schedule> {
@@ -1362,7 +1387,9 @@ pub(crate) async fn resolve_stale_target(expected: String) -> Reply<Option<PathB
 }
 
 #[cfg(test)]
-mod main_thread_tests {
+mod command_tests {
+    use std::collections::BTreeSet;
+
     /// Each of these only touches memory or asks Tauri to do something quick. A new command
     /// that touches the disk, a process or the network belongs in `off_main_thread`.
     const ALLOWED_ON_MAIN_THREAD: &[&str] = &[
@@ -1375,24 +1402,55 @@ mod main_thread_tests {
         "different_preview_lines",
     ];
 
-    #[test]
-    fn main_thread_commands_stay_trivial() {
-        let source = include_str!("commands.rs");
-        let mut synchronous = Vec::new();
-        for command in source.split("#[tauri::command]\n").skip(1) {
-            let signature = command
-                .lines()
-                .find(|line| line.contains(" fn "))
-                .expect("a Tauri command has a signature");
-            if !signature.contains("async fn") {
+    /// Each command's name, its signature line, and its whole declaration.
+    fn commands() -> Vec<(&'static str, &'static str, &'static str)> {
+        include_str!("commands.rs")
+            .split("#[tauri::command]\n")
+            .skip(1)
+            .map(|command| {
+                let signature = command
+                    .lines()
+                    .find(|line| line.contains(" fn "))
+                    .expect("a Tauri command has a signature");
                 let name = signature
                     .split(" fn ")
                     .nth(1)
                     .and_then(|rest| rest.split(['(', '<']).next())
                     .expect("a Tauri command has a name");
-                synchronous.push(name);
-            }
-        }
+                let (declaration, _) = command.split_once('{').expect("a Tauri command has a body");
+                (name, signature, declaration)
+            })
+            .collect()
+    }
+
+    /// A listed command without the parameter gets an unused channel. An unlisted command
+    /// with it fails every call, and only a native run would notice.
+    #[test]
+    fn progress_commands_match_the_frontend_list() {
+        let listed: BTreeSet<&str> = include_str!("../../src/mutation-progress.ts")
+            .split("new Set([")
+            .nth(1)
+            .and_then(|rest| rest.split("])").next())
+            .expect("the frontend lists its progress commands")
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .collect();
+        let reporting: BTreeSet<&str> = commands()
+            .into_iter()
+            .filter(|(_, _, declaration)| declaration.contains("on_progress: Channel<String>"))
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(listed, reporting);
+    }
+
+    #[test]
+    fn main_thread_commands_stay_trivial() {
+        let synchronous: Vec<_> = commands()
+            .into_iter()
+            .filter(|(_, signature, _)| !signature.contains("async fn"))
+            .map(|(name, _, _)| name)
+            .collect();
         let unexpected: Vec<_> = synchronous
             .iter()
             .filter(|name| !ALLOWED_ON_MAIN_THREAD.contains(name))

@@ -1,7 +1,10 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-// One boundary for source edits, local settings and explicit publication.
+// One boundary for source edits, local settings, publication, apply and sync.
+// `progress_commands_match_the_frontend_list` keeps this in step with the Rust commands.
 const commands = new Set([
+  "apply_workspace",
+  "sync_workspace",
   "push_content",
   "save_global_instructions",
   "set_skill_enabled",
@@ -32,14 +35,7 @@ export async function command<T>(
   name: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  // The browser fixture can implement invoke without native callback transport.
-  const internals = (
-    window as unknown as {
-      __TAURI_INTERNALS__?: { transformCallback?: unknown };
-    }
-  ).__TAURI_INTERNALS__;
-  if (!commands.has(name) || typeof internals?.transformCallback !== "function")
-    return invoke<T>(name, args);
+  if (!commands.has(name)) return invoke<T>(name, args);
 
   const operation = ++latest;
   let active = true;
@@ -53,8 +49,7 @@ export async function command<T>(
     return await invoke<T>(name, { ...args, onProgress });
   } finally {
     notify(null);
+    // A message queued before the reply can arrive after it.
     active = false;
-    // Channel ordering handles stages; the active guard also rejects messages
-    // queued before the command's reply but delivered after it settled.
   }
 }

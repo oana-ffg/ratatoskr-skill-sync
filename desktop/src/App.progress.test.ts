@@ -10,6 +10,7 @@ import { test, expect, vi, afterEach } from "vitest";
 import { Channel } from "@tauri-apps/api/core";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import App from "./App.svelte";
+import { reviewSummary } from "./api";
 import { fixture, fixtureIPC } from "../tests/fixture";
 
 function gate() {
@@ -152,5 +153,35 @@ test("Agents saves several files with separate channels through the same progres
   await act(() => requests[0].channel.onmessage("Late first file…"));
   expect(status).toHaveTextContent(/^Getting the latest content…$/);
   await act(() => requests[1].pending.resolve(fixture.workspace));
+  expect(status).toHaveTextContent(/^$/);
+});
+
+test("Apply reports what it is doing through the shared status", async () => {
+  const pending = gate();
+  let channel!: Channel<string>;
+  const workspace = structuredClone(fixture.workspace);
+  workspace.plan.conflicts = [];
+  workspace.plan.stale_targets = [];
+  workspace.legacy = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "read_workspace") return workspace;
+    if (cmd === "apply_workspace") {
+      channel = (args as { onProgress: Channel<string> }).onProgress;
+      return pending.promise;
+    }
+    return fixtureIPC(cmd, args as Record<string, unknown>);
+  });
+  render(App);
+  await screen.findByRole("heading", { name: /Skills/ });
+  await fireEvent.click(screen.getByRole("button", { name: /Review changes/ }));
+  await fireEvent.click(
+    await screen.findByRole("button", {
+      name: reviewSummary(workspace).applyAction,
+    }),
+  );
+  const status = screen.getByRole("status", { name: "Save progress" });
+  await act(() => channel.onmessage("Applying changes…"));
+  expect(status).toHaveTextContent(/^Applying changes…$/);
+  await act(() => pending.resolve(workspace));
   expect(status).toHaveTextContent(/^$/);
 });

@@ -389,36 +389,6 @@ for (const colorScheme of ["light", "dark"] as const) {
         }
         return backend.invoke(cmd, args);
       });
-      // Add only the native callback transport to the browser fixture. The app
-      // creates a real Tauri Channel; no synthetic frontend stages are used.
-      await page.addInitScript(() => {
-        type Bridge = {
-          invoke: (
-            cmd: string,
-            args: Record<string, unknown>,
-          ) => Promise<unknown>;
-          transformCallback: (callback: (value: unknown) => void) => number;
-          unregisterCallback: (id: number) => void;
-        };
-        const host = window as unknown as {
-          __TAURI_INTERNALS__: Bridge;
-          fixtureProgress: (id: number, index: number, message: string) => void;
-        };
-        const callbacks = new Map<number, (value: unknown) => void>();
-        let next = 0;
-        host.__TAURI_INTERNALS__.transformCallback = (callback) => {
-          callbacks.set(++next, callback);
-          return next;
-        };
-        host.__TAURI_INTERNALS__.unregisterCallback = (id) => {
-          callbacks.delete(id);
-        };
-        host.fixtureProgress = (id, index, message) =>
-          callbacks.get(id)?.({ index, message });
-        const invoke = host.__TAURI_INTERNALS__.invoke;
-        host.__TAURI_INTERNALS__.invoke = (cmd, args) =>
-          invoke(cmd, JSON.parse(JSON.stringify(args ?? {})));
-      });
       const send = (index: number, message: string) =>
         page.evaluate(
           ({ id, index, message }) => {
