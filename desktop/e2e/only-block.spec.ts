@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { editorFixture, instructionsFixture } from "../tests/fixture";
+import { editorFixture, fixture, instructionsFixture } from "../tests/fixture";
 import { installFixture } from "./helpers";
 
 const OPEN = "<!-- only machine=brunnr -->";
@@ -110,6 +110,42 @@ test.describe("the toolbar stays reachable", () => {
     const panel = (await page.locator(".cm-panels-top").boundingBox())!;
     expect(panel.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height - 1);
   });
+});
+
+test("the Conflict editor's toolbar is not pinned, so its Find panel cannot cover it", async ({
+  page,
+}) => {
+  const backend = instructionsFixture();
+  const conflict = {
+    ...fixture.workspace.plan.conflict_details[0],
+    source: "/source/global/AGENTS.md",
+  };
+  const workspace = structuredClone(fixture.workspace);
+  workspace.plan.conflict_details = [conflict];
+  await installFixture(page, (cmd, args) => {
+    if (cmd === "read_workspace") return workspace;
+    if (cmd === "read_conflict_source") return { text: DOCUMENT };
+    return backend.invoke(cmd, args);
+  });
+  await page.goto("/");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Review changes/ })
+    .click();
+  await page.getByRole("button", { name: "Edit source…" }).first().click();
+  const dialog = page.getByRole("dialog");
+  const editor = dialog.getByRole("textbox", {
+    name: "Source Markdown editor",
+  });
+  await editor.click();
+  await expect(dialog.locator(".format-toolbar")).not.toHaveCSS(
+    "position",
+    "sticky",
+  );
+  await page.keyboard.press("ControlOrMeta+f");
+  const toolbar = (await dialog.locator(".format-toolbar").boundingBox())!;
+  const panel = (await dialog.locator(".cm-panels-top").boundingBox())!;
+  expect(panel.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height);
 });
 
 test.describe("undo and redo", () => {
@@ -416,6 +452,37 @@ test.describe("the box edge", () => {
     );
   });
 
+  test("Enter over a selection across the edge keeps the box", async ({
+    page,
+  }) => {
+    const { saved } = await open(page);
+    await caret(page, "Inside two.", "End");
+    await page.keyboard.press("ArrowLeft");
+    for (let press = 0; press < 3; press++)
+      await page.keyboard.press("Shift+ArrowRight");
+    await page.keyboard.press("Enter");
+    await settled(page);
+    expect(await page.locator(".only-header").count()).toBe(1);
+    expect(await saved()).toBe(
+      DOCUMENT.replace(
+        `Inside two.\n${CLOSE}\nAfter box.`,
+        `Inside two\n\n${CLOSE}\nfter box.`,
+      ),
+    );
+  });
+
+  test("Bold over a selection across the edge still wraps the source text", async ({
+    page,
+  }) => {
+    const { saved } = await open(page);
+    await caret(page, "Before box.", "End");
+    await page.keyboard.press("Shift+ArrowDown");
+    await page.getByRole("button", { name: "Bold" }).click();
+    const wrapped = (await saved())!;
+    expect(wrapped.match(/<!-- only/g)).toHaveLength(1);
+    expect(wrapped).toContain(`**\n${OPEN}\nInside one.**`);
+  });
+
   test("a selection covering the whole box deletes it with its markers", async ({
     page,
   }) => {
@@ -509,6 +576,24 @@ test.describe("the box edge", () => {
     expect(await saved()).toBe(
       `Before.\n${OPEN}\nInside one.\nInside two.!\n${CLOSE}\nBelow.`,
     );
+  });
+
+  test("Insert value uses the corrected caret when the file ends in a box", async ({
+    page,
+  }) => {
+    const { saved } = await open(page, `Before.\n${BOX}`);
+    await caret(page, "Inside two.", "Home");
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.getByRole("button", { name: "＋ Insert value…" }).click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /Recordings archive/i })
+      .click();
+    await expect(page.locator(".value-pill")).toHaveCount(1);
+    const text = (await saved())!;
+    expect(text.indexOf("{{af:")).toBeGreaterThan(text.indexOf(OPEN));
+    expect(text.indexOf("{{af:")).toBeLessThan(text.indexOf(CLOSE));
+    expect(text.endsWith(CLOSE)).toBe(true);
   });
 
   test("a box at the very start of the file can still be left with ArrowUp", async ({

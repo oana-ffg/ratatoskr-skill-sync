@@ -855,9 +855,6 @@ nav button.active {
   background: var(--surface);
 }
 .format-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 4;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -865,6 +862,12 @@ nav button.active {
   padding: 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
+}
+/* TemplateToolbar publishes its height for the editor below; only that one can stay pinned. */
+.editor-frame > .format-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
 }
 .format-toolbar button {
   font-size: 10px;

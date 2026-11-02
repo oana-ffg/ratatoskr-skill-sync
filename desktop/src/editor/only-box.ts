@@ -17,6 +17,7 @@ import {
   placedBlocks,
   present,
 } from "./presentation";
+import { setSource } from "./source";
 
 /**
  * A condition whose markers have their own lines draws as a box around the lines between them,
@@ -180,11 +181,22 @@ function keepMarkers(
   };
 }
 
-const guardedEdit = /^(delete|input\.type|input\.paste)($|\.)/;
+/**
+ * Keys, typing and paste. Plain "input" is what Enter and its relatives use. Formatting wraps the
+ * selected text, markers included, and uses its own event, and structured edits carry a source
+ * snapshot, so neither is an edit of the visible text.
+ */
+const guardedEdit = /^(delete($|\.)|input$|input\.(type|paste)($|\.))/;
 const guardEdits = EditorState.transactionFilter.of((tr) => {
   const edges = tr.startState.field(edgeField);
   const event = tr.annotation(Transaction.userEvent);
-  if (!tr.docChanged || !edges.size || !event || !guardedEdit.test(event))
+  if (
+    !tr.docChanged ||
+    !edges.size ||
+    !event ||
+    !guardedEdit.test(event) ||
+    tr.effects.some((effect) => effect.is(setSource))
+  )
     return tr;
   const changes: { from: number; to: number; insert: string }[] = [];
   tr.changes.iterChanges((from, to, _fromB, _toB, inserted) =>

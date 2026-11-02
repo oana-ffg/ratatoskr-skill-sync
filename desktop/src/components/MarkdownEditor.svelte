@@ -94,7 +94,7 @@
             : ["- ", ""];
     view.dispatch({
       changes: { from: s.from, to: s.to, insert: pair[0] + chosen + pair[1] },
-      userEvent: "input",
+      userEvent: "input.format",
     });
     view.focus();
   }
@@ -152,7 +152,10 @@
             "aria-label": label,
           }),
           EditorView.updateListener.of((update) => {
-            const sourceText = update.state.field(sourceField);
+            // The latest state, not this update's: an earlier listener may already have moved the
+            // caret off a hidden line, and that correction must not be overwritten.
+            const { state } = update.view;
+            const sourceText = state.field(sourceField);
             if (
               update.docChanged &&
               !update.transactions.every((t) =>
@@ -161,7 +164,7 @@
             )
               onchange(sourceText.source);
             if (update.selectionSet) {
-              const range = update.state.selection.main;
+              const range = state.selection.main;
               onselection({
                 from: sourceText.toSource(range.from),
                 to: sourceText.toSource(range.to),

@@ -363,12 +363,14 @@ pub fn edit_draft(markdown: &str, metadata: &str, edit: DraftEdit) -> Result<Dra
                     "\n"
                 };
                 // Selecting whole lines picks up the last line's break. Left inside, it would
-                // become a blank line at the end of the section in every rendered file.
+                // become a blank line at the end of the section in every rendered file. The break
+                // stays exactly as selected, because a file can mix line endings.
                 let selected = &markdown[from..to];
-                let (body, after) = match selected.strip_suffix(nl) {
-                    Some(body) => (body, nl),
-                    None => (selected, ""),
-                };
+                let body = selected
+                    .strip_suffix("\r\n")
+                    .or_else(|| selected.strip_suffix('\n'))
+                    .unwrap_or(selected);
+                let after = &selected[body.len()..];
                 result.markdown.replace_range(
                     from..to,
                     &format!("{opening}{nl}{body}{nl}<!-- /only -->{after}"),
@@ -1337,6 +1339,10 @@ mod tests {
             (
                 "first\r\nsecond\r\n",
                 "<!-- only harness=codex -->\r\nfirst\r\n<!-- /only -->\r\nsecond\r\n",
+            ),
+            (
+                "first\nsecond\r\n",
+                "<!-- only harness=codex -->\r\nfirst\r\n<!-- /only -->\nsecond\r\n",
             ),
         ] {
             let line = source.find("second").unwrap();
