@@ -4168,6 +4168,11 @@ fn stale_harness_groups_global_and_project_targets_in_one_decision() {
     assert!(plan(&f.settings).unwrap().conflicts.is_empty());
 }
 
+/// Git rejects the verbatim `\\\\?\\` paths that `canonicalize` returns on Windows.
+fn git_path(path: &Path) -> String {
+    dunce::simplified(path).to_string_lossy().replace('\\', "/")
+}
+
 #[test]
 fn a_directory_whose_git_points_at_another_worktree_is_not_a_checkout_root() {
     let f = Fixture::new();
@@ -4178,14 +4183,14 @@ fn a_directory_whose_git_points_at_another_worktree_is_not_a_checkout_root() {
     git(&repository, &["init", "-b", "main"]);
     git(
         &repository,
-        &["config", "core.worktree", elsewhere.to_str().unwrap()],
+        &["config", "core.worktree", &git_path(&elsewhere)],
     );
     let project = f.root.join("project");
     fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
     fs::write(project.join(".ratatoskr.toml"), "source = 'agent-skills'\n").unwrap();
     fs::write(
         project.join(".git"),
-        format!("gitdir: {}\n", repository.join(".git").display()),
+        format!("gitdir: {}\n", git_path(&repository.join(".git"))),
     )
     .unwrap();
     let error = project_status(&project).error.unwrap();
@@ -4206,10 +4211,7 @@ fn an_upstream_with_the_right_short_name_in_another_namespace_cannot_deploy() {
     git(source, &["commit", "-m", "Initial"]);
     let remote = f.root.join("remote.git");
     git(&f.root, &["init", "--bare", "-b", "main", "remote.git"]);
-    git(
-        source,
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    );
+    git(source, &["remote", "add", "origin", &git_path(&remote)]);
     git(source, &["push", "origin", "main"]);
     git(
         source,
