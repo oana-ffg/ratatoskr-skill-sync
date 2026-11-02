@@ -82,7 +82,7 @@ test(
           key: readFileSync(join(tls, "private.der")),
           format: "der",
           type: "pkcs8",
-        }),
+        }).export({ format: "pem", type: "pkcs8" }),
         cert: new X509Certificate(
           readFileSync(join(tls, "certificate.der")),
         ).toString(),
