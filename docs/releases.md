@@ -15,8 +15,7 @@ installer preserves your content checkout and configuration. Restarting the old
 app alone may retry the same update before its first sync, so reinstall before
 restarting when that retry also aborts.
 
-The supervisor change in this repository takes effect after installing a build
-that contains it. It waits for the old desktop process to exit before starting
+The supervisor ships in 0.2.21 and takes effect once 0.2.21 is installed. It waits for the old desktop process to exit before starting
 NSIS, uses silent mode with a two-minute deadline, and restarts the hidden tray
 on success or failure. On failure it restores the previous desktop and CLI
 executables and retains both the backup and any partially installed executables.
@@ -45,8 +44,14 @@ sync becomes stale. The local watchdog must distinguish an intentional **Quit**
 or disabled login startup from a crash; an external monitor needs an explicitly
 configured destination. Neither is installed by this change.
 
-Release publishers should repeat the recovery notice in the first release that
-ships the supervisor. Publishing that notice or a release is a separate action.
+## v0.2.21 release notes
+
+- **A failed Windows update no longer leaves you without sync.** Updates used to start the installer and close the tray straight away. If the installer aborted, its "Installation Aborted" window stayed open and nothing restarted sync or told you. Now a separate process waits for the app to exit and runs the installer silently with a two-minute limit. If the install fails, it restores the previous version and restarts the tray, and the failure stays visible in **Activity** until it is resolved. CI now runs a real signed upgrade and a real aborted install on Windows.
+- **If your Windows sync is stuck:** when you see an "Installation Aborted" window and no Ratatoskr tray icon, close the window, run the Windows setup executable from this release, then open Ratatoskr and check **Activity** for a new successful sync. Your skill repository and configuration stay in place.
+- **The protection starts after this update.** Installing 0.2.21 still uses the updater in your current version, so this one update can still hit the old problem. The steps above fix it if it does.
+- **Undo no longer corrupts your draft.** After Ctrl+Z, a fragment like `<!-- /only.` could appear and swallow the next paragraph, and Save could use text that was not on screen. Discard now also ends the undo history, and Ctrl+Shift+Z redoes on Windows too.
+- **Only blocks have real edges.** A block whose markers have their own lines now draws as a box, with the marker lines hidden. Typing stays inside it, arrow keys step in and out, and Backspace and Delete at its edges no longer break the markers.
+- **The editor toolbar stays reachable while you scroll,** and applying a condition deep in a long file keeps your place.
 
 ## v0.2.20 release notes
 
