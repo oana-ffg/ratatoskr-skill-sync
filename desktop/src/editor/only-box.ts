@@ -7,6 +7,7 @@ import {
   StateField,
   Transaction,
   type Extension,
+  type Line,
   type SelectionRange,
   type Text,
   type TransactionSpec,
@@ -187,6 +188,23 @@ function keepMarkers(
 }
 
 /**
+ * A whole-line delete or cut with a line break that belongs to an edge. It takes the break on the
+ * other side of the line instead, or none if both are edges, which leaves a box's only line empty.
+ */
+function removeLine(doc: Text, edges: Edges, line: Line): TransactionSpec {
+  const free = (from: number) =>
+    from >= 0 &&
+    from < doc.length &&
+    !edgesTouching(edges, from, from + 1).length;
+  const breakAfter = free(line.to);
+  const from = !breakAfter && free(line.from - 1) ? line.from - 1 : line.from;
+  return {
+    changes: { from, to: breakAfter ? line.to + 1 : line.to },
+    selection: EditorSelection.cursor(from),
+  };
+}
+
+/**
  * Keys, typing and paste. Plain "input" is what Enter and its relatives use. Formatting wraps the
  * selected text, markers included, and uses its own event, and structured edits carry a source
  * snapshot, so neither is an edit of the visible text.
@@ -209,34 +227,19 @@ const guardEdits = EditorState.transactionFilter.of((tr) => {
   );
   // One selection range always makes one change.
   if (changes.length !== 1 || changes[0].from === changes[0].to) return tr;
-  let { from, to } = changes[0];
+  const [change] = changes;
+  if (!edgesTouching(edges, change.from, change.to).length) return tr;
   const doc = tr.startState.doc;
   const { main } = tr.startState.selection;
-  let guarded: TransactionSpec | null = null;
-  if (main.empty && event === "delete.line") {
-    // deleteLine takes the break before a line. At an edge that break belongs to the marker,
-    // so take the one after the line instead, unless it belongs to the next edge.
-    const edge = edgesTouching(edges, from, from + 1)[0];
-    if (edge) {
-      from = edge.to;
-      if (to < doc.length && !edgesTouching(edges, to, to + 1).length) to++;
-    }
-    guarded = keepMarkers(
-      edges,
-      { from, to, insert: "" },
-      tr.newSelection.main,
-    ) ?? {
-      changes: { from, to },
-      selection: EditorSelection.cursor(from),
-    };
-  } else if (main.empty && event.startsWith("delete")) {
-    const edge = edgesTouching(edges, from, to).find(
-      (span) => span.from === from && span.to === to,
+  let guarded: TransactionSpec | null;
+  if (main.empty && (event === "delete.line" || event === "delete.cut"))
+    guarded = removeLine(doc, edges, doc.lineAt(main.head));
+  else if (main.empty && event.startsWith("delete")) {
+    const edge = edgesTouching(edges, change.from, change.to).find(
+      (span) => span.from === change.from && span.to === change.to,
     );
-    if (edge) guarded = crossEdge(doc, edges, edge, main.head);
-  } else {
-    guarded = keepMarkers(edges, changes[0], tr.newSelection.main);
-  }
+    guarded = edge ? crossEdge(doc, edges, edge, main.head) : null;
+  } else guarded = keepMarkers(edges, change, tr.newSelection.main);
   if (!guarded) return tr;
   return {
     ...guarded,

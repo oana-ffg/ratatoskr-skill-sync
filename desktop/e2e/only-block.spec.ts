@@ -664,6 +664,50 @@ test.describe("the box edge", () => {
     );
   });
 
+  test("cutting a whole line beside an edge keeps the marker on its own line", async ({
+    page,
+  }) => {
+    const { saved } = await open(page, `Before box.\n${BOX}\nAfter box.\n`);
+    await caret(page, "Inside two.", "Home");
+    await page.keyboard.press("ControlOrMeta+x");
+    // Before the next analysis lands: the caret must already be off the hidden line.
+    await page.keyboard.press("Backspace");
+    await page.keyboard.type("|");
+    expect(await saved()).toBe(
+      `Before box.\n${OPEN}\nInside one|\n${CLOSE}\nAfter box.\n`,
+    );
+  });
+
+  test("cutting a box's only line leaves it empty", async ({ page }) => {
+    const { saved } = await open(
+      page,
+      `Before box.\n${OPEN}\nOnly line.\n${CLOSE}\nAfter box.\n`,
+    );
+    await caret(page, "Only line.", "Home");
+    await page.keyboard.press("ControlOrMeta+x");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.type("|");
+    expect(await saved()).toBe(
+      `Before box.\n${OPEN}\n|\n${CLOSE}\nAfter box.\n`,
+    );
+  });
+
+  test("cutting the line just above a box keeps the marker on its own line", async ({
+    page,
+  }) => {
+    const { saved } = await open(
+      page,
+      `First.\nBefore box.\n${BOX}\nAfter box.\n`,
+    );
+    await caret(page, "Before box.", "Home");
+    await page.keyboard.press("ControlOrMeta+x");
+    await page.keyboard.press("Delete");
+    await page.keyboard.type("|");
+    expect(await saved()).toBe(
+      `First.|Inside one.\n${OPEN}\nInside two.\n${CLOSE}\nAfter box.\n`,
+    );
+  });
+
   test("two boxes in a row stay separate", async ({ page }) => {
     const second = `<!-- only harness=codex -->\nSecond box.\n${CLOSE}`;
     const { saved } = await open(page, `${BOX}\n${second}\nAfter.\n`);
