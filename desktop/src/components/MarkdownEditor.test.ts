@@ -263,60 +263,43 @@ test("transpose stops at a box edge and still works inside a line", async () => 
   expect(source()).toBe(value.replace("First.", "iFrst."));
 });
 
-test("moving lines keeps a box ordered and with a line inside", async () => {
-  const value = `Before.\n${OPEN}\nFirst.\nLast.\n${CLOSE}\nAfter.\n`;
-  const moves = [
-    // Lines may travel in and out of a box that keeps a line.
-    [
-      moveLineDown,
-      "Last.",
-      `Before.\n${OPEN}\nFirst.\n${CLOSE}\nLast.\nAfter.\n`,
-    ],
-    [
-      moveLineUp,
-      "First.",
-      `Before.\nFirst.\n${OPEN}\nLast.\n${CLOSE}\nAfter.\n`,
-    ],
-    [
-      moveLineDown,
-      "Before.",
-      `${OPEN}\nBefore.\nFirst.\nLast.\n${CLOSE}\nAfter.\n`,
-    ],
-    [
-      moveLineUp,
-      "After.",
-      `Before.\n${OPEN}\nFirst.\nLast.\nAfter.\n${CLOSE}\n`,
-    ],
+test("moving lines stops at a box edge and works everywhere else", async () => {
+  const value = `Above.\nBefore.\n${OPEN}\nFirst.\nLast.\n${CLOSE}\nAfter.\nBelow.\n`;
+  const refused = [
+    [moveLineDown, "Last."],
+    [moveLineUp, "First."],
+    [moveLineDown, "Before."],
+    [moveLineUp, "After."],
   ] as const;
-  for (const [move, line, expected] of moves) {
+  for (const [move, line] of refused) {
+    const { view, unmount } = await mountBox(value);
+    view.dispatch({ selection: { anchor: value.indexOf(line) } });
+    move(view);
+    expect(view.state.field(sourceField).source).toBe(value);
+    unmount();
+  }
+  // Selections holding a marker stop too: moving the opening one past the only line would empty it.
+  const only = `Before.\n${OPEN}\nOnly.\n${CLOSE}\nAfter.\n`;
+  const { view, unmount } = await mountBox(only);
+  view.dispatch({ selection: { anchor: 0, head: only.indexOf("Only.") } });
+  moveLineDown(view);
+  expect(view.state.field(sourceField).source).toBe(only);
+  unmount();
+  const allowed = [
+    [moveLineDown, "First.", value.replace("First.\nLast.", "Last.\nFirst.")],
+    [moveLineUp, "Last.", value.replace("First.\nLast.", "Last.\nFirst.")],
+    [
+      moveLineDown,
+      "Above.",
+      value.replace("Above.\nBefore.", "Before.\nAbove."),
+    ],
+    [moveLineUp, "Below.", value.replace("After.\nBelow.", "Below.\nAfter.")],
+  ] as const;
+  for (const [move, line, expected] of allowed) {
     const { view, unmount } = await mountBox(value);
     view.dispatch({ selection: { anchor: value.indexOf(line) } });
     move(view);
     expect(view.state.field(sourceField).source).toBe(expected);
-    unmount();
-  }
-  // A selection holding one marker cannot swap with the other.
-  const { view, unmount } = await mountBox(value);
-  view.dispatch({
-    selection: { anchor: 0, head: value.indexOf("Last.") + 5 },
-  });
-  moveLineDown(view);
-  expect(view.state.field(sourceField).source).toBe(value);
-  unmount();
-  // The only line, full or empty, cannot leave.
-  for (const [move, body] of [
-    [moveLineDown, "Only."],
-    [moveLineUp, "Only."],
-    [moveLineDown, ""],
-    [moveLineUp, ""],
-  ] as const) {
-    const only = `Before.\n${OPEN}\n${body}\n${CLOSE}\nAfter.\n`;
-    const { view, unmount } = await mountBox(only);
-    view.dispatch({
-      selection: { anchor: only.indexOf(OPEN) + OPEN.length + 1 },
-    });
-    move(view);
-    expect(view.state.field(sourceField).source).toBe(only);
     unmount();
   }
 });

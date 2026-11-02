@@ -210,40 +210,6 @@ function removeLine(doc: Text, edges: Edges, line: Line): TransactionSpec {
 }
 
 /**
- * Whether a keyboard move would damage a box. Transposing across an edge swaps a character with a
- * hidden line break. Moving lines over a marker is fine, and lets a line enter or leave a box, as
- * long as the box's other marker is clear of them: otherwise the markers would swap order, or the
- * box would have no line left inside.
- */
-function moveBreaksBox(
-  edges: Edges,
-  event: string,
-  changes: { from: number; to: number }[],
-): boolean {
-  if (event === "move.character")
-    return changes.some(
-      ({ from, to }) => edgesTouching(edges, from, to).length > 0,
-    );
-  const [first] = changes;
-  const last = changes[changes.length - 1];
-  // Two changes bracket the moved lines. An empty line's two changes merge into one.
-  const moved =
-    changes.length > 1
-      ? { from: first.to, to: last.from }
-      : { from: first.from, to: first.to };
-  const crossed = changes.flatMap(({ from, to }) =>
-    edgesTouching(edges, from, to),
-  );
-  let breaks = false;
-  edges.between(moved.from, moved.to, (_from, _to, edge) => {
-    breaks ||= crossed.some(
-      (span) => span.edge.box === edge.box && span.edge.side !== edge.side,
-    );
-  });
-  return breaks;
-}
-
-/**
  * Keys, typing, paste and keyboard moves and copies. Plain "input" is what Enter and its relatives use.
  * Formatting wraps the selected text, markers included, and uses its own event, and structured
  * edits carry a source snapshot, so neither is an edit of the visible text.
@@ -265,8 +231,12 @@ const guardEdits = EditorState.transactionFilter.of((tr) => {
   tr.changes.iterChanges((from, to, _fromB, _toB, inserted) =>
     changes.push({ from, to, insert: inserted.toString() }),
   );
+  // A keyboard move stops at an edge. Transposing would swap a character with a hidden line break,
+  // and moving lines would carry them over a marker the view can no longer track.
   if (event.startsWith("move."))
-    return moveBreaksBox(edges, event, changes) ? {} : tr;
+    return changes.some(({ from, to }) => edgesTouching(edges, from, to).length)
+      ? {}
+      : tr;
   if (event === "input.copyline") {
     // Copying one marker of a box, without the other, would nest or unbalance the blocks.
     const from = tr.startState.doc.lineAt(
