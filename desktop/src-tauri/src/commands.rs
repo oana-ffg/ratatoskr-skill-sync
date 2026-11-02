@@ -451,6 +451,7 @@ fn install_downloaded_update(
         let result = core::windows_update::supervise(
             &std::env::current_exe()?,
             &core::updates::desktop_data_dir()?,
+            &app.config().identifier,
             &update.version,
             &bytes,
         );

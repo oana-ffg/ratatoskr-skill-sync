@@ -19,6 +19,7 @@ struct Plan<'a> {
     parent: u32,
     desktop: &'a Path,
     data: &'a Path,
+    app_id: &'a str,
     version: &'a str,
     sha256: String,
 }
@@ -42,7 +43,13 @@ pub fn failure(data: &Path) -> Result<Option<String>> {
 /// Bytes must have passed the signed updater's download verification first.
 /// Returns only once the supervisor has opened the parent's process handle.
 /// The caller must then exit, rather than launch another desktop instance.
-pub fn supervise(desktop: &Path, data: &Path, version: &str, bytes: &[u8]) -> Result<()> {
+pub fn supervise(
+    desktop: &Path,
+    data: &Path,
+    app_id: &str,
+    version: &str,
+    bytes: &[u8],
+) -> Result<()> {
     let directory = tempfile::Builder::new()
         .prefix("windows-install-")
         .tempdir_in(data)?;
@@ -60,6 +67,7 @@ pub fn supervise(desktop: &Path, data: &Path, version: &str, bytes: &[u8]) -> Re
             parent: std::process::id(),
             desktop,
             data,
+            app_id,
             version,
             sha256: format!("{:x}", Sha256::digest(bytes)),
         })?,

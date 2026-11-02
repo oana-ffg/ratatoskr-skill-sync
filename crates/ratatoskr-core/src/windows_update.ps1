@@ -13,14 +13,21 @@ function Write-UpdateResult($Plan, [string]$ErrorMessage) {
     else { [IO.File]::Move($temporary, $path) }
 }
 
+function Throw-UnstoppedInstaller([string]$Message) {
+    $problem = [InvalidOperationException]::new($Message)
+    $problem.Data['InstallerStillRunning'] = $true
+    throw $problem
+}
+
 function Wait-Installer($Child, [int]$TimeoutMilliseconds = 120000) {
     if (-not $Child.WaitForExit($TimeoutMilliseconds)) {
         # Kill the owned process tree before restoring any files. Never leave an
         # installer capable of overwriting the recovered, running installation.
-        $termination = Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" -ArgumentList @('/PID', $Child.Id, '/T', '/F') -WindowStyle Hidden -PassThru
-        if (-not $termination.WaitForExit(10000)) { throw 'Installer timed out; process-tree termination also timed out' }
-        if (-not $Child.WaitForExit(10000)) { throw 'Installer timed out; could not stop its process tree' }
-        if ($termination.ExitCode -ne 0) { throw "Installer timed out; process-tree termination failed ($($termination.ExitCode))" }
+        try { $termination = Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" -ArgumentList @('/PID', $Child.Id, '/T', '/F') -WindowStyle Hidden -PassThru }
+        catch { Throw-UnstoppedInstaller "Installer timed out; could not start process-tree termination: $($_.Exception.Message)" }
+        if (-not $termination.WaitForExit(10000)) { Throw-UnstoppedInstaller 'Installer timed out; process-tree termination also timed out' }
+        if (-not $Child.WaitForExit(10000)) { Throw-UnstoppedInstaller 'Installer timed out; could not stop its process tree' }
+        if ($termination.ExitCode -ne 0) { Throw-UnstoppedInstaller "Installer timed out; process-tree termination failed ($($termination.ExitCode))" }
         throw "Installer timed out after $TimeoutMilliseconds milliseconds and was stopped"
     }
     if ($Child.ExitCode -ne 0) { throw "Installer failed with exit code $($Child.ExitCode)" }
@@ -28,16 +35,21 @@ function Wait-Installer($Child, [int]$TimeoutMilliseconds = 120000) {
 
 function Invoke-UpdateTransaction([scriptblock]$Install, [scriptblock]$Restore, [scriptblock]$Restart, [scriptblock]$Report) {
     $failure = $null
+    $unsafeToRestore = $false
     try { & $Install }
     catch {
         $failure = $_.Exception.Message
-        try { & $Restore }
-        catch { $failure += "; restoring the previous executables failed: $($_.Exception.Message)" }
+        $unsafeToRestore = $_.Exception.Data['InstallerStillRunning'] -eq $true
+        if (-not $unsafeToRestore) {
+            try { & $Restore }
+            catch { $failure += "; restoring the previous executables failed: $($_.Exception.Message)" }
+        }
     }
     # A failed ledger write must not prevent the restart. The caller's outer
     # catch also provides a native alert when reporting itself fails.
     $reportFailure = $null
     try { & $Report $failure } catch { $reportFailure = $_.Exception.Message }
+    if ($unsafeToRestore) { throw "$failure; recovery deferred because the installer could still be writing files. $reportFailure" }
     try { & $Restart }
     catch {
         $failure = (@($failure, "restarting sync failed: $($_.Exception.Message)") | Where-Object { $_ }) -join '; '
@@ -64,14 +76,27 @@ function Start-SyncTray($Plan) {
     if ($child.WaitForExit(3000)) { throw "Desktop exited during recovery ($($child.ExitCode))" }
 }
 
-function Show-RecoveryFailure([string]$Message) {
+function Show-RecoveryFailure([string]$AppId, [string]$Message) {
     # This process survives the tray: it can notify even if the tray cannot start.
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null
     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null
     $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
     $xml.LoadXml('<toast><visual><binding template="ToastText02"><text id="1">Ratatoskr update needs attention</text><text id="2"></text></binding></visual></toast>')
     $xml.GetElementsByTagName('text').Item(1).InnerText = $Message
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Ratatoskr Skill Sync').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+}
+
+function Report-RecoveryFailure($Plan, [string]$Failure) {
+    # A full/unwritable disk must not prevent the independent notification.
+    try { Write-UpdateResult $Plan $Failure }
+    catch { $Failure += "; saving update diagnostics failed: $($_.Exception.Message)" }
+    try { Show-RecoveryFailure $Plan.app_id $Failure }
+    catch {
+        $Failure += "; notification delivery failed: $($_.Exception.Message)"
+        try { Write-UpdateResult $Plan $Failure }
+        catch { [Console]::Error.WriteLine("Cannot retain fallback delivery failure: $($_.Exception.Message)") }
+    }
+    [Console]::Error.WriteLine($Failure)
 }
 
 function Start-SupervisedUpdate([string]$Path) {
@@ -114,8 +139,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         # If recovery/reporting failed, alert from this independent process too.
         try {
             $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
-            Write-UpdateResult $plan $failure
-            Show-RecoveryFailure "$failure. Update evidence: $(Split-Path -Parent $PlanPath)"
+            Report-RecoveryFailure $plan "$failure. Update evidence: $(Split-Path -Parent $PlanPath)"
         }
         catch { [Console]::Error.WriteLine("Update failure: $failure; fallback reporting failed: $($_.Exception.Message)") }
         [Console]::Error.WriteLine($failure)

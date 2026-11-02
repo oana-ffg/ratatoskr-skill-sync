@@ -23,6 +23,8 @@ executables and retains both the backup and any partially installed executables.
 Successful manifest checks do not erase an installation failure; a later
 successful supervised installation clears it. Failed restarts trigger a Windows
 notification from the independent supervisor, without requiring the tray.
+If Windows refuses to terminate a timed-out installer, the supervisor preserves
+the files and alerts instead of racing an installer that could still overwrite them.
 
 Evidence is retained under `%APPDATA%\io.github.oana-ffg.ratatoskr-skill-sync\windows-install-*`;
 the latest outcome is `windows-install-result.json` beside those folders.

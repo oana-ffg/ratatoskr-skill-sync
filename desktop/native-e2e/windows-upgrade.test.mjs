@@ -117,6 +117,11 @@ test(
         join(transaction, "plan.json"),
         JSON.stringify({
           parent: tray.pid,
+          app_id: JSON.parse(
+            readFileSync(
+              new URL("../src-tauri/tauri.conf.json", import.meta.url),
+            ),
+          ).identifier,
           desktop,
           data,
           version,

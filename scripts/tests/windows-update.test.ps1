@@ -30,6 +30,13 @@ catch { $caught = $true }
 Assert-Equal $caught $true
 Assert-Equal ($events -join ',') 'report:,report:restarting sync failed: cannot start desktop'
 
+$events.Clear()
+$caught = $false
+try { Invoke-UpdateTransaction -Install { Throw-UnstoppedInstaller 'termination denied' } -Restore { $events.Add('unsafe restore') } -Restart { $events.Add('unsafe restart') } -Report { param($message); $events.Add("report:$message") } }
+catch { $caught = $true }
+Assert-Equal $caught $true
+Assert-Equal ($events -join ',') 'report:termination denied'
+
 $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru
 $caught = $false
 try { Wait-Installer $child 100 }
@@ -71,7 +78,7 @@ foreach ($name in @('ratatoskr-desktop.exe', 'ratatoskr.exe')) {
     [IO.File]::WriteAllText((Join-Path $transaction "backup\$name"), 'working backup')
     [IO.File]::WriteAllText((Join-Path $transaction $name), 'installed executable')
 }
-$parent = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 3') -WindowStyle Hidden -PassThru
+$parent = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru
 $plan = @{ parent = $parent.Id; data = $transaction; desktop = Join-Path $transaction 'ratatoskr-desktop.exe'; version = '0.2.19'; sha256 = (Get-FileHash (Join-Path $transaction 'installer.exe')).Hash }
 $plan | ConvertTo-Json | Set-Content (Join-Path $transaction 'plan.json')
 $driver = Join-Path $transaction 'driver.ps1'
@@ -83,6 +90,15 @@ Start-SupervisedUpdate $UpdatePlan
 '@ | Set-Content $driver
 $supervisorProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $driver, $Supervisor, (Join-Path $transaction 'plan.json')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $transaction 'stderr.log')
 $null = $supervisorProcess.Handle
+$readyDeadline = [datetime]::UtcNow.AddSeconds(10)
+while (-not (Test-Path -LiteralPath (Join-Path $transaction 'ready'))) {
+    if ($supervisorProcess.HasExited -or [datetime]::UtcNow -ge $readyDeadline) { $parent.Kill(); throw 'Supervisor did not acknowledge the predecessor handle' }
+    Start-Sleep -Milliseconds 25
+}
+Start-Sleep -Milliseconds 100
+Assert-Equal (Test-Path -LiteralPath (Join-Path $transaction 'windows-install-result.json')) $false
+$parent.Kill()
+$parent.WaitForExit()
 if (-not $supervisorProcess.WaitForExit(10000)) { $supervisorProcess.Kill(); throw 'Supervisor entry-point test timed out' }
 Assert-Equal $supervisorProcess.ExitCode 1
 Assert-Equal $parent.HasExited $true
@@ -90,4 +106,17 @@ Assert-Equal ([IO.File]::ReadAllText((Join-Path $transaction 'restarted'))) 'yes
 Assert-Equal ([IO.File]::ReadAllText((Join-Path $transaction 'ratatoskr-desktop.exe'))) 'working backup'
 $outcome = Get-Content (Join-Path $transaction 'windows-install-result.json') -Raw | ConvertFrom-Json
 if ($outcome.error -notlike 'Desktop update: Installer failed with exit code *') { throw "Unexpected supervisor outcome: $($outcome.error)" }
+
+$originalReport = ${function:Write-UpdateResult}
+$originalToast = ${function:Show-RecoveryFailure}
+try {
+    $events.Clear()
+    function Write-UpdateResult { throw 'disk full' }
+    function Show-RecoveryFailure($AppId, $Message) { $events.Add("$AppId|$Message") }
+    Report-RecoveryFailure ([pscustomobject]@{ app_id = 'test-app' }) 'restart failed'
+    Assert-Equal ($events -join ',') 'test-app|restart failed; saving update diagnostics failed: disk full'
+} finally {
+    Set-Item Function:Write-UpdateResult $originalReport
+    Set-Item Function:Show-RecoveryFailure $originalToast
+}
 Write-Output 'Windows supervisor behavior tests passed'
