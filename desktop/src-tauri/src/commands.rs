@@ -627,12 +627,21 @@ fn desktop_updater(
     app: &tauri::AppHandle,
     settings: &core::updates::UpdateSettings,
 ) -> anyhow::Result<tauri_plugin_updater::Updater> {
-    Ok(app
+    let builder = app
         .updater_builder()
         .pubkey(settings.tauri_public_key()?)
         .endpoints(vec![settings.endpoint().parse()?])?
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?)
+        .timeout(std::time::Duration::from_secs(60));
+    // CI's real signed-update journey trusts only its generated TLS certificate.
+    // This feature is forbidden in release builds by main.rs.
+    #[cfg(feature = "e2e-webdriver")]
+    let builder = if let Some(path) = std::env::var_os("RATATOSKR_E2E_UPDATE_CA") {
+        let certificate = reqwest::Certificate::from_der(&std::fs::read(path)?)?;
+        builder.configure_client(move |client| client.add_root_certificate(certificate.clone()))
+    } else {
+        builder
+    };
+    Ok(builder.build()?)
 }
 
 struct Nightly {

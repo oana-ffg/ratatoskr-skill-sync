@@ -60,10 +60,15 @@ single-instance record and app data with any installed copy. Do not set it on a
 machine running Ratatoskr. Failure screenshots, app logs and sync diagnostics are kept in
 `desktop/test-results/native/`.
 
-Windows CI also bundles a real NSIS candidate and upgrades a digest-verified
-0.2.18 installation through the production supervisor script, then waits for a
-new hidden-tray sync. Native test files run sequentially because they share the
-desktop instance record. The isolated supervisor behavior tests in
+Windows CI builds a lower-version predecessor from the current code, a real NSIS
+upgrade, and a real NSIS payload that deliberately aborts. The app downloads both
+over loopback HTTPS, verifies their version-bound signatures, and performs the
+production updater handoff. The journey requires a new sync after success and
+newly published content to sync after the abort, with the installer error still
+visible. Its generated TLS certificate is trusted only by the test-only
+`e2e-webdriver` feature, which cannot compile into a release build. Native test
+files run sequentially because they share the desktop instance record.
+The isolated supervisor behavior tests in
 `scripts/tests/windows-update.test.ps1` run locally and in Windows CI without
 touching the installed app: they use fake child processes and temporary files
 to exercise installer failure, timeout, rollback, reporting failure and restart.

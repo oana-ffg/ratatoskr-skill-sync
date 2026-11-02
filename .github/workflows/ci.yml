@@ -152,9 +152,9 @@ jobs:
       - name: Build the debug app with its test-only WebDriver server
         run: npm run build:native-e2e
         working-directory: desktop
-      - name: Bundle the real Windows upgrade candidate
+      - name: Build the signed-updater journey's Windows installer fixtures
         if: runner.os == 'Windows'
-        run: npm run tauri -- build --debug --bundles nsis --features e2e-webdriver --config native-e2e/tauri.conf.json
+        run: node native-e2e/build-upgrade-fixtures.mjs
         working-directory: desktop
       - run: npm run test:native
         working-directory: desktop
