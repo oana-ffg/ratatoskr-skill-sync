@@ -44,7 +44,11 @@ catch { $caught = $true }
 Assert-Equal $caught $true
 Assert-Equal $child.HasExited $true
 
-$child = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList @('/c', 'exit 17') -WindowStyle Hidden -PassThru
+$child = Start-UpdateProcess "$env:SystemRoot\System32\cmd.exe" '/c exit 0'
+Wait-Installer $child 5000
+Assert-Equal $child.ExitCode 0
+
+$child = Start-UpdateProcess "$env:SystemRoot\System32\cmd.exe" '/c exit 17'
 $caught = $false
 try { Wait-Installer $child 5000 }
 catch { $caught = $true; Assert-Equal $_.Exception.Message 'Installer failed with exit code 17' }
@@ -105,7 +109,7 @@ Assert-Equal $parent.HasExited $true
 Assert-Equal ([IO.File]::ReadAllText((Join-Path $transaction 'restarted'))) 'yes'
 Assert-Equal ([IO.File]::ReadAllText((Join-Path $transaction 'ratatoskr-desktop.exe'))) 'working backup'
 $outcome = Get-Content (Join-Path $transaction 'windows-install-result.json') -Raw | ConvertFrom-Json
-if ($outcome.error -notlike 'Desktop update: Installer failed with exit code *') { throw "Unexpected supervisor outcome: $($outcome.error)" }
+if ($outcome.error -notmatch '^Desktop update: Installer failed with exit code [1-9][0-9]*$') { throw "Unexpected supervisor outcome: $($outcome.error)" }
 
 $originalReport = ${function:Write-UpdateResult}
 $originalToast = ${function:Show-RecoveryFailure}

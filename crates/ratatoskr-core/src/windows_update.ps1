@@ -3,6 +3,22 @@ param([string]$PlanPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Start-UpdateProcess([string]$Executable, [string]$Arguments, [bool]$CaptureOutput = $false) {
+    # Windows PowerShell's Start-Process -PassThru can lose a fast child's exit
+    # code. Starting through Process retains the handle from creation to wait.
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = $Executable
+    $info.Arguments = $Arguments
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $CaptureOutput
+    $info.RedirectStandardError = $CaptureOutput
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo = $info
+    if (-not $child.Start()) { throw "Could not start $Executable" }
+    return $child
+}
+
 function Write-UpdateResult($Plan, [string]$ErrorMessage) {
     $path = Join-Path $Plan.data 'windows-install-result.json'
     $temporary = "$path.$([guid]::NewGuid().ToString('N')).tmp"
@@ -23,7 +39,7 @@ function Wait-Installer($Child, [int]$TimeoutMilliseconds = 120000) {
     if (-not $Child.WaitForExit($TimeoutMilliseconds)) {
         # Kill the owned process tree before restoring any files. Never leave an
         # installer capable of overwriting the recovered, running installation.
-        try { $termination = Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" -ArgumentList @('/PID', $Child.Id, '/T', '/F') -WindowStyle Hidden -PassThru }
+        try { $termination = Start-UpdateProcess "$env:SystemRoot\System32\taskkill.exe" "/PID $($Child.Id) /T /F" }
         catch { Throw-UnstoppedInstaller "Installer timed out; could not start process-tree termination: $($_.Exception.Message)" }
         if (-not $termination.WaitForExit(10000)) { Throw-UnstoppedInstaller 'Installer timed out; process-tree termination also timed out' }
         if (-not $Child.WaitForExit(10000)) { Throw-UnstoppedInstaller 'Installer timed out; could not stop its process tree' }
@@ -72,7 +88,7 @@ function Restore-Executables($Plan, [string]$Root) {
 }
 
 function Start-SyncTray($Plan) {
-    $child = Start-Process -FilePath $Plan.desktop -ArgumentList '--background' -WindowStyle Hidden -PassThru
+    $child = Start-UpdateProcess $Plan.desktop '--background'
     if ($child.WaitForExit(3000)) { throw "Desktop exited during recovery ($($child.ExitCode))" }
 }
 
@@ -114,15 +130,17 @@ function Start-SupervisedUpdate([string]$Path) {
         # Silent mode cannot sit indefinitely on an NSIS "Installation Aborted"
         # page. No /R: only this supervisor owns restart, including on failure.
         $directoryArgument = '/D=' + (Split-Path -Parent $plan.desktop)
-        $child = Start-Process -FilePath $installer -ArgumentList @('/S', '/UPDATE', $directoryArgument) -WindowStyle Hidden -PassThru
+        $child = Start-UpdateProcess $installer "/S /UPDATE $directoryArgument"
         Wait-Installer $child
         $actual = [Diagnostics.FileVersionInfo]::GetVersionInfo($plan.desktop).ProductVersion
         if ($actual -ne $plan.version) { throw "Installer exited successfully but installed $actual instead of $($plan.version)" }
         $helper = Join-Path (Split-Path -Parent $plan.desktop) 'ratatoskr.exe'
         $versionOutput = Join-Path $root 'helper-version.stdout'
-        $probe = Start-Process -FilePath $helper -ArgumentList '--version' -WindowStyle Hidden -PassThru -RedirectStandardOutput $versionOutput -RedirectStandardError (Join-Path $root 'helper-version.stderr')
+        $probe = Start-UpdateProcess $helper '--version' $true
         Wait-Installer $probe 10000
-        $helperVersion = (Get-Content -LiteralPath $versionOutput -Raw).Trim()
+        $helperVersion = $probe.StandardOutput.ReadToEnd().Trim()
+        [IO.File]::WriteAllText($versionOutput, $helperVersion)
+        [IO.File]::WriteAllText((Join-Path $root 'helper-version.stderr'), $probe.StandardError.ReadToEnd())
         if ($helperVersion -ne "ratatoskr $($plan.version)") { throw "Bundled helper version mismatch: $helperVersion" }
     } -Restore { Restore-Executables $plan $root } -Restart { Start-SyncTray $plan } -Report {
         param($failure)
