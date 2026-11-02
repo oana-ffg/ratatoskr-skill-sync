@@ -39,10 +39,14 @@ pub(crate) fn update_for(
     let _guard = DeliveryGuard(file);
     let path = settings.state_dir.join(&settings.machine).join(filename);
     no_symlinks(&path)?;
-    let mut state: State = if path.try_exists()? {
-        serde_json::from_slice(&fs::read(&path)?)?
+    let stored = if path.try_exists()? {
+        Some(fs::read(&path)?)
     } else {
-        State::default()
+        None
+    };
+    let mut state: State = match &stored {
+        Some(bytes) => serde_json::from_slice(bytes)?,
+        None => State::default(),
     };
     if state.version == 0 {
         // v0.1 wrote a ledger only after delivery; preserve its 24-hour dedup window.
@@ -63,7 +67,11 @@ pub(crate) fn update_for(
         None => state.delivered_error.is_some(),
     };
     state.error = error.map(str::to_owned);
-    atomic_write(&path, &serde_json::to_vec(&state)?)?;
+    // Every sync reaches this. Only a changed outcome may touch the disk.
+    let serialized = serde_json::to_vec(&state)?;
+    if stored.as_deref() != Some(serialized.as_slice()) {
+        atomic_write(&path, &serialized)?;
+    }
     if !send || (settings.alert.is_none() && settings.alert_command.is_empty()) {
         return Ok(());
     }
@@ -126,6 +134,27 @@ pub(crate) fn current_error(settings: &Settings, filename: &str) -> Result<Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn repeating_an_outcome_does_not_rewrite_the_ledger() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let path = settings.state_dir.join("test/notification.json");
+        outcome(&settings, None).unwrap();
+        let identity = fs::metadata(&path).unwrap().ino();
+        for _ in 0..3 {
+            outcome(&settings, None).unwrap();
+        }
+        assert_eq!(fs::metadata(&path).unwrap().ino(), identity);
+        outcome(&settings, Some("failure")).unwrap();
+        assert_ne!(fs::metadata(&path).unwrap().ino(), identity);
+    }
+
     #[test]
     fn legacy_ledger_keeps_deduplication_and_failed_delivery_stays_retryable() {
         let temp = tempfile::tempdir().unwrap();

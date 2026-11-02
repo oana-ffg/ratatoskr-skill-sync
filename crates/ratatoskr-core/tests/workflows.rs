@@ -2007,7 +2007,11 @@ fn background_status_records_failure_and_ledger_without_alert_command() {
     assert!(status.last_run.as_ref().unwrap().finished_at.is_some());
     assert!(status.last_run.unwrap().error.is_some());
     assert!(status.current_error.is_some());
-    assert!(status.log.contains("Sync failed"));
+    assert!(
+        ratatoskr_core::job_log(&f.settings)
+            .unwrap()
+            .contains("Sync failed")
+    );
 }
 
 #[test]
@@ -2692,7 +2696,11 @@ fn tray_runs_record_success_conflicts_and_configuration_errors_in_existing_ledge
     let status = ratatoskr_core::job_status(&f.settings).unwrap();
     assert!(status.last_run.as_ref().unwrap().finished_at.is_some());
     assert!(status.last_run.as_ref().unwrap().error.is_none());
-    assert!(status.log.contains("sync.stdout.log"));
+    assert!(
+        ratatoskr_core::job_log(&f.settings)
+            .unwrap()
+            .contains("sync.stdout.log")
+    );
     fs::write(f.output().join("SKILL.md"), "Hand edit").unwrap();
     assert!(ratatoskr_core::recorded_sync(&config).is_err());
     let status = ratatoskr_core::job_status(&f.settings).unwrap();
@@ -2706,7 +2714,11 @@ fn tray_runs_record_success_conflicts_and_configuration_errors_in_existing_ledge
             .unwrap()
             .contains("conflicts")
     );
-    assert!(status.log.contains("sync.stderr.log"));
+    assert!(
+        ratatoskr_core::job_log(&f.settings)
+            .unwrap()
+            .contains("sync.stderr.log")
+    );
     assert_eq!(
         fs::read_to_string(f.output().join("SKILL.md")).unwrap(),
         "Hand edit"
@@ -4154,4 +4166,95 @@ fn stale_harness_groups_global_and_project_targets_in_one_decision() {
     assert!(!f.root.join("beta/skills/review-code").exists());
     assert!(!f.root.join("beta-instructions/AGENTS.md").exists());
     assert!(plan(&f.settings).unwrap().conflicts.is_empty());
+}
+
+/// Git rejects the verbatim `\\?\` paths that `canonicalize` returns on Windows.
+fn git_path(path: &Path) -> String {
+    dunce::simplified(path).to_string_lossy().replace('\\', "/")
+}
+
+#[test]
+fn a_directory_whose_git_points_at_another_worktree_is_not_a_checkout_root() {
+    let f = Fixture::new();
+    let elsewhere = f.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let repository = f.root.join("repository");
+    fs::create_dir_all(&repository).unwrap();
+    git(&repository, &["init", "-b", "main"]);
+    git(
+        &repository,
+        &["config", "core.worktree", &git_path(&elsewhere)],
+    );
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    fs::write(project.join(".ratatoskr.toml"), "source = 'agent-skills'\n").unwrap();
+    fs::write(
+        project.join(".git"),
+        format!("gitdir: {}\n", git_path(&repository.join(".git"))),
+    )
+    .unwrap();
+    let error = project_status(&project).error.unwrap();
+    assert!(
+        error.contains("Register the Git repository root"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_upstream_with_the_right_short_name_in_another_namespace_cannot_deploy() {
+    let f = Fixture::new();
+    let source = &f.settings.source;
+    git(source, &["init", "-b", "main"]);
+    git(source, &["config", "user.email", "test@example.com"]);
+    git(source, &["config", "user.name", "Test"]);
+    git(source, &["add", "-A"]);
+    git(source, &["commit", "-m", "Initial"]);
+    let remote = f.root.join("remote.git");
+    git(&f.root, &["init", "--bare", "-b", "main", "remote.git"]);
+    git(source, &["remote", "add", "origin", &git_path(&remote)]);
+    git(source, &["push", "origin", "main"]);
+    git(
+        source,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/origin/*",
+        ],
+    );
+    git(source, &["fetch", "origin"]);
+    git(source, &["config", "branch.main.remote", "origin"]);
+    git(source, &["config", "branch.main.merge", "refs/heads/main"]);
+    let mut settings = f.settings.clone();
+    settings.deploy_branch = "main".into();
+    let error = ratatoskr_core::content_status(&settings).error.unwrap();
+    assert!(
+        error.contains("expected refs/remotes/origin/main"),
+        "{error}"
+    );
+}
+
+#[test]
+fn disabling_a_skill_cannot_hide_new_malformed_targeting() {
+    let f = Fixture::new();
+    let current = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    let error = ratatoskr_core::save_skill_draft(
+        &f.settings,
+        None,
+        "review-code",
+        &current.markdown,
+        "enabled=false\n[target]\nharnesses='codex'\n",
+        &current.markdown_hash,
+        &current.metadata_hash,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("is not an array"),
+        "{error:#}"
+    );
+    assert_eq!(
+        ratatoskr_core::read_skill(&f.settings, None, "review-code")
+            .unwrap()
+            .metadata,
+        current.metadata
+    );
 }

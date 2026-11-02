@@ -488,8 +488,13 @@ pub(crate) fn update_outcome(app: &tauri::AppHandle, error: Option<String>) -> R
     refresh(app)
 }
 
+/// How long a changed configuration or status can wait to be noticed. Requests and due syncs
+/// wake the loop within a second, and only they and this interval touch the disk.
+const IDLE_CHECK: Duration = Duration::from_secs(15);
+
 fn run_loop(app: &tauri::AppHandle) {
     let mut next_sync = Instant::now();
+    let mut next_check = Instant::now();
     let mut config_seen = None;
     let mut notifications = core::BackgroundNotifications::default();
     loop {
@@ -497,6 +502,21 @@ fn run_loop(app: &tauri::AppHandle) {
         if runtime.stopped.load(Ordering::Acquire) {
             return;
         }
+        let now = Instant::now();
+        // A status that cannot be read counts as due, so the work below reports the error.
+        let sync_due = now >= next_sync
+            && runtime
+                .status()
+                .map_or(true, |s| !s.paused && s.migration_error.is_none());
+        if !sync_due
+            && now < next_check
+            && !runtime.sync_requested.load(Ordering::Acquire)
+            && !runtime.migrate_requested.load(Ordering::Acquire)
+        {
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        next_check = now + IDLE_CHECK;
         let result = (|| -> Result<()> {
             let config = core::default_config_path()?;
             if !config.try_exists()? {

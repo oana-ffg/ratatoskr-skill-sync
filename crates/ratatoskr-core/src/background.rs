@@ -88,7 +88,11 @@ pub fn recorded_sync(config: &Path) -> Result<Option<crate::Plan>> {
     match &result {
         Ok(Some(plan)) => writeln!(stdout, "{}", serde_json::to_string(plan)?)?,
         Ok(None) => (),
-        Err(error) => writeln!(stderr, "{error:#}")?,
+        Err(error) => writeln!(
+            stderr,
+            "{} {error:#}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z")
+        )?,
     }
     stdout.flush()?;
     stderr.flush()?;

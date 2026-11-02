@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Native visibility is authoritative: hiding a WebView need not hide its DOM. */
 export function watchWindow(
-  activate: () => void,
+  activate: (reason: "focus" | "other") => void,
   onerror: (error: unknown) => void,
   options: {
     intervalMs?: number;
@@ -35,7 +35,7 @@ export function watchWindow(
       timer = undefined;
     } else if (!timer) timer = setInterval(() => void check(true), intervalMs);
   }
-  async function check(refresh: boolean) {
+  async function check(refresh: boolean, reason: "focus" | "other" = "other") {
     const current = ++revision;
     try {
       const value = native
@@ -44,7 +44,7 @@ export function watchWindow(
       if (disposed || current !== revision) return;
       const shown = value && !visible;
       setVisible(value);
-      if (value && (refresh || shown)) activate();
+      if (value && (refresh || shown)) activate(shown ? "other" : reason);
     } catch (error) {
       if (!disposed && current === revision) {
         setVisible(false);
@@ -53,7 +53,7 @@ export function watchWindow(
     }
   }
   if (native) {
-    track(native.onFocusChanged(({ payload }) => void check(payload)));
+    track(native.onFocusChanged(({ payload }) => void check(payload, "focus")));
     track(native.onResized(() => void check(false)));
     // The tray explicitly emits after show/unminimize, even if focus is unchanged.
     track(
@@ -66,7 +66,7 @@ export function watchWindow(
       }),
     );
   } else {
-    const focus = () => void check(true);
+    const focus = () => void check(true, "focus");
     const visibility = () => void check(false);
     window.addEventListener("focus", focus);
     document.addEventListener("visibilitychange", visibility);

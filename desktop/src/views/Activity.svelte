@@ -22,6 +22,21 @@
     onrefresh: () => Promise<void>;
   } = $props();
   const jobs = $derived(workspace.jobs);
+  let log = $state("");
+  let logRequest = 0;
+  // Only this screen shows the log, so it is not part of every workspace refresh.
+  $effect(() => {
+    workspace;
+    const request = ++logRequest;
+    void api
+      .command<string>("read_job_log")
+      .then((text) => {
+        if (request === logRequest) log = text;
+      })
+      .catch((e) => {
+        if (request === logRequest) onerror(e);
+      });
+  });
   let trayMode = $state<boolean | null>(null);
   onMount(() => {
     void api
@@ -148,7 +163,7 @@
     <div class="section-heading">
       <h2>Recent log</h2>
     </div>
-    <pre>{jobs.log || "No log entries yet."}</pre>
+    <pre>{log || "No log entries yet."}</pre>
   </article>
 </section>
 {#if schedule}<Dialog

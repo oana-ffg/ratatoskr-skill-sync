@@ -3,6 +3,7 @@
 This public MIT repository contains the tool, not Oana's private skills or machine profiles.
 The CLI and optional desktop UI share the Rust core; syncing must work with the main window closed. Windows requires the tray app to remain running; macOS uses launchd.
 Preserve intentional differences between machines, operating systems, and harnesses.
+Keep hot paths cheap. Nothing that runs per keystroke or per background sync may write to disk unless something changed, spawn processes per item, or do library-wide work to answer a question about one skill. Tauri commands touching the disk, a process or the network run off the main thread. Tests guard this; extend them rather than loosening them.
 Run `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 For desktop changes also run `npm ci`, `npm run check`, and `npm run build` from `desktop/`.
 Never run the native desktop journeys (`RATATOSKR_NATIVE_E2E=1`) locally; they run in CI only, because the test app shares its single-instance record and app data with an installed Ratatoskr.

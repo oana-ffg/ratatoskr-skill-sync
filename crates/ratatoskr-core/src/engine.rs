@@ -27,6 +27,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use validation::RenderDiagnostics;
+pub(crate) use validation::validate_focus;
 pub use validation::{
     HarnessValidation, ProfileValidation, ValidationContext, ValidationProblem, ValidationReport,
     ValidationWarning, validate_source,
@@ -158,6 +159,8 @@ struct Desired {
     skills: usize,
     targets: usize,
     project_roots: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    /// Rendering needs each project's status; `preflight` reports the same one.
+    project_statuses: Vec<ProjectStatus>,
 }
 
 impl Desired {
@@ -321,12 +324,36 @@ struct SkillSources {
     files: BTreeMap<PathBuf, PathBuf>,
 }
 
+/// Unsaved text standing in for a skill's `SKILL.md` and `skill.toml`. Rendering it never
+/// touches the disk: only the skill's other files are read.
+#[derive(Clone, Copy)]
+pub(crate) struct SkillDraft<'a> {
+    pub markdown: &'a str,
+    pub metadata: &'a str,
+}
+
+/// Limits validation to what one edit can affect, so it does not render the whole library.
+#[derive(Clone, Copy)]
+pub(crate) enum ValidationFocus<'a> {
+    Skill {
+        name: &'a str,
+        draft: Option<SkillDraft<'a>>,
+    },
+    GlobalInstructions {
+        draft: Option<&'a str>,
+    },
+}
+
 fn skill_sources(
     skill: &Path,
     skill_name: &str,
     context: &toml::Table,
+    draft: Option<SkillDraft<'_>>,
 ) -> Result<Option<SkillSources>> {
-    let metadata = read_toml(&skill.join("skill.toml"))?;
+    let metadata = match draft {
+        Some(draft) => toml::from_str(draft.metadata)?,
+        None => read_toml(&skill.join("skill.toml"))?,
+    };
     ensure!(
         metadata
             .keys()
@@ -408,15 +435,23 @@ fn skill_sources(
     }))
 }
 
+/// A variant can replace `SKILL.md`, so the draft applies only to the skill's own file.
+fn skill_file_bytes(skill: &Path, source: &Path, draft: Option<SkillDraft<'_>>) -> Result<Vec<u8>> {
+    Ok(match draft {
+        Some(draft) if source == skill.join("SKILL.md") => draft.markdown.as_bytes().to_vec(),
+        _ => fs::read(source)?,
+    })
+}
+
 fn render_skill_file(
     path: &Path,
     source: &Path,
+    original: Vec<u8>,
     skill_name: &str,
     harness: &str,
     context: &toml::Table,
     metadata: &toml::Table,
 ) -> Result<Rendered> {
-    let original = fs::read(source)?;
     let reversible = std::str::from_utf8(&original).is_ok_and(|text| {
         !(text.contains("{{af:")
             || text.contains("<!--")
@@ -449,12 +484,7 @@ fn render_skill_file(
     })
 }
 
-fn render_scope(
-    settings: &Settings,
-    content: &Path,
-    project: Option<&Path>,
-    preview: bool,
-) -> Result<Desired> {
+fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> Result<Desired> {
     settings.validate()?;
     render_scope_inner(
         &RenderScope {
@@ -462,7 +492,8 @@ fn render_scope(
             machine: &settings.machine,
             content,
             project,
-            output: Output::Workspace { settings, preview },
+            output: Output::Workspace { settings },
+            focus: None,
         },
         &mut RenderDiagnostics::default(),
     )
@@ -470,10 +501,7 @@ fn render_scope(
 
 #[derive(Clone, Copy)]
 enum Output<'a> {
-    Workspace {
-        settings: &'a Settings,
-        preview: bool,
-    },
+    Workspace { settings: &'a Settings },
     Validation,
 }
 
@@ -483,6 +511,7 @@ struct RenderScope<'a> {
     content: &'a Path,
     project: Option<&'a Path>,
     output: Output<'a>,
+    focus: Option<ValidationFocus<'a>>,
 }
 
 fn render_scope_inner(
@@ -526,6 +555,7 @@ fn render_scope_inner(
         skills: 0,
         targets: enabled.len(),
         project_roots: BTreeMap::new(),
+        project_statuses: vec![],
     };
     let mut base_roots = Vec::new();
     let profile_path = source.join("machines").join(format!("{machine_name}.toml"));
@@ -588,13 +618,13 @@ fn harness_base(
         output,
         ..
     } = *scope;
-    let (settings, preview) = match output {
-        Output::Workspace { settings, preview } => (Some(settings), preview),
-        Output::Validation => (None, true),
+    let settings = match output {
+        Output::Workspace { settings } => Some(settings),
+        Output::Validation => None,
     };
     // Validation uses logical destinations only. They are never inspected or created.
     Ok(if let Some(settings) = settings {
-        if mode == "staging" || preview {
+        if mode == "staging" {
             let staging = settings.state_dir.join(&settings.machine).join("staging");
             if let Some(project) = project {
                 staging
@@ -711,9 +741,9 @@ fn render_harness(
         os,
         mode,
     };
-    let (settings, preview) = match output {
-        Output::Workspace { settings, preview } => (Some(settings), preview),
-        Output::Validation => (None, true),
+    let settings = match output {
+        Output::Workspace { settings } => Some(settings),
+        Output::Validation => None,
     };
     let base = harness_base(rendering, diagnostics)?;
     ensure!(base.is_absolute(), "Output root must be absolute");
@@ -722,7 +752,7 @@ fn render_harness(
     }
     if let Some(settings) = settings {
         ensure!(!overlaps(&base, content), "Output overlaps source checkout");
-        if mode == "live" && !preview {
+        if mode == "live" {
             ensure!(
                 !overlaps(&base, &settings.state_dir),
                 "Output overlaps state"
@@ -737,7 +767,8 @@ fn render_harness(
     );
     base_roots.push(base.clone());
     let skills_base = base.join(relative(&harness.skills_dir)?);
-    let global_base = if mode == "live" && !preview && project.is_none() {
+    // Validation only checks logical destinations, so it never leaves the output root.
+    let global_base = if mode == "live" && settings.is_some() && project.is_none() {
         if let Some(root) = &harness.global_root {
             PathBuf::from(render(root, &context, false)?)
         } else {
@@ -758,7 +789,7 @@ fn render_harness(
             !overlaps(&global_base, content),
             "Instruction root overlaps source"
         );
-        if mode == "live" && !preview {
+        if mode == "live" {
             ensure!(
                 !overlaps(&global_base, &settings.state_dir),
                 "Instruction root overlaps state"
@@ -790,7 +821,15 @@ fn render_harness(
     });
     let skills_dir = content.join("skills");
     no_symlinks(&skills_dir)?;
-    if skills_dir.try_exists()? {
+    let skill_focus = match scope.focus {
+        Some(ValidationFocus::Skill { name, .. }) => Some(name),
+        _ => None,
+    };
+    let render_skills = !matches!(
+        scope.focus,
+        Some(ValidationFocus::GlobalInstructions { .. })
+    );
+    if render_skills && skills_dir.try_exists()? {
         let mut names = BTreeSet::new();
         for skill in fs::read_dir(&skills_dir)? {
             let skill = match diagnostics.capture(
@@ -809,6 +848,9 @@ fn render_harness(
                 continue;
             }
             let skill_label = skill.file_name().to_string_lossy().into_owned();
+            if skill_focus.is_some_and(|focus| focus != skill_label) {
+                continue;
+            }
             let skill_result = render_skill(
                 rendering,
                 &skill,
@@ -830,12 +872,14 @@ fn render_harness(
         }
     }
 
-    let global = content.join(crate::content::GLOBAL_INSTRUCTIONS);
-    let global_result = render_global(rendering, &global, global_file, result);
-    if let Some(rendered) =
-        diagnostics.capture(global_result, machine_name, Some(name), None, &global)?
-    {
-        summary.global_instructions_rendered = rendered;
+    if skill_focus.is_none() {
+        let global = content.join(crate::content::GLOBAL_INSTRUCTIONS);
+        let global_result = render_global(rendering, &global, global_file, result);
+        if let Some(rendered) =
+            diagnostics.capture(global_result, machine_name, Some(name), None, &global)?
+        {
+            summary.global_instructions_rendered = rendered;
+        }
     }
     Ok(summary)
 }
@@ -863,18 +907,19 @@ fn render_skill(
         .into_string()
         .map_err(|_| anyhow::anyhow!("Non-UTF8 skill name"))?;
     identifier(&skill_name)?;
-    ensure!(
-        !matches!(skill_name.as_str(), "synced" | "anthropic-skills"),
-        "Reserved skill name"
-    );
+    ensure_skill_name_allowed(&skill_name)?;
     ensure!(
         names.insert(skill_name.to_lowercase()),
         "Duplicate skill name"
     );
+    let draft = match scope.focus {
+        Some(ValidationFocus::Skill { draft, .. }) => draft,
+        _ => None,
+    };
     let Some(SkillSources {
         metadata,
         files: sources,
-    }) = skill_sources(&skill_path, &skill_name, context)?
+    }) = skill_sources(&skill_path, &skill_name, context, draft)?
     else {
         return Ok(false);
     };
@@ -888,7 +933,9 @@ fn render_skill(
                 harness: rendering,
                 name: &skill_name,
                 root: &root,
+                skill: &skill_path,
                 metadata: &metadata,
+                draft,
             },
             &path,
             &source,
@@ -921,7 +968,17 @@ struct SkillRender<'a, 's> {
     harness: &'a HarnessRender<'a, 's>,
     name: &'a str,
     root: &'a Path,
+    skill: &'a Path,
     metadata: &'a toml::Table,
+    draft: Option<SkillDraft<'a>>,
+}
+
+fn ensure_skill_name_allowed(name: &str) -> Result<()> {
+    ensure!(
+        !matches!(name, "synced" | "anthropic-skills"),
+        "Reserved skill name"
+    );
+    Ok(())
 }
 
 fn render_skill_output(
@@ -935,7 +992,9 @@ fn render_skill_output(
         harness,
         name: skill_name,
         root,
+        skill: skill_path,
         metadata,
+        draft,
     } = *skill;
     let HarnessRender { name, context, .. } = *harness;
     ensure!(
@@ -947,7 +1006,15 @@ fn render_skill_output(
             .files
             .insert(
                 root.join(path),
-                render_skill_file(path, source, skill_name, name, context, metadata)?
+                render_skill_file(
+                    path,
+                    source,
+                    skill_file_bytes(skill_path, source, draft)?,
+                    skill_name,
+                    name,
+                    context,
+                    metadata,
+                )?
             )
             .is_none(),
         "Duplicate output file"
@@ -969,19 +1036,23 @@ fn render_global(
     } = *rendering;
     let project = scope.project;
     no_symlinks(global)?;
-    if project.is_none() && global.try_exists()? {
+    let draft = match scope.focus {
+        Some(ValidationFocus::GlobalInstructions { draft }) => draft,
+        _ => None,
+    };
+    if project.is_none() && (draft.is_some() || global.try_exists()?) {
+        let text = match draft {
+            Some(draft) => draft.to_owned(),
+            None => fs::read_to_string(global)?,
+        };
         result.files.insert(
             global_file,
             Rendered {
                 harness: name.into(),
                 skill: None,
                 source: global.into(),
-                reversible: {
-                    let text = fs::read_to_string(global)?;
-                    !text.contains("{{af:") && !text.contains("<!--")
-                },
-                bytes: render_global_instructions(&fs::read_to_string(global)?, context)?
-                    .into_bytes(),
+                reversible: !text.contains("{{af:") && !text.contains("<!--"),
+                bytes: render_global_instructions(&text, context)?.into_bytes(),
                 executable: false,
             },
         );
@@ -996,7 +1067,8 @@ pub(crate) fn render_global_instructions(text: &str, context: &toml::Table) -> R
 }
 
 fn desired(settings: &Settings) -> Result<Desired> {
-    let mut result = render_scope(settings, &settings.source, None, false)?;
+    let mut result = render_scope(settings, &settings.source, None)?;
+    let mut statuses = Vec::with_capacity(settings.projects.len());
     for root in &settings.projects {
         let status = project_status(root);
         ensure!(
@@ -1005,8 +1077,12 @@ fn desired(settings: &Settings) -> Result<Desired> {
             root.display(),
             status.error
         );
-        let content = status.source.context("Project has no skill source")?;
-        let project = render_scope(settings, &content, Some(root), false)?;
+        let content = status
+            .source
+            .clone()
+            .context("Project has no skill source")?;
+        statuses.push(status);
+        let project = render_scope(settings, &content, Some(root))?;
         result
             .project_roots
             .insert(root.clone(), project.roots.clone());
@@ -1023,6 +1099,7 @@ fn desired(settings: &Settings) -> Result<Desired> {
         result.skills += project.skills;
         result.targets += project.targets;
     }
+    result.project_statuses = statuses;
     Ok(result)
 }
 
@@ -1216,11 +1293,7 @@ fn preflight(settings: &Settings, desired: &Desired, manifest: &Manifest) -> Res
         conflicts,
         conflict_details,
         stale_targets,
-        projects: settings
-            .projects
-            .iter()
-            .map(|p| project_status(p))
-            .collect(),
+        projects: desired.project_statuses.clone(),
         revision: format!("{:x}", revision.finalize()),
         applied: None,
     })
@@ -1252,6 +1325,7 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     // Count the plan computed under the lock. A later unlocked `plan` can disagree if the
     // checkout changes between the two calls.
     let applied = AppliedChanges::from_changes(&preflight.changes);
+    let nothing_to_write = preflight.changes.is_empty();
     if let Some(expected) = expected {
         ensure!(
             serde_json::to_value(&preflight)? == expected,
@@ -1309,7 +1383,16 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
             .map(|(p, f)| (p.clone(), fingerprint(&f.bytes, f.executable)))
             .collect(),
     };
-    atomic_write(&manifest_path(settings), &serde_json::to_vec_pretty(&new)?)?;
+    let path = manifest_path(settings);
+    let serialized = serde_json::to_vec_pretty(&new)?;
+    // Background sync runs every minute and almost always changes nothing. Then the
+    // preflight above is already the report, and there is nothing to write or re-render.
+    if nothing_to_write && path.try_exists()? && fs::read(&path)? == serialized {
+        let mut report = preflight;
+        report.applied = Some(applied);
+        return Ok(report);
+    }
+    atomic_write(&path, &serialized)?;
     drop(lock);
     let mut report = plan(settings)?;
     report.applied = Some(applied);
@@ -1598,34 +1681,56 @@ pub(crate) fn restore_backup_locked(settings: &Settings, directory: &Path) -> Re
     plan(settings)
 }
 
+/// Renders one draft skill for one target. The editor calls this on every pause in typing, so
+/// it writes nothing and reads only this skill's files. Other skills cannot affect the result.
 pub(crate) fn preview_files(
-    settings: &Settings,
+    skill: &Path,
     name: &str,
+    draft: SkillDraft<'_>,
+    harness: &str,
+    context: &toml::Table,
 ) -> Result<Vec<crate::content::PreviewFile>> {
-    let desired = render_scope(settings, &settings.source, None, true)?;
-    let mut files = Vec::new();
-    for (path, file) in desired.files {
-        if let Some(root) = desired
-            .roots
-            .iter()
-            .find(|root| root.file_name().is_some_and(|n| n == name) && path.starts_with(root))
-        {
-            files.push(crate::content::PreviewFile {
-                path: path.strip_prefix(root)?.to_path_buf(),
-                body: if path.file_name().is_some_and(|n| n == "SKILL.md") {
-                    std::str::from_utf8(&file.bytes)
-                        .ok()
-                        .map(|text| {
-                            crate::template::skill_frontmatter(text, name)
-                                .map(|(_, body)| body.to_owned())
-                        })
-                        .transpose()?
-                } else {
-                    None
-                },
-                text: String::from_utf8(file.bytes).ok(),
-            });
-        }
+    ensure_skill_name_allowed(name)?;
+    no_symlinks(skill)?;
+    ensure!(skill.is_dir(), "Skill no longer exists");
+    let Some(SkillSources {
+        metadata,
+        files: sources,
+    }) = skill_sources(skill, name, context, Some(draft))?
+    else {
+        return Ok(vec![]);
+    };
+    let mut cases = BTreeSet::new();
+    let mut files = Vec::with_capacity(sources.len());
+    for (path, source) in sources {
+        ensure!(
+            cases.insert(path.to_string_lossy().to_lowercase()),
+            "Variant filename collision"
+        );
+        let rendered = render_skill_file(
+            &path,
+            &source,
+            skill_file_bytes(skill, &source, Some(draft))?,
+            name,
+            harness,
+            context,
+            &metadata,
+        )?;
+        files.push(crate::content::PreviewFile {
+            body: if path.file_name().is_some_and(|n| n == "SKILL.md") {
+                std::str::from_utf8(&rendered.bytes)
+                    .ok()
+                    .map(|text| {
+                        crate::template::skill_frontmatter(text, name)
+                            .map(|(_, body)| body.to_owned())
+                    })
+                    .transpose()?
+            } else {
+                None
+            },
+            text: String::from_utf8(rendered.bytes).ok(),
+            path,
+        });
     }
     Ok(files)
 }

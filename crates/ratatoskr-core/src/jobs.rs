@@ -26,7 +26,6 @@ pub struct JobStatus {
     pub helper_update_error: Option<String>,
     pub desktop_update_error: Option<String>,
     pub background_error: Option<String>,
-    pub log: String,
 }
 
 fn now() -> Result<u64> {
@@ -75,6 +74,24 @@ pub(crate) fn finish(settings: &Settings, mut run: JobRun, error: Option<&str>) 
     atomic_write(&path, &serde_json::to_vec(&history)?)
 }
 
+/// launchd appends every run's output to these logs and never trims them.
+const LOG_ROTATE_BYTES: u64 = 1024 * 1024;
+
+/// Keeps one previous log per file, so each log is bounded at twice the limit. Renaming is safe
+/// while launchd holds this run's descriptor: the next run opens a new file at the same path.
+pub(crate) fn rotate_logs(settings: &Settings) -> Result<()> {
+    let state = settings.state_dir.join(&settings.machine);
+    for filename in ["sync.stdout.log", "sync.stderr.log"] {
+        let path = state.join(filename);
+        no_symlinks(&path)?;
+        if path.try_exists()? && fs::metadata(&path)?.len() >= LOG_ROTATE_BYTES {
+            fs::rename(&path, state.join(format!("{filename}.1")))
+                .with_context(|| format!("Rotate {filename}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn read_tail(path: &Path) -> Result<String> {
     no_symlinks(path)?;
     if !path.try_exists()? {
@@ -98,6 +115,26 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
     } else {
         None
     };
+    Ok(JobStatus {
+        background_error: crate::tray::problem(settings)?.map(|problem| problem.message),
+        last_run,
+        current_error: crate::notifications::current_error(settings, "notification.json")?,
+        helper_update_error: crate::notifications::current_error(
+            settings,
+            "helper-update-notification.json",
+        )?,
+        desktop_update_error: crate::notifications::current_error(
+            settings,
+            "desktop-update-notification.json",
+        )?,
+    })
+}
+
+/// Recent background activity, up to 128 KiB. It is separate from [`job_status`] because every
+/// workspace refresh needs the status, while only the Activity screen shows the log.
+pub fn job_log(settings: &Settings) -> Result<String> {
+    settings.validate()?;
+    let state = settings.state_dir.join(&settings.machine);
     let history = state.join("sync-history.json");
     no_symlinks(&history)?;
     let mut log = if history.try_exists()? {
@@ -123,20 +160,7 @@ pub fn job_status(settings: &Settings) -> Result<JobStatus> {
             log.push_str(&format!("{filename} (last 64 KiB)\n{tail}\n"));
         }
     }
-    Ok(JobStatus {
-        background_error: crate::tray::problem(settings)?.map(|problem| problem.message),
-        last_run,
-        current_error: crate::notifications::current_error(settings, "notification.json")?,
-        helper_update_error: crate::notifications::current_error(
-            settings,
-            "helper-update-notification.json",
-        )?,
-        desktop_update_error: crate::notifications::current_error(
-            settings,
-            "desktop-update-notification.json",
-        )?,
-        log,
-    })
+    Ok(log)
 }
 
 /// Bundled sibling first, then a standalone CLI on PATH. Missing helpers are explicit errors.
@@ -177,4 +201,38 @@ pub fn detect_helper(executable: &Path, search_path: Option<&std::ffi::OsStr>) -
     anyhow::bail!(
         "No bundled or standalone ratatoskr helper found. Install the CLI or use a packaged desktop build."
     )
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn logs_rotate_at_the_limit_and_keep_one_previous_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            state_dir: temp.path().canonicalize().unwrap(),
+            machine: "test".into(),
+            ..Default::default()
+        };
+        let state = settings.state_dir.join("test");
+        fs::create_dir_all(&state).unwrap();
+        // Absent logs are fine, because a desktop-only install never creates them.
+        rotate_logs(&settings).unwrap();
+        let log = state.join("sync.stdout.log");
+        fs::write(&log, "small").unwrap();
+        rotate_logs(&settings).unwrap();
+        assert_eq!(fs::read_to_string(&log).unwrap(), "small");
+        let limit = usize::try_from(LOG_ROTATE_BYTES).unwrap();
+        fs::write(&log, vec![b'a'; limit]).unwrap();
+        rotate_logs(&settings).unwrap();
+        assert!(!log.exists());
+        assert_eq!(
+            fs::metadata(state.join("sync.stdout.log.1")).unwrap().len(),
+            LOG_ROTATE_BYTES
+        );
+        fs::write(&log, vec![b'b'; limit]).unwrap();
+        rotate_logs(&settings).unwrap();
+        assert_eq!(fs::read(state.join("sync.stdout.log.1")).unwrap()[0], b'b');
+    }
 }

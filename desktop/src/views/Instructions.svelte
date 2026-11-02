@@ -62,14 +62,20 @@
   $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
   const validation = createLivePreview(
-    async (input: { markdown: string; machine: string; harness: string }) => {
+    async (
+      input: { markdown: string; machine: string; harness: string },
+      proceed: () => void,
+    ) => {
       const a = await api.analyzeInstructions(
         input.markdown,
         input.machine,
         input.harness,
       );
+      proceed();
       const options = await api.values(input.machine, input.harness);
+      proceed();
       const path = await api.instructionsPath(input.machine, input.harness);
+      proceed();
       let text = "";
       let changed: number[] = [];
       let error = "";

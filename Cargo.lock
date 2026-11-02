@@ -3530,6 +3530,7 @@ name = "ratatoskr-skill-sync"
 version = "0.2.19"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dunce",
  "ratatoskr-core",

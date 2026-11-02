@@ -226,8 +226,7 @@ fn windows_migration_preserves_unowned_tasks_and_removes_enabled_and_disabled_ow
                 "Owned task migration must enable hidden login startup"
             );
             ensure!(
-                ratatoskr_core::job_status(&settings)?
-                    .log
+                ratatoskr_core::job_log(&settings)?
                     .contains("Open Ratatoskr at login enabled (--background)"),
                 "Login migration must be recorded in the ledger"
             );

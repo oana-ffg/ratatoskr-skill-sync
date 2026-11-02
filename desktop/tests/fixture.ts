@@ -85,6 +85,8 @@ export function fixtureIPC(
       return args.name === "aws-project-migration"
         ? oracle("realistic_resources")
         : fixture.resources;
+    case "read_job_log":
+      return "18:35:00  Checking content repository\n18:35:01  Source unchanged\n18:35:02  Rendered 5 skills for 2 agents\n18:35:03  Sync completed successfully";
     case "skill_target_statuses":
       return fixture.statuses;
     case "read_local_settings":

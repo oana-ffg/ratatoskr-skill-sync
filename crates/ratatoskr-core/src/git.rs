@@ -44,20 +44,82 @@ impl ContentStatus {
     }
 }
 
-/// `git status --porcelain=v1 -z` entries as their paths; renames and copies
-/// carry their origin as a second path.
-fn status_entries(bytes: &[u8]) -> Vec<Vec<PathBuf>> {
-    let path = |bytes: &[u8]| PathBuf::from(String::from_utf8_lossy(bytes).into_owned());
-    let mut records = bytes.split(|b| *b == 0).filter(|r| !r.is_empty());
-    let mut entries = Vec::new();
-    while let Some(record) = records.next() {
-        let mut paths = vec![path(record.get(3..).unwrap_or_default())];
-        if record.iter().take(2).any(|b| matches!(b, b'R' | b'C')) {
-            paths.extend(records.next().map(path));
+/// What one `git status --porcelain=v2 --branch` reports. A plan runs this for every repository
+/// on every snapshot and every minute in the background, so it replaces several Git processes.
+#[derive(Debug, Default, PartialEq)]
+struct RepositoryStatus {
+    /// `None` when HEAD is detached.
+    head: Option<String>,
+    upstream: Option<String>,
+    /// `None` when there is no upstream, or its reference no longer exists.
+    ahead: Option<usize>,
+    /// Changed paths per entry; renames and copies carry their origin as a second path.
+    entries: Vec<Vec<PathBuf>>,
+}
+
+impl RepositoryStatus {
+    fn parse(bytes: &[u8]) -> Self {
+        let text = String::from_utf8_lossy(bytes);
+        let path = |record: &str, fields: usize| {
+            record
+                .splitn(fields, ' ')
+                .last()
+                .map(PathBuf::from)
+                .unwrap_or_default()
+        };
+        let mut status = Self::default();
+        let mut records = text.split('\0').filter(|record| !record.is_empty());
+        while let Some(record) = records.next() {
+            if let Some(head) = record.strip_prefix("# branch.head ") {
+                status.head = (head != "(detached)").then(|| head.to_owned());
+            } else if let Some(upstream) = record.strip_prefix("# branch.upstream ") {
+                status.upstream = Some(upstream.to_owned());
+            } else if let Some(counts) = record.strip_prefix("# branch.ab +") {
+                status.ahead = counts
+                    .split(' ')
+                    .next()
+                    .and_then(|ahead| ahead.parse().ok());
+            } else if record.starts_with("1 ") {
+                status.entries.push(vec![path(record, 9)]);
+            } else if record.starts_with("2 ") {
+                let mut paths = vec![path(record, 10)];
+                paths.extend(records.next().map(PathBuf::from));
+                status.entries.push(paths);
+            } else if record.starts_with("u ") {
+                status.entries.push(vec![path(record, 11)]);
+            } else if let Some(untracked) = record.strip_prefix("? ") {
+                status.entries.push(vec![PathBuf::from(untracked)]);
+            }
         }
-        entries.push(paths);
+        status
     }
-    entries
+
+    fn read(root: &Path, untracked: &str, paths: &[&str]) -> Result<Self> {
+        let untracked = format!("--untracked-files={untracked}");
+        let mut args = vec![
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            untracked.as_str(),
+        ];
+        if !paths.is_empty() {
+            args.push("--");
+            args.extend_from_slice(paths);
+        }
+        Ok(Self::parse(&git(root, &args)?))
+    }
+}
+
+/// Only Git can say this: a gitfile or `core.worktree` can make a directory that holds `.git`
+/// operate on a different tree.
+fn ensure_checkout_root(root: &Path, message: &str) -> Result<()> {
+    let top = String::from_utf8(git(root, &["rev-parse", "--show-toplevel"])?)?;
+    ensure!(
+        Path::new(top.trim()).canonicalize()? == root.canonicalize()?,
+        "{message}"
+    );
+    Ok(())
 }
 
 pub fn content_status(settings: &Settings) -> ContentStatus {
@@ -69,31 +131,15 @@ pub fn content_status(settings: &Settings) -> ContentStatus {
     };
     let result: Result<()> = (|| {
         no_symlinks(&settings.source)?;
-        let top = String::from_utf8(git(&settings.source, &["rev-parse", "--show-toplevel"])?)?;
-        ensure!(
-            Path::new(top.trim()).canonicalize()? == settings.source.canonicalize()?,
-            "Content source must be the Git checkout root"
-        );
-        status.changed_files = status_entries(&git(
+        ensure_checkout_root(
             &settings.source,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        )?)
-        .len();
-        status.upstream = Some(
-            String::from_utf8(git(
-                &settings.source,
-                &[
-                    "rev-parse",
-                    "--abbrev-ref",
-                    "--symbolic-full-name",
-                    "@{upstream}",
-                ],
-            )?)?
-            .trim()
-            .into(),
-        );
-        status.outgoing_commits = Some(commit_count(settings, "@{upstream}..HEAD")?);
-        validate_deploy_branch(settings)?;
+            "Content source must be the Git checkout root",
+        )?;
+        let repository = RepositoryStatus::read(&settings.source, "all", &[])?;
+        status.changed_files = repository.entries.len();
+        status.upstream.clone_from(&repository.upstream);
+        status.outgoing_commits = repository.ahead;
+        deploy_remote(settings, &repository)?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -283,6 +329,23 @@ fn git_command(root: &Path, args: &[&str], paths: Option<&[PathBuf]>) -> Result<
     Ok(output.stdout)
 }
 
+/// Where a registered project keeps its skills. Reading it is a marker lookup and needs no Git
+/// process. Editor reads call this constantly; `project_status` reports the repository's health.
+pub(crate) fn project_source(root: &Path) -> Result<PathBuf> {
+    project_marker(root).map(|(_, source)| source)
+}
+
+fn project_marker(root: &Path) -> Result<(Marker, PathBuf)> {
+    no_symlinks(root)?;
+    let marker_path = root.join(".ratatoskr.toml");
+    no_symlinks(&marker_path)?;
+    let marker: Marker = toml::from_str(&fs::read_to_string(marker_path)?)?;
+    let source = root.join(relative(&marker.source)?);
+    no_symlinks(&source)?;
+    ensure!(source.is_dir(), "Project skill source is missing");
+    Ok((marker, source))
+}
+
 pub fn project_status(root: &Path) -> ProjectStatus {
     let mut status = ProjectStatus {
         root: root.into(),
@@ -294,57 +357,31 @@ pub fn project_status(root: &Path) -> ProjectStatus {
         changed_paths: Vec::new(),
     };
     let result: Result<()> = (|| {
-        no_symlinks(root)?;
-        let marker_path = root.join(".ratatoskr.toml");
-        no_symlinks(&marker_path)?;
-        let marker: Marker = toml::from_str(&fs::read_to_string(marker_path)?)?;
-        let relative_source = relative(&marker.source)?;
-        let source = root.join(relative_source);
-        no_symlinks(&source)?;
-        ensure!(source.is_dir(), "Project skill source is missing");
+        let (marker, source) = project_marker(root)?;
         status.source = Some(source);
-        let top = String::from_utf8(git(root, &["rev-parse", "--show-toplevel"])?)?;
-        ensure!(
-            Path::new(top.trim()).canonicalize()? == root.canonicalize()?,
-            "Register the Git repository root"
-        );
-        let changes = git(
-            root,
-            &[
-                "status",
-                "--porcelain=v1",
-                "-z",
-                "--untracked-files=all",
-                "--",
-                &marker.source,
-                ".ratatoskr.toml",
-            ],
-        )?;
-        let entries = status_entries(&changes);
-        status.changed_files = entries.len();
-        status.changed_paths = entries.into_iter().flatten().collect();
-        if let Ok(upstream) = git(
-            root,
-            &[
-                "rev-parse",
-                "--abbrev-ref",
-                "--symbolic-full-name",
-                "@{upstream}",
-            ],
-        ) {
-            status.upstream = Some(String::from_utf8(upstream)?.trim().into());
-            let commits = git(
-                root,
-                &[
-                    "log",
-                    "--format=%H",
-                    "@{upstream}..HEAD",
-                    "--",
-                    &marker.source,
-                    ".ratatoskr.toml",
-                ],
-            )?;
-            status.outgoing_commits = Some(String::from_utf8(commits)?.lines().count());
+        ensure_checkout_root(root, "Register the Git repository root")?;
+        let repository = RepositoryStatus::read(root, "all", &[&marker.source, ".ratatoskr.toml"])?;
+        status.changed_files = repository.entries.len();
+        status.changed_paths = repository.entries.into_iter().flatten().collect();
+        if let Some(ahead) = repository.ahead {
+            status.upstream = repository.upstream;
+            // Only commits touching skills count, but no outgoing commits means none of them do.
+            status.outgoing_commits = Some(if ahead == 0 {
+                0
+            } else {
+                let commits = git(
+                    root,
+                    &[
+                        "log",
+                        "--format=%H",
+                        "@{upstream}..HEAD",
+                        "--",
+                        &marker.source,
+                        ".ratatoskr.toml",
+                    ],
+                )?;
+                String::from_utf8(commits)?.lines().count()
+            });
         }
         Ok(())
     })();
@@ -431,6 +468,12 @@ fn sync_locked(
     desktop: bool,
 ) -> Result<Plan> {
     let mut run = crate::jobs::start(settings)?;
+    // Tray runs own and bound their log handles in `recorded_sync`.
+    let log_rotation = if desktop {
+        Ok(())
+    } else {
+        crate::jobs::rotate_logs(settings)
+    };
     #[cfg(target_os = "macos")]
     let desktop_health = if desktop {
         Ok(())
@@ -476,6 +519,9 @@ fn sync_locked(
         crate::notifications::outcome(settings, sync_error.as_deref())
     };
     let mut errors = Vec::new();
+    if let Err(error) = log_rotation {
+        errors.push(format!("Log rotation failed: {error:#}"));
+    }
     #[cfg(target_os = "macos")]
     if let Err(error) = desktop_health {
         errors.push(format!("Desktop update monitoring failed: {error:#}"));
@@ -546,43 +592,45 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
 }
 
 fn validate_deploy_branch(settings: &Settings) -> Result<String> {
-    let top = String::from_utf8(git(&settings.source, &["rev-parse", "--show-toplevel"])?)?;
-    ensure!(
-        Path::new(top.trim()).canonicalize()? == settings.source.canonicalize()?,
-        "Content source must be the Git checkout root"
-    );
-    git(
+    ensure_checkout_root(
         &settings.source,
-        &["check-ref-format", "--branch", &settings.deploy_branch],
+        "Content source must be the Git checkout root",
     )?;
-    let branch = String::from_utf8(
-        git(
-            &settings.source,
-            &["symbolic-ref", "--quiet", "--short", "HEAD"],
-        )
-        .context("Content checkout is detached; refusing to pull or apply")?,
-    )?;
+    deploy_remote(
+        settings,
+        &RepositoryStatus::read(&settings.source, "no", &[])?,
+    )
+}
+
+/// The remote the deploy branch tracks, or why this checkout must not deploy.
+fn deploy_remote(settings: &Settings, repository: &RepositoryStatus) -> Result<String> {
+    let deploy = &settings.deploy_branch;
+    if repository.head.as_ref() != Some(deploy) {
+        // HEAD pointing at the deploy branch already proves that its name is valid.
+        git(&settings.source, &["check-ref-format", "--branch", deploy])?;
+    }
+    let branch = repository
+        .head
+        .as_deref()
+        .context("Content checkout is detached; refusing to pull or apply")?;
     ensure!(
-        branch.trim() == settings.deploy_branch,
-        "Current content branch is {}; deploy_branch is {}; refusing to pull or apply",
-        branch.trim(),
-        settings.deploy_branch
+        branch == deploy,
+        "Current content branch is {branch}; deploy_branch is {deploy}; refusing to pull or apply",
     );
     let remote = String::from_utf8(
         git(
             &settings.source,
-            &[
-                "config",
-                "--get",
-                &format!("branch.{}.remote", settings.deploy_branch),
-            ],
+            &["config", "--get", &format!("branch.{deploy}.remote")],
         )
         .context("Deploy branch has no configured remote; refusing to pull or apply")?,
     )?;
+    let remote = remote.trim();
     ensure!(
-        !remote.trim().is_empty() && remote.trim() != ".",
+        !remote.is_empty() && remote != ".",
         "Deploy branch must track a remote branch"
     );
+    // The short name in `repository.upstream` can come from another namespace, such as a fetch
+    // mapping into refs/heads/origin/, so only the full reference can be trusted here.
     let upstream = String::from_utf8(
         git(
             &settings.source,
@@ -590,14 +638,14 @@ fn validate_deploy_branch(settings: &Settings) -> Result<String> {
         )
         .context("Deploy branch has no valid upstream; refusing to pull or apply")?,
     )?;
-    let expected = format!("refs/remotes/{}/{}", remote.trim(), settings.deploy_branch);
+    let expected = format!("refs/remotes/{remote}/{deploy}");
     ensure!(
         upstream.trim() == expected,
         "Content upstream is {}; expected {}; refusing to pull or apply",
         upstream.trim(),
         expected
     );
-    Ok(remote.trim().into())
+    Ok(remote.into())
 }
 
 #[cfg(test)]
@@ -605,18 +653,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_entries_keep_rename_origins_with_their_entry() {
-        let entries = status_entries(b"R  skills/new/SKILL.md\0skills/old/SKILL.md\0?? a b.txt\0");
+    fn one_status_reports_the_branch_and_every_kind_of_change() {
+        let status = RepositoryStatus::parse(
+            b"# branch.oid 1234\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0\
+              1 .M N... 100644 100644 100644 aa bb skills/edited/SKILL.md\0\
+              2 R. N... 100644 100644 100644 aa bb R100 skills/new/a b.md\0skills/old/a b.md\0\
+              u UU N... 100644 100644 100644 100644 aa bb cc skills/conflict.md\0\
+              ? untracked file.txt\0",
+        );
+        assert_eq!(status.head.as_deref(), Some("main"));
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.ahead, Some(2));
         assert_eq!(
-            entries,
+            status.entries,
             [
+                vec![PathBuf::from("skills/edited/SKILL.md")],
                 vec![
-                    PathBuf::from("skills/new/SKILL.md"),
-                    PathBuf::from("skills/old/SKILL.md")
+                    PathBuf::from("skills/new/a b.md"),
+                    PathBuf::from("skills/old/a b.md")
                 ],
-                vec![PathBuf::from("a b.txt")],
+                vec![PathBuf::from("skills/conflict.md")],
+                vec![PathBuf::from("untracked file.txt")],
             ]
         );
+    }
+
+    #[test]
+    fn a_detached_head_or_missing_upstream_reports_nothing_to_compare() {
+        let detached = RepositoryStatus::parse(b"# branch.oid 1234\0# branch.head (detached)\0");
+        assert_eq!(detached, RepositoryStatus::default());
+        // Git omits branch.ab when the configured upstream reference no longer exists.
+        let gone = RepositoryStatus::parse(b"# branch.head main\0# branch.upstream origin/gone\0");
+        assert_eq!(gone.ahead, None);
     }
 
     #[test]

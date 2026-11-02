@@ -121,6 +121,10 @@ test("native focus and explicit tray show refresh header, review and counts with
     },
     legacy: [],
   };
+  // Switching back right away reuses the snapshot, which is still fresh.
+  await focus();
+  expect(reads).toHaveBeenCalledTimes(1);
+  vi.setSystemTime(Date.now() + 20_000);
   await focus();
   expect(await screen.findByText("Live")).toBeVisible();
   expect(
