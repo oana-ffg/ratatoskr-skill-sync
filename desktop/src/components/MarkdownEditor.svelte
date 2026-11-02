@@ -1,12 +1,18 @@
 <script lang="ts">
   import {
     SourceText,
+    minimalChange,
     sourceField,
     sourceExtension,
     setSource,
   } from "../editor/source";
   import { onMount } from "svelte";
-  import { Compartment, EditorState, Transaction } from "@codemirror/state";
+  import {
+    Compartment,
+    EditorSelection,
+    EditorState,
+    Transaction,
+  } from "@codemirror/state";
   import {
     EditorView,
     keymap,
@@ -19,12 +25,14 @@
     history,
     historyKeymap,
     indentWithTab,
+    redo,
   } from "@codemirror/commands";
   import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
   import { markdown } from "@codemirror/lang-markdown";
   import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
   import { tags } from "@lezer/highlight";
-  import { present, structuredDecorations } from "../editor/decorations";
+  import { structuredDecorations } from "../editor/decorations";
+  import { present } from "../editor/presentation";
   import { type Analysis, type Block, type Range } from "../api";
   let {
     label,
@@ -46,17 +54,25 @@
     onblock: (block: Block, remove: boolean) => void;
   } = $props();
   const gutter = new Compartment();
+  const undoHistory = new Compartment();
   let host: HTMLDivElement;
   let view = $state<EditorView>();
 
   export function replace(text: string) {
     if (!view) return;
+    const change = minimalChange(
+      view.state.doc.toString(),
+      new SourceText(text).normalized,
+    );
+    const { main } = view.state.selection;
     view.dispatch({
-      changes: {
-        from: 0,
-        to: view.state.doc.length,
-        insert: new SourceText(text).normalized,
-      },
+      changes: change,
+      // A selection the edit rewrote collapses instead of selecting the new markup, so the next
+      // keystroke cannot replace it.
+      selection:
+        !main.empty && main.from >= change.from && main.to <= change.to
+          ? EditorSelection.cursor(change.from)
+          : undefined,
       effects: setSource.of(text),
       userEvent: "input",
     });
@@ -78,7 +94,7 @@
             : ["- ", ""];
     view.dispatch({
       changes: { from: s.from, to: s.to, insert: pair[0] + chosen + pair[1] },
-      userEvent: "input",
+      userEvent: "input.format",
     });
     view.focus();
   }
@@ -98,14 +114,27 @@
           gutter.of(raw ? lineNumbers() : []),
           drawSelection(),
           highlightActiveLine(),
-          history(),
+          undoHistory.of(history()),
           search({ top: true }),
           keymap.of([
             ...defaultKeymap,
             ...historyKeymap,
+            // CodeMirror binds this only on macOS and Linux; on Windows it would fall through to
+            // the webview's own redo, which edits the DOM behind CodeMirror's history.
+            { key: "Mod-Shift-z", run: redo, preventDefault: true },
             ...searchKeymap,
             indentWithTab,
           ]),
+          // Keep the caret clear of the toolbar that stays pinned above the editor.
+          // Keep the caret clear of the toolbar that stays pinned above the editor.
+          EditorView.scrollMargins.of((view) => ({
+            top:
+              parseFloat(
+                getComputedStyle(view.dom).getPropertyValue(
+                  "--format-toolbar-height",
+                ),
+              ) || 0,
+          })),
           markdown(),
           syntaxHighlighting(
             HighlightStyle.define([
@@ -123,7 +152,10 @@
             "aria-label": label,
           }),
           EditorView.updateListener.of((update) => {
-            const sourceText = update.state.field(sourceField);
+            // The latest state, not this update's: an earlier listener may already have moved the
+            // caret off a hidden line, and that correction must not be overwritten.
+            const { state } = update.view;
+            const sourceText = state.field(sourceField);
             if (
               update.docChanged &&
               !update.transactions.every((t) =>
@@ -132,7 +164,7 @@
             )
               onchange(sourceText.source);
             if (update.selectionSet) {
-              const range = update.state.selection.main;
+              const range = state.selection.main;
               onselection({
                 from: sourceText.toSource(range.from),
                 to: sourceText.toSource(range.to),
@@ -165,17 +197,19 @@
   $effect(() => {
     if (view && value !== view.state.field(sourceField).source) {
       view.dispatch({
-        changes: {
-          from: 0,
-          to: view.state.doc.length,
-          insert: new SourceText(value).normalized,
-        },
-        effects: setSource.of(value),
+        changes: minimalChange(
+          view.state.doc.toString(),
+          new SourceText(value).normalized,
+        ),
+        // Edits to the replaced text cannot be undone on this one: mapped through this change they
+        // would apply at the wrong place.
+        effects: [setSource.of(value), undoHistory.reconfigure([])],
         annotations: [
           Transaction.remote.of(true),
           Transaction.addToHistory.of(false),
         ],
       });
+      view.dispatch({ effects: undoHistory.reconfigure(history()) });
     }
   });
   $effect(() => updatePresentation());

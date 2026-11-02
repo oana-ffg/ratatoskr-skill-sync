@@ -362,9 +362,18 @@ pub fn edit_draft(markdown: &str, metadata: &str, edit: DraftEdit) -> Result<Dra
                 } else {
                     "\n"
                 };
+                // Selecting whole lines picks up the last line's break. Left inside, it would
+                // become a blank line at the end of the section in every rendered file. The break
+                // stays exactly as selected, because a file can mix line endings.
+                let selected = &markdown[from..to];
+                let body = selected
+                    .strip_suffix("\r\n")
+                    .or_else(|| selected.strip_suffix('\n'))
+                    .unwrap_or(selected);
+                let after = &selected[body.len()..];
                 result.markdown.replace_range(
                     from..to,
-                    &format!("{opening}{nl}{}{nl}<!-- /only -->", &markdown[from..to]),
+                    &format!("{opening}{nl}{body}{nl}<!-- /only -->{after}"),
                 );
             }
         }
@@ -1322,6 +1331,34 @@ mod tests {
         );
         let removed = edit_draft(&result.markdown, "", DraftEdit::RemoveOnly { from: 3 }).unwrap();
         assert_eq!(removed.markdown, "🐿 \r\nhello\r\n\r\n");
+        for (source, expected) in [
+            (
+                "first\nsecond\n",
+                "<!-- only harness=codex -->\nfirst\n<!-- /only -->\nsecond\n",
+            ),
+            (
+                "first\r\nsecond\r\n",
+                "<!-- only harness=codex -->\r\nfirst\r\n<!-- /only -->\r\nsecond\r\n",
+            ),
+            (
+                "first\nsecond\r\n",
+                "<!-- only harness=codex -->\r\nfirst\r\n<!-- /only -->\nsecond\r\n",
+            ),
+        ] {
+            let line = source.find("second").unwrap();
+            let wrapped = edit_draft(
+                source,
+                "",
+                DraftEdit::Only {
+                    from: 0,
+                    to: line,
+                    selectors: BTreeMap::from([("harness".into(), vec!["codex".into()])]),
+                    existing: false,
+                },
+            )
+            .unwrap();
+            assert_eq!(wrapped.markdown, expected);
+        }
         assert!(
             edit_draft(
                 md,

@@ -1,8 +1,9 @@
-import { SourceText } from "./source";
+import { SourceText, minimalChange } from "./source";
 import { test, expect } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { present, structuredDecorations, decorationField } from "./decorations";
+import { structuredDecorations, decorationField } from "./decorations";
+import { present } from "./presentation";
 import { fixture, oracle } from "../../tests/fixture";
 import type { Analysis } from "../api";
 test("CodeMirror decorations never change saved bytes, commands preserve CRLF exactly", () => {
@@ -36,6 +37,7 @@ test("CodeMirror decorations never change saved bytes, commands preserve CRLF ex
   bands.between(0, view.state.doc.length, (from, _to, decoration) => {
     if (decoration.spec.class?.startsWith("only-band")) decorated.add(from);
   });
+  // The band runs over the lines inside each block; its marker lines take no space of their own.
   for (const block of analysis.blocks) {
     const first = view.state.doc.lineAt(
       mapping.toEditor(block.opening.from),
@@ -43,7 +45,9 @@ test("CodeMirror decorations never change saved bytes, commands preserve CRLF ex
     const last = view.state.doc.lineAt(
       mapping.toEditor(block.closing.to),
     ).number;
-    for (let number = first; number <= last; number++)
+    expect(decorated.has(view.state.doc.line(first).from)).toBe(false);
+    expect(decorated.has(view.state.doc.line(last).from)).toBe(false);
+    for (let number = first + 1; number < last; number++)
       expect(decorated.has(view.state.doc.line(number).from)).toBe(true);
   }
   expect(view.dom.querySelector(".value-pill")).toHaveTextContent(
@@ -142,4 +146,21 @@ test("mixed line endings and Unicode preserve source/editor range boundaries", (
   expect(original.slice(0, from) + "edited" + original.slice(to)).toBe(
     "🐿 first\r\nedited\nthird\r\nlast",
   );
+});
+
+test("minimal changes rewrite only what differs and reproduce the target exactly", () => {
+  for (const [current, next, expected] of [
+    ["same", "same", { from: 4, to: 4, insert: "" }],
+    ["keep one keep", "keep two keep", { from: 5, to: 8, insert: "two" }],
+    ["aaa", "aaaa", { from: 3, to: 3, insert: "a" }],
+    ["aaaa", "aaa", { from: 3, to: 4, insert: "" }],
+    ["", "new", { from: 0, to: 0, insert: "new" }],
+    ["old", "", { from: 0, to: 3, insert: "" }],
+  ] as const) {
+    const change = minimalChange(current, next);
+    expect(change).toEqual(expected);
+    expect(
+      current.slice(0, change.from) + change.insert + current.slice(change.to),
+    ).toBe(next);
+  }
 });

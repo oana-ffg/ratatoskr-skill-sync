@@ -881,7 +881,8 @@ nav button.active {
 .editor-frame {
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
+  /* Clips the rounded corners like hidden, but lets the toolbar stick to the page's scroller. */
+  overflow: clip;
   background: var(--surface);
 }
 .format-toolbar {
@@ -892,6 +893,12 @@ nav button.active {
   padding: 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
+}
+/* TemplateToolbar publishes its height for the editor below; only that one can stay pinned. */
+.editor-frame > .format-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
 }
 .format-toolbar button {
   font-size: 10px;
@@ -921,6 +928,9 @@ nav button.active {
   min-height: 340px;
   outline: 0 !important;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.cm-editor .cm-panels-top {
+  top: var(--format-toolbar-height, 0) !important;
 }
 .cm-scroller {
   line-height: 1.85 !important;
@@ -996,8 +1006,13 @@ nav button.active {
 .cm-cursor {
   border-left-color: var(--accent) !important;
 }
+/* Above the text, because condition bands and the active line would paint over it from below. */
+.cm-scroller > .cm-selectionLayer {
+  z-index: 1 !important;
+  pointer-events: none;
+}
 .cm-selectionBackground {
-  background: var(--accent-soft) !important;
+  background: color-mix(in srgb, var(--accent) 24%, transparent) !important;
 }
 .only-header {
   display: inline-flex;
@@ -1030,25 +1045,29 @@ nav button.active {
   color: var(--muted);
   font-size: 9px;
 }
-.cm-line.only-band {
+.only-band {
   --band-color: var(--blue);
   --band-background: var(--blue-soft);
   border-left: 3px solid var(--band-color);
   background: var(--band-background);
 }
-.cm-line.only-band.claude {
+.only-band:not(.cm-line) {
+  padding: 2px 2px 0 6px;
+  user-select: none;
+}
+.only-band.claude {
   --band-color: var(--orange);
   --band-background: var(--orange-soft);
 }
-.cm-line.only-band.os {
+.only-band.os {
   --band-color: var(--purple);
   --band-background: var(--purple-soft);
 }
-.cm-line.only-band.machine {
+.only-band.machine {
   --band-color: var(--accent);
   --band-background: var(--accent-soft);
 }
-.cm-line.only-band.inactive {
+.only-band.inactive {
   background: color-mix(in srgb, var(--band-background) 65%, var(--bg));
 }
 .value-pill {
