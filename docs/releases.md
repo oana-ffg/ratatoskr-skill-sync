@@ -2,7 +2,7 @@
 
 ## Windows update recovery
 
-The old Windows updater, including 0.2.18 and 0.2.19, exits the tray after launching NSIS in
+The old Windows updater, including 0.2.18, 0.2.19 and 0.2.20, exits the tray after launching NSIS in
 passive mode. If installation aborts, the installer can remain on its failure
 page and never restart the tray. Sync and tray notifications then stop. Downloading
 a newer release cannot repair an already stopped updater; a running older
@@ -20,14 +20,17 @@ that contains it. It waits for the old desktop process to exit before starting
 NSIS, uses silent mode with a two-minute deadline, and restarts the hidden tray
 on success or failure. On failure it restores the previous desktop and CLI
 executables and retains both the backup and any partially installed executables.
-Successful manifest checks do not erase an installation failure; a later
-successful supervised installation clears it. Failed restarts trigger a Windows
+Successful manifest checks do not erase an installation failure. It clears once
+the app runs the failed version or newer, through a later supervised installation
+or a manual setup. Failed restarts trigger a Windows
 notification from the independent supervisor, without requiring the tray.
 If Windows refuses to terminate a timed-out installer, the supervisor preserves
 the files and alerts instead of racing an installer that could still overwrite them.
 
-Evidence is retained under `%APPDATA%\io.github.oana-ffg.ratatoskr-skill-sync\windows-install-*`;
-the latest outcome is `windows-install-result.json` beside those folders.
+Evidence from the three most recent update attempts is retained under
+`%APPDATA%\io.github.oana-ffg.ratatoskr-skill-sync\windows-install-*`; each holds
+a full set of binaries, about 45 MB, and older ones are removed when the next
+update starts. If one cannot be removed, that update stops and reports the folder. The latest outcome is `windows-install-result.json` beside those folders.
 Executable rollback restores sync but does not roll back all NSIS registry or
 shortcut changes; rerun the installer if installation was interrupted partway.
 Windows notification settings can suppress toasts. Detecting arbitrary tray
