@@ -533,35 +533,12 @@ fn install_downloaded_update(
     } else {
         crate::window_lifecycle::prepare_restart(app)?;
     }
-    #[cfg(windows)]
-    {
-        let result = core::windows_update::supervise(
-            &std::env::current_exe()?,
-            &core::updates::desktop_data_dir()?,
-            &app.config().identifier,
-            &update.version,
-            &bytes,
-        );
-        if let Err(error) = result {
-            crate::window_lifecycle::cancel_restart(app)?;
-            return Err(error);
-        }
-        // The supervisor acknowledged its process handle before this exit. It
-        // starts NSIS only after our executable has completely stopped.
-        crate::instance::release();
-        app.cleanup_before_exit();
-        std::process::exit(0);
-    }
-    #[cfg(not(windows))]
     let result = update.install(bytes);
-    #[cfg(not(windows))]
-    {
-        #[cfg(target_os = "macos")]
-        if result.is_err() {
-            crate::window_lifecycle::cancel_restart(app)?;
-        }
-        result.map_err(Into::into)
+    #[cfg(any(windows, target_os = "macos"))]
+    if result.is_err() {
+        crate::window_lifecycle::cancel_restart(app)?;
     }
+    result.map_err(Into::into)
 }
 
 #[tauri::command]
