@@ -61,4 +61,33 @@ Assert-Equal $result.error 'Desktop update: installer aborted'
 Write-UpdateResult $plan $null
 $result = Get-Content (Join-Path $root 'windows-install-result.json') -Raw | ConvertFrom-Json
 Assert-Equal $result.error $null
+
+# Exercise the complete supervisor entry point with a real failing executable.
+# Only tray launch is replaced; all paths, backups and state are disposable.
+$transaction = Join-Path $root 'entry-point'
+New-Item -ItemType Directory -Path $transaction, (Join-Path $transaction 'backup') | Out-Null
+Copy-Item "$env:SystemRoot\System32\where.exe" (Join-Path $transaction 'installer.exe')
+foreach ($name in @('ratatoskr-desktop.exe', 'ratatoskr.exe')) {
+    [IO.File]::WriteAllText((Join-Path $transaction "backup\$name"), 'working backup')
+    [IO.File]::WriteAllText((Join-Path $transaction $name), 'installed executable')
+}
+$parent = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 3') -WindowStyle Hidden -PassThru
+$plan = @{ parent = $parent.Id; data = $transaction; desktop = Join-Path $transaction 'ratatoskr-desktop.exe'; version = '0.2.19'; sha256 = (Get-FileHash (Join-Path $transaction 'installer.exe')).Hash }
+$plan | ConvertTo-Json | Set-Content (Join-Path $transaction 'plan.json')
+$driver = Join-Path $transaction 'driver.ps1'
+@'
+param($Supervisor, $UpdatePlan)
+. $Supervisor
+function Start-SyncTray($Plan) { [IO.File]::WriteAllText((Join-Path $Plan.data 'restarted'), 'yes') }
+Start-SupervisedUpdate $UpdatePlan
+'@ | Set-Content $driver
+$supervisorProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $driver, $Supervisor, (Join-Path $transaction 'plan.json')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $transaction 'stderr.log')
+$null = $supervisorProcess.Handle
+if (-not $supervisorProcess.WaitForExit(10000)) { $supervisorProcess.Kill(); throw 'Supervisor entry-point test timed out' }
+Assert-Equal $supervisorProcess.ExitCode 1
+Assert-Equal $parent.HasExited $true
+Assert-Equal ([IO.File]::ReadAllText((Join-Path $transaction 'restarted'))) 'yes'
+Assert-Equal ([IO.File]::ReadAllText((Join-Path $transaction 'ratatoskr-desktop.exe'))) 'working backup'
+$outcome = Get-Content (Join-Path $transaction 'windows-install-result.json') -Raw | ConvertFrom-Json
+if ($outcome.error -notlike 'Desktop update: Installer failed with exit code *') { throw "Unexpected supervisor outcome: $($outcome.error)" }
 Write-Output 'Windows supervisor behavior tests passed'
