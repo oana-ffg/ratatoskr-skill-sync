@@ -7,6 +7,7 @@ import {
   StateField,
   Transaction,
   type Extension,
+  type SelectionRange,
   type Text,
   type TransactionSpec,
 } from "@codemirror/state";
@@ -151,12 +152,14 @@ function crossEdge(
   return {};
 }
 
-/** The same edit without the markers of any box it only partly covers. */
+/**
+ * The same edit without the markers of any box it only partly covers. The text before the edit and
+ * the inserted text keep their positions, so the selection the command asked for stays valid there.
+ */
 function keepMarkers(
   edges: Edges,
-  from: number,
-  to: number,
-  insert: string,
+  { from, to, insert }: { from: number; to: number; insert: string },
+  { anchor, head }: SelectionRange,
 ): TransactionSpec | null {
   const touched = edgesTouching(edges, from, to);
   const kept = touched.filter(
@@ -175,9 +178,11 @@ function keepMarkers(
     position = Math.max(position, span.to);
   }
   if (position < to) changes.push({ from: position, to });
+  const inEdit = (selected: number) =>
+    Math.min(Math.max(selected, from), from + insert.length);
   return {
     changes,
-    selection: EditorSelection.cursor(from + insert.length),
+    selection: EditorSelection.range(inEdit(anchor), inEdit(head)),
   };
 }
 
@@ -216,7 +221,11 @@ const guardEdits = EditorState.transactionFilter.of((tr) => {
       from = edge.to;
       if (to < doc.length && !edgesTouching(edges, to, to + 1).length) to++;
     }
-    guarded = keepMarkers(edges, from, to, "") ?? {
+    guarded = keepMarkers(
+      edges,
+      { from, to, insert: "" },
+      tr.newSelection.main,
+    ) ?? {
       changes: { from, to },
       selection: EditorSelection.cursor(from),
     };
@@ -226,7 +235,7 @@ const guardEdits = EditorState.transactionFilter.of((tr) => {
     );
     if (edge) guarded = crossEdge(doc, edges, edge, main.head);
   } else {
-    guarded = keepMarkers(edges, from, to, changes[0].insert);
+    guarded = keepMarkers(edges, changes[0], tr.newSelection.main);
   }
   if (!guarded) return tr;
   return {

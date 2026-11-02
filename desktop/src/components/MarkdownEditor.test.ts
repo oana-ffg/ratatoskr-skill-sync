@@ -1,7 +1,7 @@
 import { render, waitFor } from "@testing-library/svelte";
 import { test, expect, vi } from "vitest";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
-import { undo } from "@codemirror/commands";
+import { splitLine, undo } from "@codemirror/commands";
 import MarkdownEditor from "./MarkdownEditor.svelte";
 import { fixture, oracle } from "../../tests/fixture";
 import { sourceField } from "../editor/source";
@@ -116,12 +116,15 @@ function typeBurst(view: EditorView, position: number, text: string) {
     });
 }
 
-function mountSource(value: string) {
+function mountSource(
+  value: string,
+  analysis: Analysis = { blocks: [], variables: [], diagnostics: [] },
+) {
   const changed = vi.fn();
   const rendered = render(MarkdownEditor, {
     label: "Editor",
     value,
-    analysis: { blocks: [], variables: [], diagnostics: [] },
+    analysis,
     frontmatter: null,
     onchange: changed,
     onselection: vi.fn(),
@@ -182,4 +185,43 @@ test("a reload from outside ends the undo history instead of replaying it on the
   undo(view);
   expect(view.state.doc.toString()).toBe("A different file.");
   expect(view.state.field(sourceField).source).toBe("A different file.");
+});
+
+test("a command rewritten at a box edge keeps the caret it asked for", async () => {
+  const open = "<!-- only harness=codex -->";
+  const close = "<!-- /only -->";
+  const value = `${open}\nInside.\n${close}\nAfter.\n`;
+  const opening = { from: 0, to: open.length };
+  const closing = {
+    from: value.indexOf(close),
+    to: value.indexOf(close) + close.length,
+  };
+  const { view } = mountSource(value, {
+    blocks: [
+      {
+        range: { from: 0, to: closing.to },
+        opening,
+        body: { from: opening.to + 1, to: closing.from - 1 },
+        closing,
+        selectors: { harness: ["codex"] },
+        active: true,
+        reachable: true,
+      },
+    ],
+    variables: [],
+    diagnostics: [],
+  });
+  await waitFor(() =>
+    expect(view.dom.querySelector(".only-header")).not.toBeNull(),
+  );
+  const from = value.indexOf(".\n" + close);
+  view.dispatch({
+    selection: { anchor: from, head: value.indexOf("After.") + 1 },
+  });
+  // splitLine leaves the caret before the line break it inserts.
+  splitLine(view);
+  expect(view.state.selection.main.head).toBe(from);
+  expect(view.state.field(sourceField).source).toBe(
+    `${open}\nInside\n\n${close}\nfter.\n`,
+  );
 });
