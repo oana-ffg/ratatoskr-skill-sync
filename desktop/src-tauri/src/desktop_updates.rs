@@ -104,6 +104,12 @@ impl UpdateContext {
     }
 
     pub(crate) fn report_outcome(&self, error: Option<&str>) -> Result<()> {
+        #[cfg(windows)]
+        let installation_error = core::windows_update::failure(
+            self.state_path.parent().expect("update state has a parent"),
+        )?;
+        #[cfg(windows)]
+        let error = error.or(installation_error.as_deref());
         if let Some(settings) = &self.workspace {
             // The resident Windows controller owns native transition toasts.
             // Keep the updater ledger and optional remote/custom transports.
@@ -255,6 +261,40 @@ pub(crate) fn manual_update_with<U>(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[cfg(windows)]
+    #[test]
+    fn successful_checks_preserve_install_failure_until_a_successful_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let (config, settings) = configured(&temp);
+        let data = temp.path().canonicalize().unwrap().join("app");
+        std::fs::create_dir_all(&data).unwrap();
+        let context = UpdateContext::load(&config, &data).unwrap();
+        let result = data.join("windows-install-result.json");
+        std::fs::write(
+            &result,
+            br#"{"error":"Desktop update: installer timed out"}"#,
+        )
+        .unwrap();
+        for _ in 0..2 {
+            context.report_outcome(None).unwrap();
+            assert_eq!(
+                core::job_status(&settings)
+                    .unwrap()
+                    .desktop_update_error
+                    .as_deref(),
+                Some("Desktop update: installer timed out")
+            );
+        }
+        std::fs::write(result, br#"{"error":null}"#).unwrap();
+        context.report_outcome(None).unwrap();
+        assert!(
+            core::job_status(&settings)
+                .unwrap()
+                .desktop_update_error
+                .is_none()
+        );
+    }
 
     fn clock(value: &str) -> chrono::DateTime<chrono::FixedOffset> {
         chrono::DateTime::parse_from_rfc3339(value).unwrap()

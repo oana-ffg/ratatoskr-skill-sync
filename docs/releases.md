@@ -1,5 +1,47 @@
 # Releases and signed updates
 
+## Windows update recovery
+
+The Windows updater in 0.2.18 and 0.2.19 exits the tray after launching NSIS in
+passive mode. If installation aborts, the installer can remain on its failure
+page and never restart the tray. Sync and tray notifications then stop. Downloading
+a newer release cannot repair an already stopped updater; a running older
+updater also performs its next handoff using its existing code.
+
+If affected, close the aborted setup window and run the Windows setup executable
+from the [official releases](https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest).
+Open Ratatoskr afterward and check **Activity** for a new successful sync. The
+installer preserves your content checkout and configuration. Restarting the old
+app alone may retry the same update before its first sync, so reinstall before
+restarting when that retry also aborts.
+
+The supervisor change in this repository takes effect after installing a build
+that contains it. It waits for the old desktop process to exit before starting
+NSIS, uses silent mode with a two-minute deadline, and restarts the hidden tray
+on success or failure. On failure it restores the previous desktop and CLI
+executables and retains both the backup and any partially installed executables.
+Successful manifest checks do not erase an installation failure; a later
+successful supervised installation clears it. Failed restarts trigger a Windows
+notification from the independent supervisor, without requiring the tray.
+
+Evidence is retained under `%APPDATA%\io.github.oana-ffg.ratatoskr-skill-sync\windows-install-*`;
+the latest outcome is `windows-install-result.json` beside those folders.
+Executable rollback restores sync but does not roll back all NSIS registry or
+shortcut changes; rerun the installer if installation was interrupted partway.
+Windows notification settings can suppress toasts. Detecting arbitrary tray
+termination outside an update still needs a separate watchdog or external
+freshness monitor; this change supervises the update transaction only.
+
+Two options for that separate policy are an opt-in per-user Windows task that
+checks a tray heartbeat every five minutes and restarts/alerts when sync is
+expected, or an external monitor that alerts when the machine's last successful
+sync becomes stale. The local watchdog must distinguish an intentional **Quit**
+or disabled login startup from a crash; an external monitor needs an explicitly
+configured destination. Neither is installed by this change.
+
+Release publishers should repeat the recovery notice in the first release that
+ships the supervisor. Publishing that notice or a release is a separate action.
+
 ## v0.2.19 release notes
 
 - **Project skill work no longer alerts on every save.** Background sync used to fail and alert as soon as a registered project had uncommitted or unpushed skill work. The alert included file counts, so each additional edited file sent a new notification. Sync now succeeds until work has been pending for over an hour. This also applies to projects without an upstream branch, and is tracked separately for each skill, other project skill source files, unpushed commits and a missing upstream branch. The alert then names those items without counts, so continued editing does not repeat it. Project inspection errors still alert immediately. After upgrading, expect one recovery notification if the previous alert was still current.

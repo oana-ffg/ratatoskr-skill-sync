@@ -60,6 +60,14 @@ single-instance record and app data with any installed copy. Do not set it on a
 machine running Ratatoskr. Failure screenshots, app logs and sync diagnostics are kept in
 `desktop/test-results/native/`.
 
+Windows CI also bundles a real NSIS candidate and upgrades a digest-verified
+0.2.18 installation through the production supervisor script, then waits for a
+new hidden-tray sync. Native test files run sequentially because they share the
+desktop instance record. The isolated supervisor behavior tests in
+`scripts/tests/windows-update.test.ps1` run locally and in Windows CI without
+touching the installed app: they use fake child processes and temporary files
+to exercise installer failure, timeout, rollback, reporting failure and restart.
+
 `cargo test --workspace` and non-bundling Cargo checks do not need a prebuilt helper. When it is absent, the build excludes the sidecar from that non-bundling build and reports how to prepare it. macOS background jobs require the real CLI (`npm run prepare:helper -- --debug` from `desktop/`). Windows tray sync calls the core directly. Native packaging still requires and bundles the real CLI; the Tauri CLI prepares it automatically. Rust's platform prerequisites still apply to workspace tests.
 
 For changes to Windows-only desktop code, also compile the Windows cfg paths before pushing. Install the target once, then run these commands from the repository root and from `desktop/src-tauri/`:
