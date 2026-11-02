@@ -19,6 +19,15 @@ function Start-UpdateProcess([string]$Executable, [string]$Arguments, [bool]$Cap
     return $child
 }
 
+function Get-UpdateHash([string]$Path) {
+    # Do not depend on an inherited PSModulePath exposing Get-FileHash, e.g.
+    # when Windows PowerShell is launched by PowerShell 7 or a packaged app.
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $algorithm.Dispose(); $stream.Dispose() }
+}
+
 function Write-UpdateResult($Plan, [string]$ErrorMessage) {
     $path = Join-Path $Plan.data 'windows-install-result.json'
     $temporary = "$path.$([guid]::NewGuid().ToString('N')).tmp"
@@ -119,7 +128,7 @@ function Start-SupervisedUpdate([string]$Path) {
     $root = Split-Path -Parent $Path
     $plan = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     $installer = Join-Path $root 'installer.exe'
-    if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $plan.sha256) { throw 'Staged installer hash mismatch' }
+    if ((Get-UpdateHash $installer) -ne $plan.sha256) { throw 'Staged installer hash mismatch' }
     $parentProcess = Get-Process -Id $plan.parent
     # Open the handle before acknowledging readiness; PID reuse cannot redirect
     # this wait to a different process after the original desktop exits.

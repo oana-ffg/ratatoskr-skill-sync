@@ -83,7 +83,7 @@ foreach ($name in @('ratatoskr-desktop.exe', 'ratatoskr.exe')) {
     [IO.File]::WriteAllText((Join-Path $transaction $name), 'installed executable')
 }
 $parent = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru
-$plan = @{ parent = $parent.Id; data = $transaction; desktop = Join-Path $transaction 'ratatoskr-desktop.exe'; version = '0.2.19'; sha256 = (Get-FileHash (Join-Path $transaction 'installer.exe')).Hash }
+$plan = @{ parent = $parent.Id; data = $transaction; desktop = Join-Path $transaction 'ratatoskr-desktop.exe'; version = '0.2.19'; sha256 = Get-UpdateHash (Join-Path $transaction 'installer.exe') }
 $plan | ConvertTo-Json | Set-Content (Join-Path $transaction 'plan.json')
 $driver = Join-Path $transaction 'driver.ps1'
 @'
