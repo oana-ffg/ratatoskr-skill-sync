@@ -119,6 +119,9 @@ try {
     function Show-RecoveryFailure($AppId, $Message) { $events.Add("$AppId|$Message") }
     Report-RecoveryFailure ([pscustomobject]@{ app_id = 'test-app' }) 'restart failed'
     Assert-Equal ($events -join ',') 'test-app|restart failed; saving update diagnostics failed: disk full'
+    $events.Clear()
+    Report-RecoveryFailure ([pscustomobject]@{ app_id = 'test-app' }) 'handshake failed' -Notify $false
+    Assert-Equal $events.Count 0
 } finally {
     Set-Item Function:Write-UpdateResult $originalReport
     Set-Item Function:Show-RecoveryFailure $originalToast

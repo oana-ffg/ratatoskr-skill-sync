@@ -111,15 +111,17 @@ function Show-RecoveryFailure([string]$AppId, [string]$Message) {
     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 }
 
-function Report-RecoveryFailure($Plan, [string]$Failure) {
+function Report-RecoveryFailure($Plan, [string]$Failure, [bool]$Notify = $true) {
     # A full/unwritable disk must not prevent the independent notification.
     try { Write-UpdateResult $Plan $Failure }
     catch { $Failure += "; saving update diagnostics failed: $($_.Exception.Message)" }
-    try { Show-RecoveryFailure $Plan.app_id $Failure }
-    catch {
-        $Failure += "; notification delivery failed: $($_.Exception.Message)"
-        try { Write-UpdateResult $Plan $Failure }
-        catch { [Console]::Error.WriteLine("Cannot retain fallback delivery failure: $($_.Exception.Message)") }
+    if ($Notify) {
+        try { Show-RecoveryFailure $Plan.app_id $Failure }
+        catch {
+            $Failure += "; notification delivery failed: $($_.Exception.Message)"
+            try { Write-UpdateResult $Plan $Failure }
+            catch { [Console]::Error.WriteLine("Cannot retain fallback delivery failure: $($_.Exception.Message)") }
+        }
     }
     [Console]::Error.WriteLine($Failure)
 }
@@ -166,7 +168,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         # If recovery/reporting failed, alert from this independent process too.
         try {
             $plan = [IO.File]::ReadAllText($PlanPath) | ConvertFrom-Json
-            Report-RecoveryFailure $plan "$failure. Update evidence: $(Split-Path -Parent $PlanPath)"
+            # Before readiness, the original tray remains alive and reports the
+            # failed handshake itself. Only handoff failures need this notifier.
+            $ready = Test-Path -LiteralPath (Join-Path (Split-Path -Parent $PlanPath) 'ready')
+            Report-RecoveryFailure $plan "$failure. Update evidence: $(Split-Path -Parent $PlanPath)" -Notify $ready
         }
         catch { [Console]::Error.WriteLine("Update failure: $failure; fallback reporting failed: $($_.Exception.Message)") }
         [Console]::Error.WriteLine($failure)
