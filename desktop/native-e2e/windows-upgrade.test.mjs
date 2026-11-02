@@ -133,9 +133,11 @@ test(
         `[updates]\nendpoint = ${JSON.stringify(endpoint)}\npublic_key = ${JSON.stringify(publicKey)}`,
       ),
     );
+    // NSIS only accepts /D unquoted and last, so Node must not quote the space.
     execFileSync(upgrade.path, ["/S", `/D=${installation}`], {
       timeout: 60000,
       windowsHide: true,
+      windowsVerbatimArguments: true,
     });
     const desktop = join(installation, "ratatoskr-desktop.exe");
     const helper = join(installation, "ratatoskr.exe");
