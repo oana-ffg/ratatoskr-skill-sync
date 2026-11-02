@@ -169,13 +169,29 @@ test(
       assert.ok(result.status === 0 || result.status === 1, result.stderr);
       return result;
     }
-    const status = () =>
-      JSON.parse(helperCommand("update", "--desktop", "--status").stdout);
     const job = () => JSON.parse(workspace.ratatoskr("job-status"));
     const data = join(
       process.env.APPDATA,
       "io.github.oana-ffg.ratatoskr-skill-sync",
     );
+    function readOptional(name) {
+      try {
+        return JSON.parse(readFileSync(join(data, name), "utf8"));
+      } catch (error) {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }
+    }
+    // Poll the request files, not the installed CLI: running that executable
+    // during NSIS replacement would introduce an unrelated file-lock race.
+    const status = () => {
+      const request = readOptional("desktop-update-request.json");
+      const response = readOptional("desktop-update-response.json");
+      return {
+        request,
+        response: response?.id === request?.id ? response : null,
+      };
+    };
     let failure;
     try {
       const initial = await until(
