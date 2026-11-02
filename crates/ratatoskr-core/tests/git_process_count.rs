@@ -45,7 +45,7 @@ fn repository(root: &Path, name: &str, files: &[(&str, &str)]) -> std::path::Pat
 
 /// A plan runs on every workspace refresh and every minute in the background. It used to spawn
 /// 9 processes for the content checkout and 8 per project, because each project's status was
-/// computed twice. It needs at most 2, plus 1 per project.
+/// computed twice. It needs 4, plus 2 per project with no outgoing commits.
 #[test]
 fn a_plan_spawns_a_bounded_number_of_git_processes() {
     let temp = tempfile::tempdir().unwrap();
@@ -130,7 +130,7 @@ fn a_plan_spawns_a_bounded_number_of_git_processes() {
     let invocations = fs::read_to_string(&count).unwrap();
     let spawned = invocations.lines().count();
     assert!(
-        spawned <= 2 + projects.len(),
+        spawned <= 4 + 2 * projects.len(),
         "{spawned} Git processes for one plan:\n{invocations}"
     );
 }

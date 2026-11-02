@@ -124,30 +124,6 @@
   );
   $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
-  // These depend on the target, not on the text being typed.
-  let targetDetails:
-    | {
-        key: string;
-        options: ValueOption[];
-        destination: string;
-      }
-    | undefined;
-  async function detailsFor(machine: string, harness: string) {
-    const key = JSON.stringify([skill.name, machine, harness]);
-    if (targetDetails?.key !== key) {
-      targetDetails = {
-        key,
-        options: await api.values(machine, harness),
-        destination: await api.command<string>("preview_install_path", {
-          name: skill.name,
-          project: skill.project,
-          machine,
-          harness,
-        }),
-      };
-    }
-    return targetDetails;
-  }
   const validation = createLivePreview(
     async (
       input: {
@@ -167,10 +143,7 @@
       proceed();
       const v = await api.view(input.markdown, input.metadata);
       proceed();
-      const { options, destination } = await detailsFor(
-        input.machine,
-        input.harness,
-      );
+      const options = await api.values(input.machine, input.harness);
       proceed();
       // Rendering is authoritative. Inactive or excluded drafts deliberately return no files.
       let files: PreviewFile[] = [];
@@ -202,6 +175,13 @@
       } catch (e) {
         error = errorText(e);
       }
+      proceed();
+      const destination = await api.command<string>("preview_install_path", {
+        name: skill.name,
+        project: skill.project,
+        machine: input.machine,
+        harness: input.harness,
+      });
       proceed();
       const changed = await api.command<number[]>("different_preview_lines", {
         text: files.find((f) => f.path === "SKILL.md")?.body ?? "",

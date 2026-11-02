@@ -484,12 +484,7 @@ fn render_skill_file(
     })
 }
 
-fn render_scope(
-    settings: &Settings,
-    content: &Path,
-    project: Option<&Path>,
-    preview: bool,
-) -> Result<Desired> {
+fn render_scope(settings: &Settings, content: &Path, project: Option<&Path>) -> Result<Desired> {
     settings.validate()?;
     render_scope_inner(
         &RenderScope {
@@ -497,7 +492,7 @@ fn render_scope(
             machine: &settings.machine,
             content,
             project,
-            output: Output::Workspace { settings, preview },
+            output: Output::Workspace { settings },
             focus: None,
         },
         &mut RenderDiagnostics::default(),
@@ -506,10 +501,7 @@ fn render_scope(
 
 #[derive(Clone, Copy)]
 enum Output<'a> {
-    Workspace {
-        settings: &'a Settings,
-        preview: bool,
-    },
+    Workspace { settings: &'a Settings },
     Validation,
 }
 
@@ -626,13 +618,13 @@ fn harness_base(
         output,
         ..
     } = *scope;
-    let (settings, preview) = match output {
-        Output::Workspace { settings, preview } => (Some(settings), preview),
-        Output::Validation => (None, true),
+    let settings = match output {
+        Output::Workspace { settings } => Some(settings),
+        Output::Validation => None,
     };
     // Validation uses logical destinations only. They are never inspected or created.
     Ok(if let Some(settings) = settings {
-        if mode == "staging" || preview {
+        if mode == "staging" {
             let staging = settings.state_dir.join(&settings.machine).join("staging");
             if let Some(project) = project {
                 staging
@@ -749,9 +741,9 @@ fn render_harness(
         os,
         mode,
     };
-    let (settings, preview) = match output {
-        Output::Workspace { settings, preview } => (Some(settings), preview),
-        Output::Validation => (None, true),
+    let settings = match output {
+        Output::Workspace { settings } => Some(settings),
+        Output::Validation => None,
     };
     let base = harness_base(rendering, diagnostics)?;
     ensure!(base.is_absolute(), "Output root must be absolute");
@@ -760,7 +752,7 @@ fn render_harness(
     }
     if let Some(settings) = settings {
         ensure!(!overlaps(&base, content), "Output overlaps source checkout");
-        if mode == "live" && !preview {
+        if mode == "live" {
             ensure!(
                 !overlaps(&base, &settings.state_dir),
                 "Output overlaps state"
@@ -775,7 +767,8 @@ fn render_harness(
     );
     base_roots.push(base.clone());
     let skills_base = base.join(relative(&harness.skills_dir)?);
-    let global_base = if mode == "live" && !preview && project.is_none() {
+    // Validation only checks logical destinations, so it never leaves the output root.
+    let global_base = if mode == "live" && settings.is_some() && project.is_none() {
         if let Some(root) = &harness.global_root {
             PathBuf::from(render(root, &context, false)?)
         } else {
@@ -796,7 +789,7 @@ fn render_harness(
             !overlaps(&global_base, content),
             "Instruction root overlaps source"
         );
-        if mode == "live" && !preview {
+        if mode == "live" {
             ensure!(
                 !overlaps(&global_base, &settings.state_dir),
                 "Instruction root overlaps state"
@@ -1074,7 +1067,7 @@ pub(crate) fn render_global_instructions(text: &str, context: &toml::Table) -> R
 }
 
 fn desired(settings: &Settings) -> Result<Desired> {
-    let mut result = render_scope(settings, &settings.source, None, false)?;
+    let mut result = render_scope(settings, &settings.source, None)?;
     let mut statuses = Vec::with_capacity(settings.projects.len());
     for root in &settings.projects {
         let status = project_status(root);
@@ -1089,7 +1082,7 @@ fn desired(settings: &Settings) -> Result<Desired> {
             .clone()
             .context("Project has no skill source")?;
         statuses.push(status);
-        let project = render_scope(settings, &content, Some(root), false)?;
+        let project = render_scope(settings, &content, Some(root))?;
         result
             .project_roots
             .insert(root.clone(), project.roots.clone());

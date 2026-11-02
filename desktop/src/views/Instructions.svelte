@@ -61,20 +61,6 @@
   );
   $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
-  // These depend on the target, not on the text being typed.
-  let targetDetails:
-    { key: string; options: ValueOption[]; path: string } | undefined;
-  async function detailsFor(machine: string, harness: string) {
-    const key = JSON.stringify([machine, harness]);
-    if (targetDetails?.key !== key) {
-      targetDetails = {
-        key,
-        options: await api.values(machine, harness),
-        path: await api.instructionsPath(machine, harness),
-      };
-    }
-    return targetDetails;
-  }
   const validation = createLivePreview(
     async (
       input: { markdown: string; machine: string; harness: string },
@@ -86,7 +72,9 @@
         input.harness,
       );
       proceed();
-      const { options, path } = await detailsFor(input.machine, input.harness);
+      const options = await api.values(input.machine, input.harness);
+      proceed();
+      const path = await api.instructionsPath(input.machine, input.harness);
       proceed();
       let text = "";
       let changed: number[] = [];

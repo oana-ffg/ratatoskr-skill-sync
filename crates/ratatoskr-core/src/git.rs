@@ -111,9 +111,15 @@ impl RepositoryStatus {
     }
 }
 
-/// A repository's root holds `.git`, so this needs no process. Worktrees use a `.git` file.
-fn is_checkout_root(root: &Path) -> Result<bool> {
-    Ok(root.join(".git").try_exists()?)
+/// Only Git can say this: a gitfile or `core.worktree` can make a directory that holds `.git`
+/// operate on a different tree.
+fn ensure_checkout_root(root: &Path, message: &str) -> Result<()> {
+    let top = String::from_utf8(git(root, &["rev-parse", "--show-toplevel"])?)?;
+    ensure!(
+        Path::new(top.trim()).canonicalize()? == root.canonicalize()?,
+        "{message}"
+    );
+    Ok(())
 }
 
 pub fn content_status(settings: &Settings) -> ContentStatus {
@@ -125,10 +131,10 @@ pub fn content_status(settings: &Settings) -> ContentStatus {
     };
     let result: Result<()> = (|| {
         no_symlinks(&settings.source)?;
-        ensure!(
-            is_checkout_root(&settings.source)?,
-            "Content source must be the Git checkout root"
-        );
+        ensure_checkout_root(
+            &settings.source,
+            "Content source must be the Git checkout root",
+        )?;
         let repository = RepositoryStatus::read(&settings.source, "all", &[])?;
         status.changed_files = repository.entries.len();
         status.upstream.clone_from(&repository.upstream);
@@ -353,7 +359,7 @@ pub fn project_status(root: &Path) -> ProjectStatus {
     let result: Result<()> = (|| {
         let (marker, source) = project_marker(root)?;
         status.source = Some(source);
-        ensure!(is_checkout_root(root)?, "Register the Git repository root");
+        ensure_checkout_root(root, "Register the Git repository root")?;
         let repository = RepositoryStatus::read(root, "all", &[&marker.source, ".ratatoskr.toml"])?;
         status.changed_files = repository.entries.len();
         status.changed_paths = repository.entries.into_iter().flatten().collect();
@@ -586,10 +592,10 @@ fn sync_inner(settings: &Settings) -> Result<Plan> {
 }
 
 fn validate_deploy_branch(settings: &Settings) -> Result<String> {
-    ensure!(
-        is_checkout_root(&settings.source)?,
-        "Content source must be the Git checkout root"
-    );
+    ensure_checkout_root(
+        &settings.source,
+        "Content source must be the Git checkout root",
+    )?;
     deploy_remote(
         settings,
         &RepositoryStatus::read(&settings.source, "no", &[])?,
@@ -623,12 +629,8 @@ fn deploy_remote(settings: &Settings, repository: &RepositoryStatus) -> Result<S
         !remote.is_empty() && remote != ".",
         "Deploy branch must track a remote branch"
     );
-    if repository.ahead.is_some()
-        && repository.upstream.as_deref() == Some(format!("{remote}/{deploy}").as_str())
-    {
-        return Ok(remote.into());
-    }
-    // Anything unusual gets the exact name from Git, and the exact reason.
+    // The short name in `repository.upstream` can come from another namespace, such as a fetch
+    // mapping into refs/heads/origin/, so only the full reference can be trusted here.
     let upstream = String::from_utf8(
         git(
             &settings.source,

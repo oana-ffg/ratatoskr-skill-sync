@@ -4167,3 +4167,92 @@ fn stale_harness_groups_global_and_project_targets_in_one_decision() {
     assert!(!f.root.join("beta-instructions/AGENTS.md").exists());
     assert!(plan(&f.settings).unwrap().conflicts.is_empty());
 }
+
+#[test]
+fn a_directory_whose_git_points_at_another_worktree_is_not_a_checkout_root() {
+    let f = Fixture::new();
+    let elsewhere = f.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let repository = f.root.join("repository");
+    fs::create_dir_all(&repository).unwrap();
+    git(&repository, &["init", "-b", "main"]);
+    git(
+        &repository,
+        &["config", "core.worktree", elsewhere.to_str().unwrap()],
+    );
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    fs::write(project.join(".ratatoskr.toml"), "source = 'agent-skills'\n").unwrap();
+    fs::write(
+        project.join(".git"),
+        format!("gitdir: {}\n", repository.join(".git").display()),
+    )
+    .unwrap();
+    let error = project_status(&project).error.unwrap();
+    assert!(
+        error.contains("Register the Git repository root"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_upstream_with_the_right_short_name_in_another_namespace_cannot_deploy() {
+    let f = Fixture::new();
+    let source = &f.settings.source;
+    git(source, &["init", "-b", "main"]);
+    git(source, &["config", "user.email", "test@example.com"]);
+    git(source, &["config", "user.name", "Test"]);
+    git(source, &["add", "-A"]);
+    git(source, &["commit", "-m", "Initial"]);
+    let remote = f.root.join("remote.git");
+    git(&f.root, &["init", "--bare", "-b", "main", "remote.git"]);
+    git(
+        source,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(source, &["push", "origin", "main"]);
+    git(
+        source,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/origin/*",
+        ],
+    );
+    git(source, &["fetch", "origin"]);
+    git(source, &["config", "branch.main.remote", "origin"]);
+    git(source, &["config", "branch.main.merge", "refs/heads/main"]);
+    let mut settings = f.settings.clone();
+    settings.deploy_branch = "main".into();
+    let error = ratatoskr_core::content_status(&settings).error.unwrap();
+    assert!(
+        error.contains("expected refs/remotes/origin/main"),
+        "{error}"
+    );
+}
+
+#[test]
+fn disabling_a_skill_cannot_hide_new_malformed_targeting() {
+    let f = Fixture::new();
+    let current = ratatoskr_core::read_skill(&f.settings, None, "review-code").unwrap();
+    let error = ratatoskr_core::save_skill_draft(
+        &f.settings,
+        None,
+        "review-code",
+        &current.markdown,
+        "enabled=false\n[target]\nharnesses='codex'\n",
+        &current.markdown_hash,
+        &current.metadata_hash,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("is not an array"),
+        "{error:#}"
+    );
+    assert_eq!(
+        ratatoskr_core::read_skill(&f.settings, None, "review-code")
+            .unwrap()
+            .metadata,
+        current.metadata
+    );
+}

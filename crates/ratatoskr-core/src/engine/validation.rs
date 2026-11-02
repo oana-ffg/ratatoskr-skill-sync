@@ -193,15 +193,9 @@ fn validate_scope(
                 .extend(contexts);
         }
     }
-    // The library-wide selector scan belongs to full validation. Rendering the edited
-    // skill or file on every profile already reports what this edit can break.
-    let scan = if focus.is_none() {
-        selector_vocabulary_problems(&source, &summaries)
-    } else {
-        SelectorScan {
-            warnings: vec![],
-            inspections: vec![],
-        }
+    let scan = match focus {
+        None => selector_vocabulary_problems(&source, &summaries),
+        Some(focus) => focused_selector_problems(&content, focus),
     };
     let profile_contexts: Vec<ValidationContext> = summaries
         .iter()
@@ -465,9 +459,13 @@ impl SelectorVocabulary {
 
     fn warn_target(&mut self, skill_root: &Path, name: &str) {
         let relative = format!("skills/{name}/skill.toml");
-        let Some(text) = self.read_required(&relative, &skill_root.join("skill.toml")) else {
-            return;
-        };
+        if let Some(text) = self.read_required(&relative, &skill_root.join("skill.toml")) {
+            self.warn_target_text(name, &text);
+        }
+    }
+
+    fn warn_target_text(&mut self, name: &str, text: &str) {
+        let relative = format!("skills/{name}/skill.toml");
         let table = match text.parse::<toml::Table>() {
             Ok(table) => table,
             Err(error) => {
@@ -545,6 +543,46 @@ impl SelectorVocabulary {
                 self.push(variant_path, message);
             }
         }
+    }
+}
+
+/// Rendering stops at a disabled skill, so selectors must also be inspected directly. A focused
+/// edit can only change its own text, so that is all this reads. Warnings need a vocabulary and
+/// belong to full validation.
+fn focused_selector_problems(content: &Path, focus: ValidationFocus<'_>) -> SelectorScan {
+    let mut vocabulary = SelectorVocabulary {
+        harnesses: None,
+        machines: BTreeSet::new(),
+        seen: BTreeSet::new(),
+        warnings: Vec::new(),
+        inspections: Vec::new(),
+    };
+    match focus {
+        ValidationFocus::Skill { name, draft } => {
+            let root = content.join("skills").join(name);
+            let markdown_path = format!("skills/{name}/SKILL.md");
+            match draft {
+                Some(draft) => {
+                    vocabulary.warn_markdown_text(&markdown_path, draft.markdown);
+                    vocabulary.warn_target_text(name, draft.metadata);
+                }
+                None => {
+                    vocabulary.warn_optional_markdown(&markdown_path, &root.join("SKILL.md"));
+                    vocabulary.warn_target(&root, name);
+                }
+            }
+        }
+        ValidationFocus::GlobalInstructions { draft } => {
+            let relative = crate::content::GLOBAL_INSTRUCTIONS;
+            match draft {
+                Some(text) => vocabulary.warn_markdown_text(relative, text),
+                None => vocabulary.warn_optional_markdown(relative, &content.join(relative)),
+            }
+        }
+    }
+    SelectorScan {
+        warnings: Vec::new(),
+        inspections: vocabulary.inspections,
     }
 }
 
