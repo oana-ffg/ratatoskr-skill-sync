@@ -25,7 +25,9 @@ test("all main screens", async ({ page }) => {
     if (!(await page.getByRole("dialog").count())) {
       const height = await page
         .locator("main")
-        .evaluate((main) => main.scrollHeight + 72);
+        .evaluate((main) =>
+          Math.ceil(main.scrollHeight + main.getBoundingClientRect().top),
+        );
       await page.setViewportSize({
         width: viewport.width,
         height: Math.max(viewport.height, height),

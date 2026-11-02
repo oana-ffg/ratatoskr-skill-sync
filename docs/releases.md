@@ -2,7 +2,7 @@
 
 ## Windows update recovery
 
-The Windows updater in 0.2.18 and 0.2.19 exits the tray after launching NSIS in
+The old Windows updater, including 0.2.18 and 0.2.19, exits the tray after launching NSIS in
 passive mode. If installation aborts, the installer can remain on its failure
 page and never restart the tray. Sync and tray notifications then stop. Downloading
 a newer release cannot repair an already stopped updater; a running older
@@ -43,6 +43,16 @@ configured destination. Neither is installed by this change.
 
 Release publishers should repeat the recovery notice in the first release that
 ships the supervisor. Publishing that notice or a release is a separate action.
+
+## v0.2.20 release notes
+
+- **The desktop is much faster and no longer freezes during slow work.** Every command that touches the disk, a process or the network now runs off the main thread, including Apply. Editing no longer copies the library to disk: live preview renders only the skill being edited, from memory, and only one preview runs at a time instead of stacking up. Measured on a real library: one preview went from 850 ms and 0.9 MB written to 0.5 ms and nothing written, 64 previews at once from 35.8 s to 6 ms, the Library's skill statuses from 2.3 s to 8 ms, `plan` from 725 ms and 25 Git processes to 136 ms and 12, and the local part of Save from 890 ms to 7 ms.
+- **Save, Apply and Sync now say what they are doing.** A line below Save shows the step actually running: getting the latest content, checking and saving, committing, pushing to the named remote and branch, and refreshing. Each step shows elapsed seconds after three seconds, so a slow network doesn't look frozen. **Push now**, Apply and other source edits use the same line, as does **Sync now** on macOS. Central content saves still wait for the push, so a finished Save means that content is published. Project edits and local Settings saves remain local and have no Git stages. The top bar is 16 px taller to make room for this line.
+- **Saving checks what you changed.** A broken unrelated skill no longer blocks previewing or saving another skill. An existing problem in the skill you are editing no longer blocks a partial fix, while new problems are still refused. Enabling a skill refuses new problems on any machine, not only this one.
+- **Project skills can be read and saved while the project's Git checkout is unhealthy.** `plan` and `apply` still refuse a broken project.
+- **Background sync stops rewriting files when nothing changed.** The manifest and alert ledger are written only on a change, and launchd logs rotate at 1 MiB. Job logs load only when you open them in Activity instead of with every workspace refresh. Background failure lines are now timestamped.
+- **Regaining focus reuses a successful snapshot less than 15 seconds old.** Explicit window shows still refresh, and visible windows still refresh every minute unless an edit or operation defers it.
+- On Windows, the idle tray checks configuration and status every 15 seconds instead of every second. Manual requests and due syncs still wake it within a second.
 
 ## v0.2.19 release notes
 

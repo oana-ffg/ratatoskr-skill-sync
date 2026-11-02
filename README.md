@@ -96,7 +96,7 @@ More in the [desktop walkthrough](docs/desktop-ui.md) and the [full screenshot s
 
 ## Install
 
-**Windows update recovery:** If an update from 0.2.18 or 0.2.19 leaves an
+**Windows update recovery:** If a Windows update leaves an
 "Installation Aborted" window and no Ratatoskr tray icon, it cannot recover
 itself while the tray is stopped. Close that aborted installer, download the
 Windows setup executable from the [official releases](https://github.com/oana-ffg/ratatoskr-skill-sync/releases/latest),
