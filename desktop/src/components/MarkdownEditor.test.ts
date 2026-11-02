@@ -1,7 +1,15 @@
 import { render, waitFor } from "@testing-library/svelte";
 import { test, expect, vi } from "vitest";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
-import { splitLine, undo } from "@codemirror/commands";
+import {
+  copyLineDown,
+  copyLineUp,
+  moveLineDown,
+  moveLineUp,
+  splitLine,
+  transposeChars,
+  undo,
+} from "@codemirror/commands";
 import MarkdownEditor from "./MarkdownEditor.svelte";
 import { fixture, oracle } from "../../tests/fixture";
 import { sourceField } from "../editor/source";
@@ -187,19 +195,23 @@ test("a reload from outside ends the undo history instead of replaying it on the
   expect(view.state.field(sourceField).source).toBe("A different file.");
 });
 
-test("a command rewritten at a box edge keeps the caret it asked for", async () => {
-  const open = "<!-- only harness=codex -->";
-  const close = "<!-- /only -->";
-  const value = `${open}\nInside.\n${close}\nAfter.\n`;
-  const opening = { from: 0, to: open.length };
-  const closing = {
-    from: value.indexOf(close),
-    to: value.indexOf(close) + close.length,
+const OPEN = "<!-- only harness=codex -->";
+const CLOSE = "<!-- /only -->";
+
+/** Mounts `value`, which holds one box, with the box drawn. */
+async function mountBox(value: string) {
+  const opening = {
+    from: value.indexOf(OPEN),
+    to: value.indexOf(OPEN) + OPEN.length,
   };
-  const { view } = mountSource(value, {
+  const closing = {
+    from: value.indexOf(CLOSE),
+    to: value.indexOf(CLOSE) + CLOSE.length,
+  };
+  const mounted = mountSource(value, {
     blocks: [
       {
-        range: { from: 0, to: closing.to },
+        range: { from: opening.from, to: closing.to },
         opening,
         body: { from: opening.to + 1, to: closing.from - 1 },
         closing,
@@ -212,9 +224,15 @@ test("a command rewritten at a box edge keeps the caret it asked for", async () 
     diagnostics: [],
   });
   await waitFor(() =>
-    expect(view.dom.querySelector(".only-header")).not.toBeNull(),
+    expect(mounted.view.dom.querySelector(".only-header")).not.toBeNull(),
   );
-  const from = value.indexOf(".\n" + close);
+  return mounted;
+}
+
+test("a command rewritten at a box edge keeps the caret it asked for", async () => {
+  const value = `${OPEN}\nInside.\n${CLOSE}\nAfter.\n`;
+  const { view } = await mountBox(value);
+  const from = value.indexOf(".\n" + CLOSE);
   view.dispatch({
     selection: { anchor: from, head: value.indexOf("After.") + 1 },
   });
@@ -222,6 +240,130 @@ test("a command rewritten at a box edge keeps the caret it asked for", async () 
   splitLine(view);
   expect(view.state.selection.main.head).toBe(from);
   expect(view.state.field(sourceField).source).toBe(
-    `${open}\nInside\n\n${close}\nfter.\n`,
+    `${OPEN}\nInside\n\n${CLOSE}\nfter.\n`,
   );
+});
+
+test("transpose stops at a box edge and still works inside a line", async () => {
+  const value = `Before.\n${OPEN}\nFirst.\nLast.\n${CLOSE}\nAfter.\n`;
+  const { view } = await mountBox(value);
+  const source = () => view.state.field(sourceField).source;
+  for (const position of [
+    value.indexOf("First."),
+    value.indexOf("Last.") + 5,
+    value.indexOf("After."),
+    value.indexOf("Before.") + 7,
+  ]) {
+    view.dispatch({ selection: { anchor: position } });
+    transposeChars(view);
+    expect(source()).toBe(value);
+  }
+  view.dispatch({ selection: { anchor: value.indexOf("First.") + 1 } });
+  transposeChars(view);
+  expect(source()).toBe(value.replace("First.", "iFrst."));
+});
+
+test("moving lines keeps a box ordered and with a line inside", async () => {
+  const value = `Before.\n${OPEN}\nFirst.\nLast.\n${CLOSE}\nAfter.\n`;
+  const moves = [
+    // Lines may travel in and out of a box that keeps a line.
+    [
+      moveLineDown,
+      "Last.",
+      `Before.\n${OPEN}\nFirst.\n${CLOSE}\nLast.\nAfter.\n`,
+    ],
+    [
+      moveLineUp,
+      "First.",
+      `Before.\nFirst.\n${OPEN}\nLast.\n${CLOSE}\nAfter.\n`,
+    ],
+    [
+      moveLineDown,
+      "Before.",
+      `${OPEN}\nBefore.\nFirst.\nLast.\n${CLOSE}\nAfter.\n`,
+    ],
+    [
+      moveLineUp,
+      "After.",
+      `Before.\n${OPEN}\nFirst.\nLast.\nAfter.\n${CLOSE}\n`,
+    ],
+  ] as const;
+  for (const [move, line, expected] of moves) {
+    const { view, unmount } = await mountBox(value);
+    view.dispatch({ selection: { anchor: value.indexOf(line) } });
+    move(view);
+    expect(view.state.field(sourceField).source).toBe(expected);
+    unmount();
+  }
+  // A selection holding one marker cannot swap with the other.
+  const { view, unmount } = await mountBox(value);
+  view.dispatch({
+    selection: { anchor: 0, head: value.indexOf("Last.") + 5 },
+  });
+  moveLineDown(view);
+  expect(view.state.field(sourceField).source).toBe(value);
+  unmount();
+  // The only line, full or empty, cannot leave.
+  for (const [move, body] of [
+    [moveLineDown, "Only."],
+    [moveLineUp, "Only."],
+    [moveLineDown, ""],
+    [moveLineUp, ""],
+  ] as const) {
+    const only = `Before.\n${OPEN}\n${body}\n${CLOSE}\nAfter.\n`;
+    const { view, unmount } = await mountBox(only);
+    view.dispatch({
+      selection: { anchor: only.indexOf(OPEN) + OPEN.length + 1 },
+    });
+    move(view);
+    expect(view.state.field(sourceField).source).toBe(only);
+    unmount();
+  }
+});
+
+test("copying lines refuses one marker of a box without the other", async () => {
+  const value = `Before.\n${OPEN}\nFirst.\n${CLOSE}\nAfter.\n`;
+  const allowed = [
+    [
+      "First.",
+      copyLineDown,
+      `Before.\n${OPEN}\nFirst.\nFirst.\n${CLOSE}\nAfter.\n`,
+    ],
+    [
+      "Before.",
+      copyLineDown,
+      `Before.\nBefore.\n${OPEN}\nFirst.\n${CLOSE}\nAfter.\n`,
+    ],
+    [
+      "After.",
+      copyLineUp,
+      `Before.\n${OPEN}\nFirst.\n${CLOSE}\nAfter.\nAfter.\n`,
+    ],
+  ] as const;
+  for (const [line, copy, expected] of allowed) {
+    const { view, unmount } = await mountBox(value);
+    view.dispatch({ selection: { anchor: value.indexOf(line) } });
+    copy(view);
+    expect(view.state.field(sourceField).source).toBe(expected);
+    unmount();
+  }
+  for (const copy of [copyLineDown, copyLineUp]) {
+    const { view, unmount } = await mountBox(value);
+    view.dispatch({
+      selection: { anchor: 0, head: value.indexOf("First.") + 2 },
+    });
+    copy(view);
+    expect(view.state.field(sourceField).source).toBe(value);
+    unmount();
+  }
+  // The whole box may be copied.
+  const { view, unmount } = await mountBox(value);
+  view.dispatch({
+    selection: { anchor: 0, head: value.indexOf("After.") + 2 },
+  });
+  copyLineDown(view);
+  expect(view.state.field(sourceField).source).toBe(
+    `Before.\n${OPEN}\nFirst.\n${CLOSE}\nAfter.\n`.repeat(2),
+  );
+  unmount();
 });

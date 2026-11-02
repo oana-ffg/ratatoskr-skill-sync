@@ -153,6 +153,17 @@ function crossEdge(
   return {};
 }
 
+/** The edges in this range whose box's other edge is outside it. */
+function partlyCoveredEdges(edges: Edges, from: number, to: number): Span[] {
+  const touched = edgesTouching(edges, from, to);
+  return touched.filter(
+    ({ edge }) =>
+      !touched.some(
+        (other) => other.edge.box === edge.box && other.edge.side !== edge.side,
+      ),
+  );
+}
+
 /**
  * The same edit without the markers of any box it only partly covers. The text before the edit and
  * the inserted text keep their positions, so the selection the command asked for stays valid there.
@@ -162,13 +173,7 @@ function keepMarkers(
   { from, to, insert }: { from: number; to: number; insert: string },
   { anchor, head }: SelectionRange,
 ): TransactionSpec | null {
-  const touched = edgesTouching(edges, from, to);
-  const kept = touched.filter(
-    ({ edge }) =>
-      !touched.some(
-        (other) => other.edge.box === edge.box && other.edge.side !== edge.side,
-      ),
-  );
+  const kept = partlyCoveredEdges(edges, from, to);
   if (!kept.length) return null;
   const changes: { from: number; to?: number; insert?: string }[] = [
     { from, insert },
@@ -205,11 +210,46 @@ function removeLine(doc: Text, edges: Edges, line: Line): TransactionSpec {
 }
 
 /**
- * Keys, typing and paste. Plain "input" is what Enter and its relatives use. Formatting wraps the
- * selected text, markers included, and uses its own event, and structured edits carry a source
- * snapshot, so neither is an edit of the visible text.
+ * Whether a keyboard move would damage a box. Transposing across an edge swaps a character with a
+ * hidden line break. Moving lines over a marker is fine, and lets a line enter or leave a box, as
+ * long as the box's other marker is clear of them: otherwise the markers would swap order, or the
+ * box would have no line left inside.
  */
-const guardedEdit = /^(delete($|\.)|input$|input\.(type|paste)($|\.))/;
+function moveBreaksBox(
+  edges: Edges,
+  event: string,
+  changes: { from: number; to: number }[],
+): boolean {
+  if (event === "move.character")
+    return changes.some(
+      ({ from, to }) => edgesTouching(edges, from, to).length > 0,
+    );
+  const [first] = changes;
+  const last = changes[changes.length - 1];
+  // Two changes bracket the moved lines. An empty line's two changes merge into one.
+  const moved =
+    changes.length > 1
+      ? { from: first.to, to: last.from }
+      : { from: first.from, to: first.to };
+  const crossed = changes.flatMap(({ from, to }) =>
+    edgesTouching(edges, from, to),
+  );
+  let breaks = false;
+  edges.between(moved.from, moved.to, (_from, _to, edge) => {
+    breaks ||= crossed.some(
+      (span) => span.edge.box === edge.box && span.edge.side !== edge.side,
+    );
+  });
+  return breaks;
+}
+
+/**
+ * Keys, typing, paste and keyboard moves and copies. Plain "input" is what Enter and its relatives use.
+ * Formatting wraps the selected text, markers included, and uses its own event, and structured
+ * edits carry a source snapshot, so neither is an edit of the visible text.
+ */
+const guardedEdit =
+  /^(delete($|\.)|input$|input\.(type|paste|copyline)($|\.)|move\.(character|line)$)/;
 const guardEdits = EditorState.transactionFilter.of((tr) => {
   const edges = tr.startState.field(edgeField);
   const event = tr.annotation(Transaction.userEvent);
@@ -225,6 +265,19 @@ const guardEdits = EditorState.transactionFilter.of((tr) => {
   tr.changes.iterChanges((from, to, _fromB, _toB, inserted) =>
     changes.push({ from, to, insert: inserted.toString() }),
   );
+  if (event.startsWith("move."))
+    return moveBreaksBox(edges, event, changes) ? {} : tr;
+  if (event === "input.copyline") {
+    // Copying one marker of a box, without the other, would nest or unbalance the blocks.
+    const from = tr.startState.doc.lineAt(
+      tr.startState.selection.main.from,
+    ).from;
+    const copied = changes[0].insert.length - 1;
+    return changes.length === 1 &&
+      partlyCoveredEdges(edges, from, from + copied).length
+      ? {}
+      : tr;
+  }
   // One selection range always makes one change.
   if (changes.length !== 1 || changes[0].from === changes[0].to) return tr;
   const [change] = changes;
