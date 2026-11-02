@@ -3,6 +3,10 @@ param([string]$PlanPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Set when rollback failed or could not safely run, so the running version alone no
+# longer proves a healthy installation. Every result this process writes carries it.
+$script:InstallationUnverified = $false
+
 function Start-UpdateProcess([string]$Executable, [string]$Arguments, [bool]$CaptureOutput = $false) {
     # Windows PowerShell's Start-Process -PassThru can lose a fast child's exit
     # code. Starting through Process retains the handle from creation to wait.
@@ -31,7 +35,7 @@ function Get-UpdateHash([string]$Path) {
 function Write-UpdateResult($Plan, [string]$ErrorMessage) {
     $path = Join-Path $Plan.data 'windows-install-result.json'
     $temporary = "$path.$([guid]::NewGuid().ToString('N')).tmp"
-    $result = @{ version = $Plan.version; finished_at = [datetime]::UtcNow.ToString('o'); error = $null }
+    $result = @{ version = $Plan.version; finished_at = [datetime]::UtcNow.ToString('o'); error = $null; installation_unverified = $script:InstallationUnverified }
     if ($ErrorMessage) { $result.error = "Desktop update: $ErrorMessage" }
     [IO.File]::WriteAllText($temporary, ($result | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
     if ([IO.File]::Exists($path)) { [IO.File]::Replace($temporary, $path, "$path.previous-$([guid]::NewGuid().ToString('N'))") }
@@ -75,9 +79,13 @@ function Invoke-UpdateTransaction([scriptblock]$Install, [scriptblock]$Restore, 
     catch {
         $failure = $_.Exception.Message
         $unsafeToRestore = $_.Exception.Data['InstallerStillRunning'] -eq $true
-        if (-not $unsafeToRestore) {
+        if ($unsafeToRestore) { $script:InstallationUnverified = $true }
+        else {
             try { & $Restore }
-            catch { $failure += "; restoring the previous executables failed: $($_.Exception.Message)" }
+            catch {
+                $script:InstallationUnverified = $true
+                $failure += "; restoring the previous executables failed: $($_.Exception.Message)"
+            }
         }
     }
     # A failed ledger write must not prevent the restart. The caller's outer

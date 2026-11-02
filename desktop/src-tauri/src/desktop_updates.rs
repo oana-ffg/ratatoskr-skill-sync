@@ -273,7 +273,7 @@ mod tests {
         let result = data.join("windows-install-result.json");
         std::fs::write(
             &result,
-            br#"{"version":"999.0.0","error":"Desktop update: installer timed out"}"#,
+            br#"{"version":"999.0.0","error":"Desktop update: installer timed out","installation_unverified":false}"#,
         )
         .unwrap();
         for _ in 0..2 {
@@ -286,7 +286,11 @@ mod tests {
                 Some("Desktop update: installer timed out")
             );
         }
-        std::fs::write(result, br#"{"version":"999.0.0","error":null}"#).unwrap();
+        std::fs::write(
+            result,
+            br#"{"version":"999.0.0","error":null,"installation_unverified":false}"#,
+        )
+        .unwrap();
         context.report_outcome(None).unwrap();
         assert!(
             core::job_status(&settings)

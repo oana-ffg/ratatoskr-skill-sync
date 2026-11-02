@@ -32,11 +32,14 @@ struct Plan<'a> {
 struct Outcome {
     version: String,
     error: Option<String>,
+    installation_unverified: bool,
 }
 
 /// An install failure survives successful manifest checks and ordinary syncs. It
 /// ends once this app runs the failed version or newer, whether a later supervised
-/// installation or the documented manual setup installed it.
+/// installation or the documented manual setup installed it. After a failed or
+/// skipped rollback the running version proves nothing about the other files, so
+/// only a later supervised installation, which verifies them, ends the failure.
 pub fn failure(data: &Path) -> Result<Option<String>> {
     failure_while_running(data, env!("CARGO_PKG_VERSION"))
 }
@@ -48,7 +51,8 @@ fn failure_while_running(data: &Path, running: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     let outcome: Outcome = serde_json::from_slice(&fs::read(path)?)?;
-    let resolved = semver::Version::parse(running)? >= semver::Version::parse(&outcome.version)?;
+    let resolved = !outcome.installation_unverified
+        && semver::Version::parse(running)? >= semver::Version::parse(&outcome.version)?;
     Ok(if resolved { None } else { outcome.error })
 }
 
@@ -168,14 +172,18 @@ mod tests {
         assert!(running("0.2.20").unwrap().is_none());
         fs::write(
             data.join(RESULT),
-            br#"{"version":"0.2.21","error":"Installer timed out"}"#,
+            br#"{"version":"0.2.21","error":"Installer timed out","installation_unverified":false}"#,
         )
         .unwrap();
         assert_eq!(
             running("0.2.20").unwrap().as_deref(),
             Some("Installer timed out")
         );
-        fs::write(data.join(RESULT), br#"{"version":"0.2.21","error":null}"#).unwrap();
+        fs::write(
+            data.join(RESULT),
+            br#"{"version":"0.2.21","error":null,"installation_unverified":false}"#,
+        )
+        .unwrap();
         assert!(running("0.2.20").unwrap().is_none());
         fs::write(data.join(RESULT), b"broken").unwrap();
         assert!(running("0.2.20").is_err());
@@ -187,7 +195,7 @@ mod tests {
         let data = dunce::canonicalize(temp.path()).unwrap();
         fs::write(
             data.join(RESULT),
-            br#"{"version":"0.2.21","error":"Installer timed out"}"#,
+            br#"{"version":"0.2.21","error":"Installer timed out","installation_unverified":false}"#,
         )
         .unwrap();
         for version in ["0.2.21", "0.2.22", "0.3.0"] {
@@ -196,6 +204,30 @@ mod tests {
                 "{version}"
             );
         }
+    }
+
+    #[test]
+    fn a_failed_rollback_stays_reported_while_the_failed_version_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = dunce::canonicalize(temp.path()).unwrap();
+        fs::write(
+            data.join(RESULT),
+            br#"{"version":"0.2.21","error":"Rollback failed","installation_unverified":true}"#,
+        )
+        .unwrap();
+        for version in ["0.2.20", "0.2.21", "0.2.22"] {
+            assert_eq!(
+                failure_while_running(&data, version).unwrap().as_deref(),
+                Some("Rollback failed"),
+                "{version}"
+            );
+        }
+        fs::write(
+            data.join(RESULT),
+            br#"{"version":"0.2.22","error":null,"installation_unverified":false}"#,
+        )
+        .unwrap();
+        assert!(failure_while_running(&data, "0.2.22").unwrap().is_none());
     }
 
     #[test]
@@ -208,7 +240,7 @@ mod tests {
             fs::write(transaction.join("installer.exe"), b"bytes").unwrap();
             std::thread::sleep(Duration::from_millis(20));
         }
-        fs::write(data.join(RESULT), br#"{"version":"0.2.21","error":null}"#).unwrap();
+        fs::write(data.join(RESULT), b"kept").unwrap();
         fs::create_dir(data.join("unrelated")).unwrap();
 
         prune_transactions(&data).unwrap();

@@ -36,6 +36,8 @@ try { Invoke-UpdateTransaction -Install { Throw-UnstoppedInstaller 'termination 
 catch { $caught = $true }
 Assert-Equal $caught $true
 Assert-Equal ($events -join ',') 'report:termination denied'
+Assert-Equal $script:InstallationUnverified $true
+$script:InstallationUnverified = $false
 
 $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru
 $caught = $false
@@ -76,6 +78,18 @@ Assert-Equal $result.error 'Desktop update: installer aborted'
 Write-UpdateResult $plan $null
 $result = Get-Content (Join-Path $root 'windows-install-result.json') -Raw | ConvertFrom-Json
 Assert-Equal $result.error $null
+
+# A failed rollback must say so in the saved result, or the failure would read as
+# resolved once the failed version is running.
+$result = Invoke-UpdateTransaction -Install { throw 'installer aborted' } -Restore { throw 'desktop locked' } -Report { param($message); Write-UpdateResult $plan $message } -Restart {}
+Assert-Equal $result 'installer aborted; restoring the previous executables failed: desktop locked'
+$saved = Get-Content (Join-Path $root 'windows-install-result.json') -Raw | ConvertFrom-Json
+Assert-Equal $saved.installation_unverified $true
+$script:InstallationUnverified = $false
+
+$null = Invoke-UpdateTransaction -Install { throw 'installer aborted' } -Restore {} -Report { param($message); Write-UpdateResult $plan $message } -Restart {}
+$saved = Get-Content (Join-Path $root 'windows-install-result.json') -Raw | ConvertFrom-Json
+Assert-Equal $saved.installation_unverified $false
 
 # Exercise the complete supervisor entry point with a real failing executable.
 # Only tray launch is replaced; all paths, backups and state are disposable.
