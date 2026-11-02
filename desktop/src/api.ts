@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { command } from "./mutation-progress";
 export interface Range {
   from: number;
   to: number;
@@ -272,13 +273,13 @@ export const api = {
   source: (file: string) =>
     invoke<StructuredSource>("read_structured_source", { file }),
   saveSource: (source: StructuredSource) =>
-    invoke<Snapshot>(
+    command<Snapshot>(
       "save_structured_source",
       source as unknown as Record<string, unknown>,
     ),
   readInstructions: () => invoke<SourceDocument>("read_global_instructions"),
   saveInstructions: (markdown: string, expectedHash: string) =>
-    invoke<Snapshot>("save_global_instructions", { markdown, expectedHash }),
+    command<Snapshot>("save_global_instructions", { markdown, expectedHash }),
   analyzeInstructions: (markdown: string, machine: string, harness: string) =>
     invoke<Analysis>("analyze_global_instructions", {
       markdown,
@@ -294,8 +295,7 @@ export const api = {
   instructionsPath: (machine: string, harness: string) =>
     invoke<string>("preview_global_instructions_path", { machine, harness }),
   folder: () => invoke<string | null>("choose_folder"),
-  command: <T>(command: string, args?: Record<string, unknown>) =>
-    invoke<T>(command, args),
+  command,
 };
 export function agentName(tag: string): string {
   return (

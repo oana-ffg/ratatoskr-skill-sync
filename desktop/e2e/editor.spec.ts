@@ -370,3 +370,117 @@ test("typing a sentence over a slow backend keeps backend work bounded", async (
   // Far below one run per key: a run takes 300ms, and there were 52 keys over 10 seconds.
   expect(previews - previewsBefore).toBeLessThanOrEqual(30 * targets);
 });
+
+for (const colorScheme of ["light", "dark"] as const) {
+  for (const width of [1380, 640, 420]) {
+    test(`save progress stays below Save without toolbar movement at ${width}px in ${colorScheme}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 960 });
+      await page.emulateMedia({ colorScheme });
+      const backend = editorFixture();
+      let channel = 0;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      await installFixture(page, async (cmd, args) => {
+        if (cmd === "save_skill_draft") {
+          channel = Number(String(args.onProgress).split(":")[1]);
+          await gate;
+        }
+        return backend.invoke(cmd, args);
+      });
+      // Add only the native callback transport to the browser fixture. The app
+      // creates a real Tauri Channel; no synthetic frontend stages are used.
+      await page.addInitScript(() => {
+        type Bridge = {
+          invoke: (
+            cmd: string,
+            args: Record<string, unknown>,
+          ) => Promise<unknown>;
+          transformCallback: (callback: (value: unknown) => void) => number;
+          unregisterCallback: (id: number) => void;
+        };
+        const host = window as unknown as {
+          __TAURI_INTERNALS__: Bridge;
+          fixtureProgress: (id: number, index: number, message: string) => void;
+        };
+        const callbacks = new Map<number, (value: unknown) => void>();
+        let next = 0;
+        host.__TAURI_INTERNALS__.transformCallback = (callback) => {
+          callbacks.set(++next, callback);
+          return next;
+        };
+        host.__TAURI_INTERNALS__.unregisterCallback = (id) => {
+          callbacks.delete(id);
+        };
+        host.fixtureProgress = (id, index, message) =>
+          callbacks.get(id)?.({ index, message });
+        const invoke = host.__TAURI_INTERNALS__.invoke;
+        host.__TAURI_INTERNALS__.invoke = (cmd, args) =>
+          invoke(cmd, JSON.parse(JSON.stringify(args ?? {})));
+      });
+      const send = (index: number, message: string) =>
+        page.evaluate(
+          ({ id, index, message }) => {
+            (
+              window as unknown as {
+                fixtureProgress: (
+                  id: number,
+                  index: number,
+                  message: string,
+                ) => void;
+              }
+            ).fixtureProgress(id, index, message);
+          },
+          { id: channel, index, message },
+        );
+      try {
+        await openEditor(page);
+        await append(page, "\nProgress fixture edit.\n");
+        const toolbar = page.locator(".topbar");
+        const before = await toolbar.boundingBox();
+        const save = page.getByRole("button", { name: "Save", exact: true });
+        const button = await save.boundingBox();
+        await page.clock.install();
+        await page.clock.pauseAt(new Date(Date.now() + 1000));
+        await save.click();
+        await expect.poll(() => channel).toBeGreaterThan(0);
+        const status = page.getByRole("status", { name: "Save progress" });
+        await send(0, "Getting the latest content…");
+        await expect(status).toHaveText("Getting the latest content…");
+        await page.clock.runFor(3000);
+        await expect(status).toHaveText("Getting the latest content… 3s");
+        // Deliberately deliver out of order; Channel must preserve stage order.
+        await send(2, "Pushing to origin/main…");
+        await expect(status).toHaveText("Getting the latest content… 3s");
+        await send(1, "Committing…");
+        await expect(status).toHaveText("Pushing to origin/main…");
+        await expect(
+          page.getByRole("button", { name: "Saving…" }),
+        ).toBeDisabled();
+        const after = await toolbar.boundingBox();
+        const line = await status.boundingBox();
+        expect(after).toEqual(before);
+        expect(line!.y).toBeGreaterThanOrEqual(button!.y + button!.height);
+        expect(line!.x).toBeGreaterThanOrEqual(after!.x);
+        expect(line!.x + line!.width).toBeLessThanOrEqual(width);
+        expect(
+          await status.evaluate(
+            (node) =>
+              node.scrollHeight <= node.clientHeight &&
+              node.scrollWidth <= node.clientWidth,
+          ),
+        ).toBe(true);
+        await send(3, "Refreshing…");
+        await expect(status).toHaveText("Refreshing…");
+        release();
+        await expect(status).toBeEmpty();
+        await send(4, "Stale progress…");
+        await expect(status).toBeEmpty();
+        expect(backend.document.markdown).toContain("Progress fixture edit.");
+      } finally {
+        release();
+      }
+    });
+  }
+}

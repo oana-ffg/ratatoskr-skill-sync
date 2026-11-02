@@ -99,7 +99,11 @@ test("Windows tray settings in dark mode", async ({ page }) => {
     width: 1380,
     height: Math.max(
       960,
-      await page.locator("main").evaluate((main) => main.scrollHeight + 72),
+      await page
+        .locator("main")
+        .evaluate((main) =>
+          Math.ceil(main.scrollHeight + main.getBoundingClientRect().top),
+        ),
     ),
   });
   mkdirSync("../docs/screenshots", { recursive: true });
