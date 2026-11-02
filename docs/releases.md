@@ -22,7 +22,7 @@ on success or failure. On failure it restores the previous desktop and CLI
 executables and retains both the backup and any partially installed executables.
 Successful manifest checks do not erase an installation failure. It clears once
 the app runs the failed version or newer, through a later supervised installation
-or a manual setup. After a failed rollback only a later supervised installation clears
+or a manual setup. After a failed or skipped rollback only a later supervised installation clears
 it, because the running version does not prove the other files are intact. Failed restarts trigger a Windows
 notification from the independent supervisor, without requiring the tray.
 If Windows refuses to terminate a timed-out installer, the supervisor preserves
