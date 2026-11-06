@@ -1,0 +1,210 @@
+:root {
+  --topbar-height: 88px;
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 400;
+  --bg: #101510;
+  --surface: #161d17;
+  --surface-2: #1c241d;
+  --surface-3: #242f25;
+  --sidebar: #151d16;
+  --text: #e2e9df;
+  --muted: #94a390;
+  --border: #2e3a2e;
+  --accent: #a7d88c;
+  --accent-soft: #263b22;
+  --accent-solid: #a6d58b;
+  --button-text: #152512;
+  --blue: #8ebdff;
+  --blue-soft: #1c2b3c;
+  --orange: #edaa72;
+  --orange-soft: #3a2b1e;
+  --purple: #c1a0e9;
+  --purple-soft: #2e253c;
+  --amber: #edbc62;
+  --amber-soft: #352d1b;
+  --danger: #f2a29b;
+  --danger-soft: #392723;
+  --shadow: 0 24px 100px #0008;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 7px;
+  padding: 7px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+button:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--muted);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent-solid);
+  color: var(--button-text);
+  border-color: transparent;
+  font-weight: 650;
+}
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+  background: var(--accent-solid);
+}
+button.subtle {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+button.accent-text {
+  color: var(--accent);
+}
+button.icon-button {
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  padding: 9px 11px;
+  min-width: 0;
+}
+textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-solid);
+}
+label {
+  display: block;
+  font-size: 12px;
+  font-weight: 550;
+  margin: 12px 0;
+}
+label input,
+label select,
+label textarea {
+  display: block;
+  margin-top: 5px;
+}
+label small {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 8px;
+}
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+h1 {
+  font-size: 30px;
+  letter-spacing: -0.9px;
+  line-height: 1.2;
+  font-weight: 650;
+  margin-bottom: 12px;
+}
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  letter-spacing: -0.2px;
+}
+h3 {
+  font-size: 12px;
+  font-weight: 600;
+}
+p {
+  margin-bottom: 12px;
+}
+small,
+.small {
+  font-size: 11px;
+}
+.muted {
+  color: var(--muted);
+}
+.eyebrow {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.eyebrow span {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  margin-left: 8px;
+}
+.path,
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.path,
+code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+pre {
+  white-space: pre-wrap;
+  overflow: auto;
+  font-size: 12px;
+}
+details {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+details[open] > summary {
+  margin-bottom: 12px;
+}
