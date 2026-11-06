@@ -1,0 +1,218 @@
+.diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 16px 0;
+}
+.diff-grid > div {
+  background: var(--bg);
+  min-width: 0;
+  padding: 12px;
+}
+.diff-grid > div + div {
+  border-left: 1px solid var(--border);
+}
+.diff-grid h3 {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.diff-grid pre {
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 0;
+}
+.diff-remove {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.diff-add {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.conflict-card,
+.change-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+  background: var(--surface);
+}
+.conflict-card {
+  border-left: 3px solid var(--amber);
+}
+
+.conflict-card h2 {
+  margin: 8px 0;
+}
+.conflict-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.conflict-actions button {
+  font-size: 11px;
+}
+.conflict-card > p.small {
+  margin-top: 12px;
+}
+.project-grid,
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+.project-card {
+  margin: 0;
+}
+.project-skill-count {
+  font-size: 20px;
+  font-weight: 650;
+  margin: 8px 0;
+}
+.project-symbol {
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+.project-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 24px;
+}
+.agent-grid {
+  gap: 16px;
+}
+.agent-card {
+  margin: 0;
+}
+.agent-card p {
+  font-size: 11px;
+}
+.agent-card details {
+  font-size: 11px;
+}
+.machine-heading {
+  margin-top: 32px;
+}
+.machine-symbol {
+  color: var(--accent);
+  margin-right: 4px;
+}
+.machine-card > .form-row {
+  gap: 20px;
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.stats-grid .panel {
+  padding: 20px;
+}
+.stats-grid h2 {
+  font-size: 18px;
+}
+.stats-grid p:last-child {
+  font-size: 11px;
+  margin-bottom: 0;
+}
+.log-panel pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  line-height: 1.9;
+  max-height: 320px;
+}
+.settings-page {
+  max-width: 940px;
+}
+.settings-page .panel {
+  padding: 24px 28px;
+}
+.settings-page label {
+  max-width: 520px;
+}
+.settings-page .time-field {
+  max-width: 240px;
+}
+dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  width: min(600px, 90vw);
+  box-shadow: var(--shadow);
+  max-height: 86vh;
+  overflow: auto;
+}
+dialog::backdrop {
+  background: #07100980;
+  backdrop-filter: blur(4px);
+}
+.dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+.dialog-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+}
+.condition-summary {
+  margin: 20px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+.value-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.value-options button {
+  text-align: left;
+  white-space: normal;
+  background: var(--surface-2);
+  padding: 12px;
+}
+.value-options strong,
+.value-options span {
+  display: block;
+}
+.value-options strong {
+  font-size: 12px;
+  color: var(--accent);
+}
+.value-options span {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.onboarding {
+  max-width: 600px;
+  padding-top: 80px;
+}
+.onboarding h1 {
+  font-size: 40px;
+}
+.onboarding > button {
+  margin-top: 20px;
+}
