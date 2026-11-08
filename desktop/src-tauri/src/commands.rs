@@ -45,6 +45,8 @@ pub(crate) struct Snapshot {
     skills_error: Option<String>,
     helper: Option<PathBuf>,
     helper_error: Option<String>,
+    #[cfg(target_os = "macos")]
+    schedule_installed: bool,
     jobs: core::JobStatus,
     presets: Vec<core::AgentPreset>,
     preview_targets: Vec<core::PreviewTarget>,
@@ -143,6 +145,8 @@ fn snapshot_with(current: Option<Plan>) -> Reply<Snapshot> {
         skills_error,
         helper: helper.as_ref().ok().cloned(),
         helper_error: helper.err().map(|e| format!("{e:#}")),
+        #[cfg(target_os = "macos")]
+        schedule_installed: core::schedule_installed(&settings).map_err(|e| format!("{e:#}"))?,
         jobs: core::job_status(&settings).map_err(|e| format!("{e:#}"))?,
         presets: core::agent_presets(),
         preview_targets,

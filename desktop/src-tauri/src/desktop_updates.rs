@@ -67,6 +67,7 @@ impl UpdateContext {
         state.record_success(&self.state_path, now, false)
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn installation_allowed(
         &self,
         now: chrono::DateTime<chrono::FixedOffset>,
@@ -134,6 +135,7 @@ impl UpdateContext {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 pub(crate) struct AutomaticOutcome {
     pub checked: bool,
     pub available: bool,
@@ -141,6 +143,7 @@ pub(crate) struct AutomaticOutcome {
 }
 
 /// Shared launch/nightly policy, with transport injected so tests exercise real persistence.
+#[cfg(any(not(target_os = "macos"), test))]
 pub(crate) fn automatic_update_with<U>(
     context: &UpdateContext,
     pending: &mut Option<(UpdateSettings, U)>,

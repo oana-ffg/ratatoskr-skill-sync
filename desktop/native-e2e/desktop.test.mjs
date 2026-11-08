@@ -179,7 +179,9 @@ async function drive(name, journey) {
  * while a save is still finishing, so keep editing and retry; a guard that never
  * clears fails the journey. */
 async function navigate(session, name, arrived) {
-  const guard = "//dialog[@aria-label='You have unsaved changes']";
+  // WebDriver find rejects modal dialogs because their offsetParent is null; use a child control.
+  const guard =
+    "//dialog[@aria-label='You have unsaved changes']//button[normalize-space(.)='Keep editing']";
   await until(`${name} to open`, async () => {
     if (await session.find(arrived)) return true;
     if (await session.find(guard)) await session.click(button("Keep editing"));
@@ -297,6 +299,98 @@ test(
       throw error;
     } finally {
       await tray.stop();
+    }
+  },
+);
+
+test(
+  "macOS closing the only window quits the process",
+  { skip: disabled || process.platform !== "darwin" },
+  async () => {
+    const workspace = createWorkspace();
+    const desktop = await launch(workspace, "macos-close");
+    try {
+      const session = await Session.start(desktop.port, desktop.running);
+      await session.element("//h2[normalize-space(.)='No skills yet']", 60000);
+      // Exit may close the WebDriver connection before its response is flushed.
+      const closing = Promise.allSettled([
+        session.command("DELETE", "/window"),
+      ]);
+      await until("the window close to quit the app", () => !desktop.running());
+      await closing;
+    } finally {
+      await desktop.stop();
+    }
+  },
+);
+
+test(
+  "macOS dirty window keeps editing, then discard closes and quits",
+  { skip: disabled || process.platform !== "darwin" },
+  async () => {
+    const workspace = createWorkspace();
+    workspace.publish("Add close-check", {
+      "skills/close-check/SKILL.md": skill(
+        "close-check",
+        "Checks the unsaved close guard.",
+        "Original content.",
+      ),
+      "skills/close-check/skill.toml": "",
+    });
+    execFileSync("git", ["-C", workspace.content, "pull", "--ff-only"]);
+    const desktop = await launch(workspace, "macos-dirty-close");
+    try {
+      const session = await Session.start(desktop.port, desktop.running);
+      await session.click(
+        "//button[.//strong[normalize-space(.)='close-check']]",
+      );
+      const editor = labelled("Skill Markdown editor");
+      await session.click(editor);
+      await session.type(editor, "Unsaved edit.");
+      await until("the typed edit in the skill editor", async () =>
+        (await session.texts(editor)).some((text) =>
+          text.includes("Unsaved edit."),
+        ),
+      );
+      // The compact layout hides the status text; Save appears only for an unsaved draft.
+      await until("the unsaved draft to enable Save", () =>
+        session.enabled(button("Save")),
+      );
+      await session.command("DELETE", "/window");
+      const guard =
+        "//dialog[@aria-label='You have unsaved changes']//button[normalize-space(.)='Keep editing']";
+      await session.element(guard);
+      assert.ok(desktop.running(), "Dirty window closed without prompting");
+      await session.click(button("Keep editing"));
+      await session.element(editor);
+      assert.ok(desktop.running(), "Keep editing quit the app");
+      assert.ok(
+        (await session.texts(editor)).some((text) =>
+          text.includes("Unsaved edit."),
+        ),
+        "Keep editing lost the unsaved text",
+      );
+      assert.ok(
+        await session.enabled(button("Save")),
+        "Keep editing lost the dirty draft",
+      );
+      await session.command("DELETE", "/window");
+      await session.element(guard);
+      // Quitting may close WebDriver before the click response is flushed.
+      const closing = Promise.allSettled([
+        session.click(button("Discard and continue")),
+      ]);
+      await until(
+        "discard to close and quit the app",
+        () => !desktop.running(),
+      );
+      await closing;
+      assert.doesNotMatch(
+        workspace.remoteFile("skills/close-check/SKILL.md"),
+        /Unsaved edit/,
+      );
+    } finally {
+      await desktop.stop();
     }
   },
 );

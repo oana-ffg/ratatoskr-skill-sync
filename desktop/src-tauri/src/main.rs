@@ -16,9 +16,9 @@ fn main() {
     match instance::claim() {
         Ok(true) => (),
         // Windows forwards a second launch to the tray app through single-instance.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         Ok(false) => (),
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         Ok(false) => {
             eprintln!("Ratatoskr: the desktop app is already running");
             return;
@@ -40,6 +40,19 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_notification::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
+        if !args.iter().any(|arg| arg == "--background") {
+            let handle = app.clone();
+            if let Err(error) = app.run_on_main_thread(move || {
+                if let Err(error) = window_lifecycle::open(&handle) {
+                    window_lifecycle::report(&handle, error);
+                }
+            }) {
+                window_lifecycle::report(app, error.into());
+            }
+        }
+    }));
     #[cfg(feature = "e2e-webdriver")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     let autostart = tauri_plugin_autostart::Builder::new();
@@ -59,9 +72,8 @@ fn main() {
             tray::setup(app)?;
             #[cfg(target_os = "macos")]
             {
-                // Rewrite an existing opt-in login entry with --background.
-                // An opted-out install stays opted out.
-                if let Err(error) = window_lifecycle::refresh_login(app.handle()) {
+                // Remove the retired login entry; launchd owns background work.
+                if let Err(error) = window_lifecycle::retire_login_entry(app.handle()) {
                     window_lifecycle::report(app.handle(), error.context("Open at login"));
                 }
             }
@@ -141,10 +153,21 @@ fn main() {
         .expect("Failed to build Ratatoskr Skill Sync")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if matches!(event, tauri::RunEvent::Reopen { .. })
-                && let Err(error) = window_lifecycle::open(app)
-            {
-                window_lifecycle::report(app, error);
+            match event {
+                tauri::RunEvent::Reopen { .. } => {
+                    if let Err(error) = window_lifecycle::open(app) {
+                        window_lifecycle::report(app, error);
+                    }
+                }
+                tauri::RunEvent::ExitRequested { api, .. } if window_lifecycle::installing() => {
+                    api.prevent_exit()
+                }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } if label == "main" => app.exit(0),
+                _ => (),
             }
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);

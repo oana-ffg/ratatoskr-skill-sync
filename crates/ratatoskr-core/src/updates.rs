@@ -201,8 +201,8 @@ impl DesktopUpdateState {
             }))
     }
 
-    /// Old attempts are not proof of success. macOS preserves health across
-    /// restarts for the helper watchdog; other platforms track resident sessions.
+    /// Old attempts are not proof of success. Preserve explicit macOS check
+    /// history; its helper owns a separate health ledger. Other platforms track sessions.
     pub fn observe(
         &mut self,
         path: &std::path::Path,
@@ -271,7 +271,7 @@ pub const DESKTOP_OVERDUE: &str =
     "Desktop update overdue: two nightly windows passed without a successful check";
 
 /// Storage identity stays stable when the macOS publisher/bundle identity changes.
-/// The desktop and helper must read the same ledger, including during an update.
+/// The desktop and helper share request/response and notification storage during updates.
 pub fn desktop_data_dir() -> Result<std::path::PathBuf> {
     Ok(directories::BaseDirs::new()
         .context("Find desktop app-data directory")?
@@ -281,79 +281,10 @@ pub fn desktop_data_dir() -> Result<std::path::PathBuf> {
 #[cfg(any(target_os = "macos", test))]
 const MONITORING_FAILED: &str = "Desktop update monitoring failed:";
 
-#[cfg(target_os = "macos")]
-pub(crate) fn desktop_watchdog(settings: &crate::Settings) -> Result<()> {
-    let executable = std::env::current_exe()?;
-    if executable
-        .file_stem()
-        .is_none_or(|name| name != "ratatoskr")
-    {
-        // In-process desktop/library calls do not own the helper watchdog.
-        return Ok(());
-    }
-    // No installed application, launch agent, or desktop-owned state is modified.
-    let data = desktop_data_dir()?;
-    let state = data.join("desktop-update.json");
-    let grace = settings
-        .state_dir
-        .join(&settings.machine)
-        .join("desktop-update-watchdog.json");
-    if !bundled_helper_path(&executable) && !state.try_exists()? && !grace.try_exists()? {
-        // A CLI-only installation has no desktop scheduler to monitor.
-        return Ok(());
-    }
-    desktop_watchdog_with(settings, &state, chrono::Local::now().fixed_offset())
-}
-
-/// The helper owns only its grace ledger. Never write the desktop's scheduler
-/// ledger: that could race a successful check or erase pending installation.
 #[cfg(any(target_os = "macos", test))]
-fn desktop_watchdog_with(
-    settings: &crate::Settings,
-    state_path: &std::path::Path,
-    now: chrono::DateTime<chrono::FixedOffset>,
-) -> Result<()> {
-    let mut result = Ok(false);
-    crate::notifications::update_for(settings, "desktop-update-notification.json", |current| {
-        // Re-read health while holding the delivery lock. A waiting helper must
-        // not overwrite a desktop recovery using an earlier overdue snapshot.
-        result = (|| -> Result<bool> {
-            let grace = settings
-                .state_dir
-                .join(&settings.machine)
-                .join("desktop-update-watchdog.json");
-            let mut baseline = DesktopUpdateState::load(&grace)?;
-            baseline.observe(&grace, &settings.updates, now, false)?;
-            if !settings.updates.automatic {
-                return Ok(false);
-            }
-            let mut state = DesktopUpdateState::load(state_path)?;
-            // Old files contain attempts only. Start one persistent grace period,
-            // rather than treating last_check as success or resetting every minute.
-            if state.settings.as_ref() != Some(&settings.updates) {
-                state = baseline;
-            } else if state.monitoring_since.is_none() && state.last_success.is_none() {
-                state.monitoring_since = baseline.monitoring_since;
-            }
-            state.overdue(&settings.updates, now)
-        })();
-        if let Err(error) = &result {
-            return Some(format!("{MONITORING_FAILED} {error:#}"));
-        }
-        let specific = current.filter(|error| {
-            !error.starts_with(DESKTOP_OVERDUE) && !error.starts_with(MONITORING_FAILED)
-        });
-        if let Some(error) = specific {
-            // Retry undelivered causes, without replacing them with a generic warning.
-            Some(error.to_owned())
-        } else if matches!(result, Ok(true)) {
-            Some(DESKTOP_OVERDUE.to_owned())
-        } else {
-            None
-        }
-    })?;
-    result.map(|_| ())
-}
+mod helper_desktop;
+#[cfg(target_os = "macos")]
+pub(crate) use helper_desktop::helper_desktop_tick;
 
 #[derive(Default, Deserialize, Serialize)]
 struct HelperState {

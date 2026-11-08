@@ -134,6 +134,14 @@ fn record_path(settings: &Settings) -> PathBuf {
         .join("installed-schedule.json")
 }
 
+/// Read the existing installation record without invoking the OS scheduler.
+#[cfg(target_os = "macos")]
+pub fn schedule_installed(settings: &Settings) -> Result<bool> {
+    let record = record_path(settings);
+    no_symlinks(&record)?;
+    Ok(record.try_exists()?)
+}
+
 pub fn install_schedule(settings: &Settings, schedule: &Schedule) -> Result<()> {
     settings.validate()?;
     let _lock = crate::config::operation_lock(settings, "schedule.lock")?;

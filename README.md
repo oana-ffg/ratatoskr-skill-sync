@@ -92,7 +92,7 @@ More in the [desktop walkthrough](docs/desktop-ui.md) and the [full screenshot s
 - **Alerts.** System notifications, Pushover, ntfy or a custom command for failures and recoveries, deduplicated. Credentials come from gopass, macOS Keychain, Windows Credential Manager or environment variables.
 - **Project skills.** Register a project and its skills render into the project's own agent folders.
 - **CI-friendly validation.** `ratatoskr validate` renders every machine profile in memory, which is handy for checking content pull requests.
-- **Signed auto-updates.** Nightly by default; configurable in Settings.
+- **Signed auto-updates.** Nightly by default; configurable in Settings. On macOS the launchd helper checks and installs through a windowless one-shot while the app is closed. Closing the window quits; automatic updates need Background sync. Windows retains its tray updater.
 
 ## Install
 

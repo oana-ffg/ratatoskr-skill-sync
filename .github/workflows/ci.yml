@@ -152,6 +152,10 @@ jobs:
       - name: Build the debug app with its test-only WebDriver server
         run: npm run build:native-e2e
         working-directory: desktop
+      - name: Build the signed-updater journey's macOS app fixtures
+        if: runner.os == 'macOS'
+        run: node native-e2e/build-macos-upgrade-fixtures.mjs
+        working-directory: desktop
       - name: Build the signed-updater journey's Windows installer fixtures
         if: runner.os == 'Windows'
         run: node native-e2e/build-upgrade-fixtures.mjs
