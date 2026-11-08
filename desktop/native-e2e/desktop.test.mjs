@@ -321,3 +321,54 @@ test(
     }
   },
 );
+
+test(
+  "macOS dirty window keeps editing, then discard closes and quits",
+  { skip: disabled || process.platform !== "darwin" },
+  async () => {
+    const workspace = createWorkspace();
+    workspace.publish("Add close-check", {
+      "skills/close-check/SKILL.md": skill(
+        "close-check",
+        "Checks the unsaved close guard.",
+        "Original content.",
+      ),
+      "skills/close-check/skill.toml": "",
+    });
+    execFileSync("git", ["-C", workspace.content, "pull", "--ff-only"]);
+    const desktop = await launch(workspace, "macos-dirty-close");
+    try {
+      const session = await Session.start(desktop.port, desktop.running);
+      await session.click(
+        "//button[.//strong[normalize-space(.)='close-check']]",
+      );
+      const editor = labelled("Skill Markdown editor");
+      await session.click(editor);
+      await session.type(editor, "Unsaved edit.");
+      await session.element("//*[contains(@class, 'unsaved-indicator')]");
+      await session.command("DELETE", "/window");
+      await session.element("//dialog[@aria-label='You have unsaved changes']");
+      assert.ok(desktop.running(), "Dirty window closed without prompting");
+      await session.click(button("Keep editing"));
+      await session.element(editor);
+      assert.ok(desktop.running(), "Keep editing quit the app");
+      await session.command("DELETE", "/window");
+      await session.element("//dialog[@aria-label='You have unsaved changes']");
+      // Quitting may close WebDriver before the click response is flushed.
+      const closing = Promise.allSettled([
+        session.click(button("Discard and continue")),
+      ]);
+      await until(
+        "discard to close and quit the app",
+        () => !desktop.running(),
+      );
+      await closing;
+      assert.doesNotMatch(
+        workspace.remoteFile("skills/close-check/SKILL.md"),
+        /Unsaved edit/,
+      );
+    } finally {
+      await desktop.stop();
+    }
+  },
+);

@@ -103,6 +103,7 @@ fn tick(
     }
     let path = settings.state_dir.join(&settings.machine).join(LEDGER);
     let mut failure = None;
+    let mut verified_current = false;
     let result = (|| -> Result<Option<String>> {
         crate::config::no_symlinks(&path)?;
         let stored = if path.try_exists()? {
@@ -123,6 +124,7 @@ fn tick(
             state.helper_checks = Some(Checks::new(&settings.updates, now));
         }
         let checks = state.helper_checks.as_mut().expect("initialized checks");
+        let mut check_succeeded = false;
         // A fresh helper (including an upgrade) checks before considering overdue alerts.
         if checks.due(now)? {
             checks.attempt = Some(now);
@@ -132,6 +134,7 @@ fn tick(
             let checks = state.helper_checks.as_mut().expect("initialized checks");
             match checked {
                 Ok(release) => {
+                    check_succeeded = true;
                     checks.success = Some(now);
                     checks.error = None;
                     let pending = release.map(|r| r.version);
@@ -226,13 +229,23 @@ fn tick(
         if stored.as_deref() != Some(serialized.as_slice()) {
             crate::config::atomic_write(&path, &serialized)?;
         }
+        verified_current = check_succeeded && checks.pending.is_none();
         Ok(alert)
     })();
     // Network failures are persisted and returned to the sync diagnostics, but only
     // two completed failed windows produce a remote alert. Sync itself continues.
     crate::notifications::update_for(settings, NOTIFICATION, |current| match &result {
         Err(error) => Some(format!("{MONITORING_FAILED} {error:#}")),
+        Ok(Some(error))
+            if error.starts_with(DESKTOP_OVERDUE)
+                && current.is_some_and(|e| e.starts_with(DESKTOP_OVERDUE)) =>
+        {
+            // Changing network causes must not bypass the 24-hour alert deduplication.
+            current.map(str::to_owned)
+        }
         Ok(Some(error)) => Some(error.clone()),
+        // Only this tick's successful check can recover unrelated UI/headless errors.
+        Ok(None) if verified_current => None,
         Ok(None) => current
             .filter(|e| {
                 !e.starts_with(DESKTOP_OVERDUE)
@@ -242,6 +255,10 @@ fn tick(
             .map(str::to_owned),
     })?;
     result?;
+    if verified_current {
+        // The bundled helper shares the app version; recovery must not require a UI run.
+        report_outcome(settings, None, UpdateKind::Helper)?;
+    }
     if let Some(error) = failure {
         anyhow::bail!("Desktop update check failed: {error}");
     }

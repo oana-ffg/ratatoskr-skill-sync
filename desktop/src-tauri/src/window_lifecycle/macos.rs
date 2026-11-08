@@ -86,7 +86,10 @@ pub(crate) fn quiet_restart(app: &tauri::AppHandle) -> Result<()> {
         })();
         if let Err(error) = result {
             INSTALLING.store(false, Ordering::Release);
-            let message = format!("Desktop update restart: {error:#}");
+            let mut message = format!("Desktop update restart: {error:#}");
+            if let Err(error) = cancel_restart(&handle) {
+                message.push_str(&format!("; clearing restart intent: {error:#}"));
+            }
             if let Err(error) = crate::commands::fail_headless_request(&message) {
                 crate::commands::report_headless_error(&format!(
                     "{message}; recording failure: {error:#}"
@@ -148,21 +151,21 @@ pub(crate) fn setup(app: &tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 /// Retire old opt-in login entries; the launchd helper now owns background work.
-pub(crate) fn refresh_login(app: &tauri::AppHandle) -> Result<bool> {
+pub(crate) fn retire_login_entry(app: &tauri::AppHandle) -> Result<()> {
     use tauri_plugin_autostart::ManagerExt;
-    cleanup_login(
+    retire_login_entry_with(
         || app.autolaunch().is_enabled().map_err(Into::into),
         || app.autolaunch().disable().map_err(Into::into),
     )
 }
-fn cleanup_login(
+fn retire_login_entry_with(
     enabled: impl FnOnce() -> Result<bool>,
     disable: impl FnOnce() -> Result<()>,
-) -> Result<bool> {
+) -> Result<()> {
     if enabled()? {
         disable()?;
     }
-    Ok(false)
+    Ok(())
 }
 pub(crate) fn report(app: &tauri::AppHandle, error: anyhow::Error) {
     let message = format!("Desktop lifecycle: {error:#}");
@@ -202,20 +205,20 @@ mod tests {
     }
     #[test]
     fn login_cleanup_disables_existing_entries_and_surfaces_failures() {
-        assert!(!cleanup_login(|| Ok(false), || panic!("no entry")).unwrap());
+        retire_login_entry_with(|| Ok(false), || panic!("no entry")).unwrap();
         let mut disabled = false;
-        assert!(
-            !cleanup_login(
-                || Ok(true),
-                || {
-                    disabled = true;
-                    Ok(())
-                }
-            )
-            .unwrap()
-        );
+        retire_login_entry_with(
+            || Ok(true),
+            || {
+                disabled = true;
+                Ok(())
+            },
+        )
+        .unwrap();
         assert!(disabled);
-        assert!(cleanup_login(|| anyhow::bail!("unreadable"), || unreachable!()).is_err());
-        assert!(cleanup_login(|| Ok(true), || anyhow::bail!("cannot disable")).is_err());
+        assert!(
+            retire_login_entry_with(|| anyhow::bail!("unreadable"), || unreachable!()).is_err()
+        );
+        assert!(retire_login_entry_with(|| Ok(true), || anyhow::bail!("cannot disable")).is_err());
     }
 }

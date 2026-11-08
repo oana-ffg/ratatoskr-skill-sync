@@ -73,7 +73,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             {
                 // Remove the retired login entry; launchd owns background work.
-                if let Err(error) = window_lifecycle::refresh_login(app.handle()) {
+                if let Err(error) = window_lifecycle::retire_login_entry(app.handle()) {
                     window_lifecycle::report(app.handle(), error.context("Open at login"));
                 }
             }

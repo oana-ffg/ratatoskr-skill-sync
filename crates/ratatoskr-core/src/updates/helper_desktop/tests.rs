@@ -343,3 +343,163 @@ fn launch_failure_is_visible_immediately_and_a_hung_running_installer_is_visible
     .unwrap();
     assert!(error(&settings).unwrap().contains("did not finish"));
 }
+
+#[test]
+fn current_check_recovers_manual_headless_and_lifecycle_errors_in_both_ledgers() {
+    for message in [
+        "Desktop update: manual check failed: DNS unavailable",
+        "Headless desktop update exceeded its 30-minute deadline",
+        "Desktop lifecycle: cannot retire login entry",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = alert_settings(&temp);
+        let alerts = enable_recorder(&mut settings);
+        report_outcome(&settings, Some(message), UpdateKind::Desktop).unwrap();
+        report_outcome(
+            &settings,
+            Some("Helper update: offline"),
+            UpdateKind::Helper,
+        )
+        .unwrap();
+        assert_eq!(alert_count(&alerts), 2);
+        let now = clock("2026-11-08T12:00:00+01:00");
+        run(
+            &settings,
+            &dunce::canonicalize(temp.path()).unwrap(),
+            now,
+            || Ok(None),
+        )
+        .unwrap();
+        assert!(error(&settings).is_none());
+        assert!(
+            crate::notifications::current_error(&settings, "helper-update-notification.json")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(alert_count(&alerts), 4, "one recovery per delivered error");
+        run(
+            &settings,
+            &dunce::canonicalize(temp.path()).unwrap(),
+            now + chrono::Duration::minutes(1),
+            || panic!("not due"),
+        )
+        .unwrap();
+        assert_eq!(alert_count(&alerts), 4, "no duplicate recovery");
+    }
+}
+
+#[test]
+fn fresh_specific_errors_survive_non_check_failed_and_pending_ticks() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = alert_settings(&temp);
+    let now = clock("2026-11-08T12:00:00+01:00");
+    run(
+        &settings,
+        &dunce::canonicalize(temp.path()).unwrap(),
+        now,
+        || Ok(None),
+    )
+    .unwrap();
+    let desktop = "Desktop update: manual check failed";
+    let helper = "Helper update: offline";
+    report_outcome(&settings, Some(desktop), UpdateKind::Desktop).unwrap();
+    report_outcome(&settings, Some(helper), UpdateKind::Helper).unwrap();
+    run(
+        &settings,
+        &dunce::canonicalize(temp.path()).unwrap(),
+        now + chrono::Duration::minutes(1),
+        || panic!("not due"),
+    )
+    .unwrap();
+    assert!(
+        run(
+            &settings,
+            &dunce::canonicalize(temp.path()).unwrap(),
+            now + chrono::Duration::days(1),
+            || anyhow::bail!("offline")
+        )
+        .is_err()
+    );
+    run(
+        &settings,
+        &dunce::canonicalize(temp.path()).unwrap(),
+        now + chrono::Duration::days(1) + chrono::Duration::hours(1),
+        release,
+    )
+    .unwrap();
+    assert_eq!(error(&settings).as_deref(), Some(desktop));
+    assert_eq!(
+        crate::notifications::current_error(&settings, "helper-update-notification.json")
+            .unwrap()
+            .as_deref(),
+        Some(helper)
+    );
+}
+
+#[test]
+fn alternating_overdue_causes_preserve_alert_text_and_daily_deduplication() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut settings = alert_settings(&temp);
+    let alerts = enable_recorder(&mut settings);
+    let start = clock("2026-11-08T12:00:00+01:00");
+    for (hours, cause) in [
+        (0, "DNS unavailable"),
+        (48, "DNS unavailable"),
+        (49, "timeout"),
+        (50, "DNS unavailable"),
+    ] {
+        assert!(
+            run(
+                &settings,
+                &dunce::canonicalize(temp.path()).unwrap(),
+                start + chrono::Duration::hours(hours),
+                || anyhow::bail!("{cause}")
+            )
+            .is_err()
+        );
+    }
+    let message = format!("{DESKTOP_OVERDUE}: DNS unavailable");
+    assert_eq!(error(&settings).as_deref(), Some(message.as_str()));
+    assert_eq!(alert_count(&alerts), 1);
+    let state: State = serde_json::from_slice(&std::fs::read(ledger(&settings)).unwrap()).unwrap();
+    assert_eq!(
+        state.helper_checks.unwrap().error.as_deref(),
+        Some("DNS unavailable")
+    );
+    // Keep the current cause in diagnostics even when the delivered alert text is stable.
+    assert!(
+        run(
+            &settings,
+            &dunce::canonicalize(temp.path()).unwrap(),
+            start + chrono::Duration::hours(51),
+            || anyhow::bail!("timeout")
+        )
+        .is_err()
+    );
+    let state: State = serde_json::from_slice(&std::fs::read(ledger(&settings)).unwrap()).unwrap();
+    assert_eq!(
+        state.helper_checks.unwrap().error.as_deref(),
+        Some("timeout")
+    );
+    assert_eq!(alert_count(&alerts), 1);
+    // Age the real notification ledger, independently of the injected scheduling clock.
+    let path = settings
+        .state_dir
+        .join(&settings.machine)
+        .join(NOTIFICATION);
+    let mut notification: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    notification["sent_at"] = 1.into();
+    std::fs::write(&path, serde_json::to_vec(&notification).unwrap()).unwrap();
+    assert!(
+        run(
+            &settings,
+            &dunce::canonicalize(temp.path()).unwrap(),
+            start + chrono::Duration::hours(52),
+            || anyhow::bail!("timeout")
+        )
+        .is_err()
+    );
+    assert_eq!(alert_count(&alerts), 2, "still remind after 24 hours");
+    assert_eq!(error(&settings).as_deref(), Some(message.as_str()));
+}
