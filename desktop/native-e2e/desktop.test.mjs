@@ -345,13 +345,42 @@ test(
       const editor = labelled("Skill Markdown editor");
       await session.click(editor);
       await session.type(editor, "Unsaved edit.");
-      await session.element("//*[contains(@class, 'unsaved-indicator')]");
+      await until("the typed edit in the skill editor", async () =>
+        (await session.texts(editor)).some((text) =>
+          text.includes("Unsaved edit."),
+        ),
+      );
+      // The compact layout hides the status text; Save appears only for an unsaved draft.
+      await until("the unsaved draft to enable Save", () =>
+        session.enabled(button("Save")),
+      );
+      console.log(
+        "DIRTY CLOSE DIAGNOSTICS",
+        await session.command("POST", "/execute/sync", {
+          script: `const indicator = document.querySelector('.unsaved-indicator');
+          return { width: innerWidth, height: innerHeight,
+            indicator: indicator && { text: indicator.textContent, display: getComputedStyle(indicator).display,
+              rect: indicator.getBoundingClientRect().toJSON() },
+            editor: document.querySelector('[aria-label="Skill Markdown editor"]').textContent };`,
+          args: [],
+        }),
+      );
       await session.command("DELETE", "/window");
       await session.element("//dialog[@aria-label='You have unsaved changes']");
       assert.ok(desktop.running(), "Dirty window closed without prompting");
       await session.click(button("Keep editing"));
       await session.element(editor);
       assert.ok(desktop.running(), "Keep editing quit the app");
+      assert.ok(
+        (await session.texts(editor)).some((text) =>
+          text.includes("Unsaved edit."),
+        ),
+        "Keep editing lost the unsaved text",
+      );
+      assert.ok(
+        await session.enabled(button("Save")),
+        "Keep editing lost the dirty draft",
+      );
       await session.command("DELETE", "/window");
       await session.element("//dialog[@aria-label='You have unsaved changes']");
       // Quitting may close WebDriver before the click response is flushed.
