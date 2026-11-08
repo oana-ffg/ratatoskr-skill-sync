@@ -501,7 +501,7 @@ fn sync_locked(
     let desktop_health = if desktop {
         Ok(())
     } else {
-        crate::updates::desktop_watchdog(settings)
+        crate::updates::helper_desktop_tick(settings)
     };
     // Updating and syncing have separate outcomes and notification ledgers.
     let deployment = validate_deploy_branch(settings).map_err(|error| {
@@ -547,7 +547,8 @@ fn sync_locked(
     }
     #[cfg(target_os = "macos")]
     if let Err(error) = desktop_health {
-        errors.push(format!("Desktop update monitoring failed: {error:#}"));
+        // Update health has its own notification ledger and must not fail content sync.
+        eprintln!("Ratatoskr: desktop update tick: {error:#}");
     }
     if let Err(error) = update_result {
         errors.push(format!("Helper update failed: {error:#}"));

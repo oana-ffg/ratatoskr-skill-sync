@@ -1,6 +1,6 @@
 use super::*;
 
-fn clock(value: &str) -> chrono::DateTime<chrono::FixedOffset> {
+pub(super) fn clock(value: &str) -> chrono::DateTime<chrono::FixedOffset> {
     chrono::DateTime::parse_from_rfc3339(value).unwrap()
 }
 fn nightly_due(
@@ -384,7 +384,7 @@ fn helper_persists_attempts_including_failures_and_retries_next_day() {
     );
 }
 
-fn alert_settings(temp: &tempfile::TempDir) -> crate::Settings {
+pub(super) fn alert_settings(temp: &tempfile::TempDir) -> crate::Settings {
     let root = dunce::canonicalize(temp.path()).unwrap();
     let settings = crate::Settings {
         source: root.join("source"),
@@ -397,7 +397,7 @@ fn alert_settings(temp: &tempfile::TempDir) -> crate::Settings {
     settings
 }
 
-fn enable_recorder(settings: &mut crate::Settings) -> std::path::PathBuf {
+pub(super) fn enable_recorder(settings: &mut crate::Settings) -> std::path::PathBuf {
     let path = settings.state_dir.join("alerts.gitconfig");
     settings.alert_command = vec![
         "git".into(),
@@ -409,7 +409,7 @@ fn enable_recorder(settings: &mut crate::Settings) -> std::path::PathBuf {
     ];
     path
 }
-fn alert_count(path: &std::path::Path) -> usize {
+pub(super) fn alert_count(path: &std::path::Path) -> usize {
     if !path.exists() {
         return 0;
     }
@@ -510,140 +510,4 @@ fn bundled_helpers_clear_obsolete_errors_without_attempting_self_update() {
     )
     .unwrap();
     assert_eq!(alert_count(&alerts), 3);
-}
-
-#[test]
-fn helper_watchdog_observes_stopped_desktop_deduplicates_and_recovers() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut settings = alert_settings(&temp);
-    let alerts = enable_recorder(&mut settings);
-    let path = settings.state_dir.join("app/desktop-update.json");
-    let first = clock("2026-10-18T00:01:00+02:00");
-    let mut state = DesktopUpdateState::default();
-    state
-        .observe(&path, &settings.updates, first, false)
-        .unwrap();
-    state.record_success(&path, first, false).unwrap();
-    let bytes = std::fs::read(&path).unwrap();
-    desktop_watchdog_with(&settings, &path, clock("2026-10-20T00:59:59+02:00")).unwrap();
-    assert_eq!(alert_count(&alerts), 0);
-    let overdue = clock("2026-10-20T01:00:00+02:00");
-    for _ in 0..2 {
-        desktop_watchdog_with(&settings, &path, overdue).unwrap();
-    }
-    assert_eq!(alert_count(&alerts), 1);
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        bytes,
-        "helper must not modify desktop-owned state"
-    );
-    assert_eq!(
-        crate::job_status(&settings)
-            .unwrap()
-            .desktop_update_error
-            .as_deref(),
-        Some(DESKTOP_OVERDUE)
-    );
-    // Existing desktop reporter and helper share delivery history.
-    report_outcome(&settings, Some(DESKTOP_OVERDUE), UpdateKind::Desktop).unwrap();
-    assert_eq!(alert_count(&alerts), 1);
-    // Simulate a delivered alert older than 24 hours.
-    let ledger = settings
-        .state_dir
-        .join("test/desktop-update-notification.json");
-    let mut notification: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&ledger).unwrap()).unwrap();
-    notification["sent_at"] = 1.into();
-    std::fs::write(&ledger, serde_json::to_vec(&notification).unwrap()).unwrap();
-    desktop_watchdog_with(&settings, &path, overdue).unwrap();
-    assert_eq!(alert_count(&alerts), 2);
-    state.record_success(&path, overdue, false).unwrap();
-    for _ in 0..2 {
-        desktop_watchdog_with(&settings, &path, overdue).unwrap();
-    }
-    assert_eq!(alert_count(&alerts), 3);
-    assert!(
-        crate::job_status(&settings)
-            .unwrap()
-            .desktop_update_error
-            .is_none()
-    );
-}
-
-#[test]
-fn helper_watchdog_missing_and_legacy_state_have_bounded_grace() {
-    for legacy in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
-        let settings = alert_settings(&temp);
-        let path = settings.state_dir.join("desktop-update.json");
-        if legacy {
-            std::fs::write(&path, serde_json::to_vec(&serde_json::json!({
-                "last_check": "2026-10-01T00:01:00+02:00", "settings": settings.updates, "pending": false
-            })).unwrap()).unwrap();
-        }
-        let first = clock("2026-10-20T12:00:00+02:00");
-        desktop_watchdog_with(&settings, &path, first).unwrap();
-        desktop_watchdog_with(&settings, &path, clock("2026-10-22T00:59:59+02:00")).unwrap();
-        assert!(
-            crate::job_status(&settings)
-                .unwrap()
-                .desktop_update_error
-                .is_none()
-        );
-        desktop_watchdog_with(&settings, &path, clock("2026-10-22T01:00:00+02:00")).unwrap();
-        assert_eq!(
-            crate::job_status(&settings)
-                .unwrap()
-                .desktop_update_error
-                .as_deref(),
-            Some(DESKTOP_OVERDUE)
-        );
-    }
-}
-
-#[test]
-fn helper_watchdog_reports_unverifiable_state_retries_specific_errors_and_respects_opt_out() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut settings = alert_settings(&temp);
-    let path = settings.state_dir.join("desktop-update.json");
-    let now = clock("2026-10-20T12:00:00+02:00");
-    std::fs::write(&path, "broken").unwrap();
-    assert!(desktop_watchdog_with(&settings, &path, now).is_err());
-    assert!(
-        crate::job_status(&settings)
-            .unwrap()
-            .desktop_update_error
-            .unwrap()
-            .starts_with(MONITORING_FAILED)
-    );
-    std::fs::remove_file(&path).unwrap();
-    desktop_watchdog_with(&settings, &path, now).unwrap();
-    report_outcome(
-        &settings,
-        Some("Desktop update: bad signature"),
-        UpdateKind::Desktop,
-    )
-    .unwrap();
-    let alerts = enable_recorder(&mut settings);
-    for _ in 0..2 {
-        desktop_watchdog_with(&settings, &path, clock("2026-10-23T12:00:00+02:00")).unwrap();
-    }
-    assert_eq!(alert_count(&alerts), 1);
-    assert_eq!(
-        crate::job_status(&settings)
-            .unwrap()
-            .desktop_update_error
-            .as_deref(),
-        Some("Desktop update: bad signature")
-    );
-    report_outcome(&settings, None, UpdateKind::Desktop).unwrap();
-    settings.updates.automatic = false;
-    std::fs::write(&path, "broken but automatic updates are opted out").unwrap();
-    desktop_watchdog_with(&settings, &path, clock("2026-11-01T12:00:00+01:00")).unwrap();
-    assert!(
-        crate::job_status(&settings)
-            .unwrap()
-            .desktop_update_error
-            .is_none()
-    );
 }

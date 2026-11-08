@@ -296,7 +296,7 @@ test.each([
   },
 );
 
-test.each(["macos", "windows"])(
+test.each(["windows"])(
   "%s close preserves unsaved edits for the native hide path",
   async (platform) => {
     native.platform = platform;
@@ -316,3 +316,20 @@ test.each(["macos", "windows"])(
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   },
 );
+
+test("macOS close prompts before losing unsaved changes", async () => {
+  native.platform = "macos";
+  await start();
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  await fireEvent.click(
+    await screen.findByLabelText("Check for updates automatically"),
+  );
+  await screen.findByRole("button", { name: "Save" });
+  const preventDefault = vi.fn();
+  native.close.forEach((callback) => callback({ preventDefault }));
+  flushSync();
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(
+    screen.getByRole("dialog", { name: "You have unsaved changes" }),
+  ).toBeVisible();
+});

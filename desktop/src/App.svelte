@@ -226,7 +226,7 @@
       async () => {
         if (isTauri()) {
           const platform = await api.command<string>("runtime_platform");
-          residentMode = platform === "macos" || platform === "windows";
+          residentMode = platform === "windows";
           await api.command("startup_update");
         }
       },

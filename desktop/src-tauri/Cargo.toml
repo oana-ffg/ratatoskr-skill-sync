@@ -40,3 +40,6 @@ tempfile.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-single-instance = "2"

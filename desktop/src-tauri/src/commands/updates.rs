@@ -1,6 +1,8 @@
 //! Desktop update command orchestration; transport and policy stay separate.
 use super::*;
-use crate::desktop_updates::{UpdateContext, automatic_update_with, manual_update_with};
+#[cfg(not(target_os = "macos"))]
+use crate::desktop_updates::automatic_update_with;
+use crate::desktop_updates::{UpdateContext, manual_update_with};
 use ratatoskr_core as core;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -22,6 +24,15 @@ fn install_downloaded_update(
 ) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (app, quiet);
+    #[cfg(target_os = "macos")]
+    let quiet = quiet && !crate::window_lifecycle::has_window(app);
+    #[cfg(target_os = "macos")]
+    let _installing = crate::window_lifecycle::InstallGuard::acquire();
+    #[cfg(target_os = "macos")]
+    anyhow::ensure!(
+        !quiet || !crate::update_scheduler::expired(app),
+        "Headless desktop update exceeded its 30-minute deadline"
+    );
     #[cfg(any(windows, target_os = "macos"))]
     if quiet {
         crate::window_lifecycle::prepare_quiet_restart(app)?;
@@ -80,9 +91,11 @@ fn desktop_updater(
     Ok(builder.build()?)
 }
 
+#[cfg(not(target_os = "macos"))]
 struct Nightly {
     pending: Option<(core::updates::UpdateSettings, tauri_plugin_updater::Update)>,
 }
+#[cfg(not(target_os = "macos"))]
 static NIGHTLY: Mutex<Nightly> = Mutex::new(Nightly { pending: None });
 
 fn update_result<T>(context: &UpdateContext, result: anyhow::Result<T>) -> Reply<T> {
@@ -106,6 +119,7 @@ pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
     crate::update_scheduler::startup(app).await
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) async fn automatic_update(
     app: tauri::AppHandle,
     install: bool,
@@ -212,8 +226,15 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
         };
         let context = update_context()?;
         // Same order as the manual path: serializes update-health writes with nightly checks.
+        #[cfg(not(target_os = "macos"))]
         let _nightly = NIGHTLY.lock().map_err(|e| e.to_string())?;
         let result = (|| -> anyhow::Result<Option<DesktopRequestOutcome>> {
+            // Defer before checking too: the spawning helper still owns sync.lock.
+            // Retrying a contended lock must not perform a GET every five seconds.
+            #[cfg(target_os = "macos")]
+            let Some(_idle) = context.idle_guard(false)? else {
+                return Ok(None);
+            };
             let checked =
                 tauri::async_runtime::block_on(desktop_updater(&app, context.settings())?.check())?;
             // Like a manual check: counts toward health without using an automatic slot.
@@ -221,6 +242,7 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
             let Some(update) = checked else {
                 return Ok(Some(DesktopRequestOutcome::Current));
             };
+            #[cfg(not(target_os = "macos"))]
             let Some(_idle) = context.idle_guard(false)? else {
                 return Ok(None);
             };
@@ -228,6 +250,11 @@ pub(crate) async fn requested_update(app: tauri::AppHandle) -> Reply<()> {
             if crate::update_scheduler::busy(&app) {
                 return Ok(None);
             }
+            #[cfg(target_os = "macos")]
+            anyhow::ensure!(
+                !crate::update_scheduler::expired(&app),
+                "Headless desktop update exceeded its 30-minute deadline"
+            );
             let installing = DesktopRequestOutcome::Installing {
                 version: update.version.clone(),
             };
@@ -355,8 +382,12 @@ pub(crate) async fn update_desktop(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
         let context = update_context()?;
+        #[cfg(not(target_os = "macos"))]
         let mut nightly = NIGHTLY.lock().map_err(|e| e.to_string())?;
-        nightly.pending = None;
+        #[cfg(not(target_os = "macos"))]
+        {
+            nightly.pending = None;
+        }
         let result = manual_update_with(
             &context,
             chrono::Local::now().fixed_offset(),
@@ -381,4 +412,42 @@ pub(crate) fn restart_desktop(app: tauri::AppHandle) -> Reply<()> {
     #[cfg(any(windows, target_os = "macos"))]
     crate::window_lifecycle::prepare_restart(&app).map_err(|e| format!("{e:#}"))?;
     crate::window_lifecycle::restart(&app);
+}
+
+/// Background lifecycle diagnostics must never open a native dialog.
+#[cfg(target_os = "macos")]
+pub(crate) fn report_headless_error(message: &str) {
+    eprintln!("Ratatoskr: {message}");
+    if let Err(error) = update_context().and_then(|context| {
+        context
+            .report_outcome(Some(message))
+            .map_err(|e| format!("{e:#}"))
+    }) {
+        eprintln!("Ratatoskr: update alert delivery failed: {error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn fail_headless_request(message: &str) -> anyhow::Result<()> {
+    let data = core::updates::desktop_data_dir()?;
+    let exe = std::env::current_exe()?;
+    let (request, response) = core::updates::desktop_request_status(&data)?;
+    if let Some(request) = request.filter(|q| q.app == exe)
+        && response.is_none_or(|r| {
+            matches!(
+                r.outcome,
+                core::updates::DesktopRequestOutcome::Installing { .. }
+            )
+        })
+    {
+        core::updates::answer_desktop_request(
+            &data,
+            &request,
+            chrono::Local::now().fixed_offset(),
+            core::updates::DesktopRequestOutcome::Failed {
+                error: message.into(),
+            },
+        )?;
+    }
+    Ok(())
 }

@@ -1,4 +1,4 @@
-//! One native update clock for every desktop platform, independent of WebView life.
+//! Native request polling; non-macOS platforms also own the resident nightly clock.
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -8,6 +8,9 @@ use tauri::{Emitter, Manager};
 #[derive(Default)]
 pub(crate) struct Runtime {
     busy: AtomicBool,
+    #[cfg(target_os = "macos")]
+    expired: AtomicBool,
+    #[cfg(not(target_os = "macos"))]
     startup: tokio::sync::OnceCell<Result<bool, String>>,
 }
 
@@ -19,6 +22,7 @@ pub(crate) fn set_busy(app: &tauri::AppHandle, busy: bool) {
 }
 
 /// Both native startup and the UI await the same decision before enabling work.
+#[cfg(not(target_os = "macos"))]
 pub(crate) async fn startup(app: tauri::AppHandle) -> Result<bool, String> {
     app.state::<Runtime>()
         .startup
@@ -64,6 +68,7 @@ fn report(app: &tauri::AppHandle, result: &Result<bool, String>) {
 /// nightly policy's one-minute clock.
 const REQUEST_POLL: Duration = Duration::from_secs(5);
 
+#[cfg(not(target_os = "macos"))]
 fn poll_requests(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(error) = crate::commands::settle_requested_update() {
@@ -89,6 +94,7 @@ fn poll_requests(handle: tauri::AppHandle) {
 pub(crate) fn setup(app: &tauri::App) {
     let handle = app.handle().clone();
     poll_requests(handle.clone());
+    #[cfg(not(target_os = "macos"))]
     tauri::async_runtime::spawn(async move {
         report(&handle, &startup(handle.clone()).await);
         loop {
@@ -104,4 +110,108 @@ pub(crate) fn setup(app: &tauri::App) {
             }
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn startup(_app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn expired(app: &tauri::AppHandle) -> bool {
+    app.state::<Runtime>().expired.load(Ordering::Acquire)
+}
+
+#[cfg(target_os = "macos")]
+fn pending_request() -> anyhow::Result<bool> {
+    Ok(ratatoskr_core::updates::pending_desktop_request(
+        &ratatoskr_core::updates::desktop_data_dir()?,
+        &std::env::current_exe()?,
+    )?
+    .is_some())
+}
+
+#[cfg(target_os = "macos")]
+fn headless_done(window: bool, installing: bool, pending: bool) -> bool {
+    !window && !installing && !pending
+}
+
+#[cfg(target_os = "macos")]
+fn poll_requests(handle: tauri::AppHandle) {
+    // The independent deadline also covers a stalled download. Never terminate
+    // in the updater's bundle replacement critical section.
+    let deadline_handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+        if crate::window_lifecycle::has_window(&deadline_handle) {
+            return;
+        }
+        deadline_handle
+            .state::<Runtime>()
+            .expired
+            .store(true, Ordering::Release);
+        let message = "Headless desktop update exceeded its 30-minute deadline";
+        // Alert at the deadline even if bundle replacement cannot safely stop yet.
+        crate::commands::report_headless_error(message);
+        while crate::window_lifecycle::installing() {
+            tokio::time::sleep(REQUEST_POLL).await;
+        }
+        if let Err(error) = crate::commands::fail_headless_request(message) {
+            crate::commands::report_headless_error(&format!(
+                "{message}; recording failure: {error:#}"
+            ));
+        }
+        deadline_handle.exit(1);
+    });
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::commands::settle_requested_update() {
+            crate::commands::report_headless_error(&error);
+            if !crate::window_lifecycle::has_window(&handle) {
+                handle.exit(1);
+                return;
+            }
+            report(&handle, &Err(error));
+        }
+        loop {
+            // Disk reads/locks stay off the main thread and async executor.
+            let pending = tauri::async_runtime::spawn_blocking(pending_request).await;
+            match pending {
+                Ok(Ok(pending)) => {
+                    if headless_done(
+                        crate::window_lifecycle::has_window(&handle),
+                        crate::window_lifecycle::installing(),
+                        pending,
+                    ) {
+                        handle.exit(0);
+                        return;
+                    }
+                }
+                error => {
+                    crate::commands::report_headless_error(&format!(
+                        "Read desktop update request: {error:?}"
+                    ));
+                    if !crate::window_lifecycle::has_window(&handle) {
+                        handle.exit(1);
+                        return;
+                    }
+                }
+            }
+            if let Err(error) = crate::commands::requested_update(handle.clone()).await {
+                crate::commands::report_headless_error(&error);
+            }
+            tokio::time::sleep(REQUEST_POLL).await;
+        }
+    });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn background_exits_without_a_request_but_an_open_window_or_install_keeps_it_alive() {
+        assert!(headless_done(false, false, false));
+        assert!(!headless_done(false, false, true));
+        assert!(!headless_done(false, true, false));
+        assert!(!headless_done(true, false, false));
+    }
 }

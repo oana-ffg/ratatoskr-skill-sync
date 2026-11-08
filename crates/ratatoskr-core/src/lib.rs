@@ -65,3 +65,6 @@ pub use template::{
     TemplateAnalysis, TemplateBlock, TemplateDiagnostic, TemplateVariable, TextRange,
     analyze_global_instructions, analyze_skill,
 };
+
+#[cfg(target_os = "macos")]
+pub use schedule::schedule_installed;

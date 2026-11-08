@@ -169,6 +169,7 @@ export interface Snapshot {
   skills_error: string | null;
   helper: string | null;
   helper_error: string | null;
+  schedule_installed?: boolean;
   jobs: Jobs;
   presets: Preset[];
   preview_targets: { machine: string; harness: string }[];

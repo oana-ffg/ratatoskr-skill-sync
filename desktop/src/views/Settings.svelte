@@ -69,17 +69,18 @@
   });
   async function load() {
     try {
+      runtimeOS = await api.command<string>("runtime_platform");
       updates = await api.command<Snapshot["updates"]>("read_update_settings");
       if (!workspace) return;
-      const [candidate, enabled, profile, platform] = await Promise.all([
+      const [candidate, enabled, profile] = await Promise.all([
         api.command<{ settings: LocalSettings; hash: string }>(
           "read_local_settings",
         ),
-        api.command<boolean>("login_enabled"),
+        runtimeOS === "macos"
+          ? Promise.resolve(false)
+          : api.command<boolean>("login_enabled"),
         api.source(`machines/${workspace.plan.machine}.toml`),
-        api.command<string>("runtime_platform"),
       ]);
-      runtimeOS = platform;
       settings = candidate.settings;
       configHash = candidate.hash;
       login = enabled;
@@ -140,7 +141,7 @@
           expectedHash: configHash,
         }),
       );
-      if (login !== savedLogin)
+      if (runtimeOS !== "macos" && login !== savedLogin)
         login = await api.command<boolean>("set_login_enabled", {
           enabled: login,
         });
@@ -206,10 +207,10 @@
           Automatic updates are {updates.automatic ? "on" : "off"}. Nightly
           time: {updates.time} local time. Connect a workspace to customize the schedule.
         </p>{/if}
-      {#if runtimeOS === "macos" && settings?.updates.automatic && !login}
+      {#if runtimeOS === "macos" && (settings?.updates.automatic ?? updates.automatic) && !workspace?.schedule_installed}
         <p class="warning-message" role="status">
-          Automatic desktop updates can only run while Ratatoskr is running.
-          Enable Open Ratatoskr at login to keep updates running after login.
+          Automatic updates need Background sync enabled. Check for updates and
+          Install signed update in Settings still work manually.
         </p>
       {/if}
       <details>
@@ -241,23 +242,18 @@
         }
       }}
     />
-    <article class="panel">
-      <div class="section-heading">
-        <div>
-          <h2>Startup</h2>
+    {#if runtimeOS !== "macos"}
+      <article class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Startup</h2>
+          </div>
         </div>
-      </div>
-      <label class="checkbox-label"
-        ><input type="checkbox" bind:checked={login} />Open Ratatoskr at login</label
-      >
-      {#if runtimeOS === "macos"}
-        <p class="muted">
-          Closing the window keeps Ratatoskr running in the background. Click
-          its Dock icon to reopen it; use Quit or Cmd+Q to stop it. Login
-          launches stay hidden.
-        </p>
-      {/if}
-    </article>
+        <label class="checkbox-label"
+          ><input type="checkbox" bind:checked={login} />Open Ratatoskr at login</label
+        >
+      </article>
+    {/if}
     <article class="panel">
       <h2>{trayMode ? "Additional alerts" : "Alerts"}</h2>
       <p class="muted">

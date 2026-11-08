@@ -300,3 +300,24 @@ test(
     }
   },
 );
+
+test(
+  "macOS closing the only window quits the process",
+  { skip: disabled || process.platform !== "darwin" },
+  async () => {
+    const workspace = createWorkspace();
+    const desktop = await launch(workspace, "macos-close");
+    try {
+      const session = await Session.start(desktop.port, desktop.running);
+      await session.element("//h2[normalize-space(.)='No skills yet']", 60000);
+      // Exit may close the WebDriver connection before its response is flushed.
+      const closing = Promise.allSettled([
+        session.command("DELETE", "/window"),
+      ]);
+      await until("the window close to quit the app", () => !desktop.running());
+      await closing;
+    } finally {
+      await desktop.stop();
+    }
+  },
+);
