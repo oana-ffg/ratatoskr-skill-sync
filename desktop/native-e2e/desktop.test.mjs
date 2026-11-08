@@ -179,7 +179,9 @@ async function drive(name, journey) {
  * while a save is still finishing, so keep editing and retry; a guard that never
  * clears fails the journey. */
 async function navigate(session, name, arrived) {
-  const guard = "//dialog[@aria-label='You have unsaved changes']";
+  // WebDriver find rejects modal dialogs because their offsetParent is null; use a child control.
+  const guard =
+    "//dialog[@aria-label='You have unsaved changes']//button[normalize-space(.)='Keep editing']";
   await until(`${name} to open`, async () => {
     if (await session.find(arrived)) return true;
     if (await session.find(guard)) await session.click(button("Keep editing"));
@@ -355,19 +357,8 @@ test(
         session.enabled(button("Save")),
       );
       await session.command("DELETE", "/window");
-      console.log(
-        "CLOSE DIALOG DIAGNOSTICS",
-        await session.command("POST", "/execute/sync", {
-          script: `const dialog = document.querySelector('dialog');
-          return { dialog: dialog && { open: dialog.open, label: dialog.getAttribute('aria-label'),
-            display: getComputedStyle(dialog).display, offsetParent: dialog.offsetParent?.tagName ?? null,
-            rect: dialog.getBoundingClientRect().toJSON(), text: dialog.textContent },
-            alerts: [...document.querySelectorAll('[role="alert"]')].map(el => el.textContent) };`,
-          args: [],
-        }),
-      );
       const guard =
-        "//dialog[@open and @aria-label='You have unsaved changes']//h2";
+        "//dialog[@aria-label='You have unsaved changes']//button[normalize-space(.)='Keep editing']";
       await session.element(guard);
       assert.ok(desktop.running(), "Dirty window closed without prompting");
       await session.click(button("Keep editing"));
