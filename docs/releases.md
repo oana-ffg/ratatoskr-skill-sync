@@ -44,6 +44,16 @@ sync becomes stale. The local watchdog must distinguish an intentional **Quit**
 or disabled login startup from a crash; an external monitor needs an explicitly
 configured destination. Neither is installed by this change.
 
+## v0.2.22 release notes
+
+- **On macOS, closing the window now quits the app,** with the unsaved-changes prompt when needed. No resident desktop process stays running after you close it. Open Ratatoskr any time to view or edit skills; Background sync continues through the independent launchd helper.
+- **macOS updates now arrive with the app closed.** With automatic updates and Background sync enabled, the launchd helper checks after the nightly time, catching up after sleep and retrying failed checks hourly. It installs signed desktop updates through a windowless updater with no renderer. An update found while the window is open waits until it closes, then installs on a later helper tick.
+- **The false macOS "Desktop update overdue" alert on a current machine is gone.** The helper checks before judging old monitoring state. Overdue now means its own checks failed for two completed nightly windows, and the alert includes the cause. Transient check failures that recover on retry send no alert. A successful check confirming the installed version is current clears stale desktop and bundled-helper update errors without opening the UI.
+- **macOS background updates finish and exit.** `--background` and `ratatoskr update --desktop` no longer leave a background desktop process or renderer behind after their work finishes. Opening the app no longer waits on an update check or relaunches hidden; if you open it during a headless update, the window opens and any update restart stays visible.
+- **Open at login is retired on macOS.** Any existing entry is removed at the next launch, with cleanup failures reported. The Settings warning about automatic updates now points to **Background sync**, which supplies the helper schedule; manual update checks and installation in Settings still work without it.
+- **Macs on v0.2.21 still receive this update through the old path:** the running app's nightly update, Settings, or `ratatoskr update --desktop`. The old helper cannot install this release. Once v0.2.22 is installed, later automatic updates go through the helper.
+- Windows behavior is unchanged: Background sync and automatic updates still use the running tray app.
+
 ## v0.2.21 release notes
 
 - **A failed Windows update now recovers instead of silently stopping sync.** Updates used to start the installer and close the tray straight away. If the installer aborted, its "Installation Aborted" window stayed open and nothing restarted sync or told you. Now a separate process waits for the app to exit, runs the installer silently, and tries to stop it if it is still running after two minutes. If the install fails, it attempts to restore the previous executables and restart the tray, and the failure stays visible in **Activity** until it is resolved. If the tray cannot restart, or the installer cannot be stopped, that process attempts to show a Windows notification instead, which is not guaranteed to appear, and the steps below still apply. CI now runs a real signed upgrade and a real aborted install on Windows.
