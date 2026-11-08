@@ -354,19 +354,21 @@ test(
       await until("the unsaved draft to enable Save", () =>
         session.enabled(button("Save")),
       );
+      await session.command("DELETE", "/window");
       console.log(
-        "DIRTY CLOSE DIAGNOSTICS",
+        "CLOSE DIALOG DIAGNOSTICS",
         await session.command("POST", "/execute/sync", {
-          script: `const indicator = document.querySelector('.unsaved-indicator');
-          return { width: innerWidth, height: innerHeight,
-            indicator: indicator && { text: indicator.textContent, display: getComputedStyle(indicator).display,
-              rect: indicator.getBoundingClientRect().toJSON() },
-            editor: document.querySelector('[aria-label="Skill Markdown editor"]').textContent };`,
+          script: `const dialog = document.querySelector('dialog');
+          return { dialog: dialog && { open: dialog.open, label: dialog.getAttribute('aria-label'),
+            display: getComputedStyle(dialog).display, offsetParent: dialog.offsetParent?.tagName ?? null,
+            rect: dialog.getBoundingClientRect().toJSON(), text: dialog.textContent },
+            alerts: [...document.querySelectorAll('[role="alert"]')].map(el => el.textContent) };`,
           args: [],
         }),
       );
-      await session.command("DELETE", "/window");
-      await session.element("//dialog[@aria-label='You have unsaved changes']");
+      const guard =
+        "//dialog[@open and @aria-label='You have unsaved changes']//h2";
+      await session.element(guard);
       assert.ok(desktop.running(), "Dirty window closed without prompting");
       await session.click(button("Keep editing"));
       await session.element(editor);
@@ -382,7 +384,7 @@ test(
         "Keep editing lost the dirty draft",
       );
       await session.command("DELETE", "/window");
-      await session.element("//dialog[@aria-label='You have unsaved changes']");
+      await session.element(guard);
       // Quitting may close WebDriver before the click response is flushed.
       const closing = Promise.allSettled([
         session.click(button("Discard and continue")),
