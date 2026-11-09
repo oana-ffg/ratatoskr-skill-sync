@@ -1,7 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-/** Native visibility is authoritative: hiding a WebView need not hide its DOM. */
+/** Native visibility covers minimized windows independently of DOM visibility. */
 export function watchWindow(
   activate: (reason: "focus" | "other") => void,
   onerror: (error: unknown) => void,
@@ -56,15 +56,7 @@ export function watchWindow(
     track(native.onFocusChanged(({ payload }) => void check(payload, "focus")));
     track(native.onResized(() => void check(false)));
     // The tray explicitly emits after show/unminimize, even if focus is unchanged.
-    track(
-      native.listen<boolean>("workspace-window-visible", ({ payload }) => {
-        if (payload) void check(true);
-        else {
-          revision++;
-          setVisible(false);
-        }
-      }),
-    );
+    track(native.listen("workspace-window-visible", () => void check(true)));
   } else {
     const focus = () => void check(true, "focus");
     const visibility = () => void check(false);

@@ -16,7 +16,7 @@ See [desktop save/freshness behavior](usage.md#desktop-saves-and-content-git-sta
 
 The snapshot's `skills_error` is null when its skill list was read successfully. A non-null message means `skills` is unavailable, not an empty list; the UI shows the error and suppresses numeric skill counts.
 
-`workspace-window-visible` is a native window event with a boolean payload. The shared native open path emits `true` after show/unminimize/focus; Windows close-to-tray emits `false` after hiding; macOS close destroys the window and quits. Native focus and resize events additionally cover ordinary focus and minimize/restore. The frontend confirms native visibility before refreshing.
+`workspace-window-visible` is a native window event with no payload. The shared native open path emits it after show/unminimize/focus. Windows close destroys the window while the tray stays alive; macOS close destroys it and quits. Native focus and resize events additionally cover ordinary focus and minimize/restore. The frontend confirms native visibility before refreshing.
 
 ## Conflict review and recovery
 
@@ -118,7 +118,7 @@ Plans include `install_targets` with the renderer's harness, skill root, instruc
 
 `background_status()` returns null on macOS and a Windows status with `paused`, `interval_seconds`, `running`, `last_success`, `skills`, `login_enabled`, `error` and `migration_error`. Pause suppresses automatic runs; an explicit Sync now can still run once. `set_background_preferences({paused, intervalSeconds})` changes only non-null fields, preserving the other stored preference; `migrate_background()` requests another safe legacy-task migration. Owned-task migration enables hidden login startup before removal; failure to enable it preserves the task. `login_enabled` reflects the actual saved setting, and tray settings warn when it is off. On Windows `sync_workspace()` requests the same resident controller used by the tray menu; the response is a current snapshot, not a claim that the asynchronous run already finished.
 
-`set_desktop_busy({busy})` communicates unsaved work and operations. Windows `startup_update()` awaits its native startup decision; macOS returns immediately without networking. Only request polling runs in the macOS app. Windows retains `desktop-update.json`, its native nightly clock and resident monitoring. The macOS helper owns `<state_dir>/<machine>/desktop-update-watchdog.json` and never consults desktop scheduler state. Successful checks are once per local slot; failures retry hourly and alert with their cause only after two completed windows. Standalone CLIs ignore desktop ledgers; corrupt helper state alerts. Migration checks before evaluating old baselines.
+`set_desktop_busy({busy})` communicates unsaved work and operations. Windows `startup_update()` awaits the shared native startup decision if it is still running, including its error. Once startup has completed, later window opens return `false` without replaying the cached result; current `desktop_update_error` comes from job status. Destroying the main window clears the UI busy flag natively, while the mutation lock still protects in-flight native work. macOS `startup_update()` returns immediately without networking. Only request polling runs in the macOS app. Windows retains `desktop-update.json`, its native nightly clock and resident monitoring. The macOS helper owns `<state_dir>/<machine>/desktop-update-watchdog.json` and never consults desktop scheduler state. Successful checks are once per local slot; failures retry hourly and alert with their cause only after two completed windows. Standalone CLIs ignore desktop ledgers; corrupt helper state alerts. Migration checks before evaluating old baselines.
 
 macOS `read_workspace().schedule_installed` exposes the existing installation record without invoking launchctl. Settings warns when automatic updates need Background sync; manual Check/Install remain available.
 
@@ -126,7 +126,7 @@ Tray notification ledgers store stable problem identities separately from full m
 
 ## macOS headless updates and interactive lifecycle
 
-The main-window config has `visible: false` and `create: false`. Interactive setup and Reopen create it from config, switch to Regular activation policy, and show/focus it. Close quits after the frontend unsaved-changes prompt. ExitRequested is prevented only during actual installation. Windows retains its separate close-to-tray lifecycle.
+The main-window config has `visible: false` and `create: false`. Interactive setup and Reopen create it from config, switch to Regular activation policy, and show/focus it. Close quits after the frontend unsaved-changes prompt. ExitRequested is prevented only during actual installation. Windows has a separate tray lifecycle, described below.
 
 A background argument or saved restart intent creates no window/webview and uses Accessory activation policy. Startup settles old Installing responses, processes pending requests and exits when none remain. Contended locks retry at five seconds. A 30-minute deadline records Failed and alerts; active bundle replacement finishes before exit. Headless lifecycle failures go to the update ledger or stderr, never modal dialogs. Visible lifecycle failures retain frontend/native presentation.
 
@@ -135,3 +135,9 @@ The helper persists newer releases and defers while any desktop instance runs. W
 An interactive second launch/Reopen during headless work creates a window in that process. The final restart decision runs on the main thread: an existing window restarts visibly; otherwise `prepare_quiet_restart` and a `--background` successor settle Installed and exit. This also handles a v0.2.21 predecessor's request/response and hidden restart intent.
 
 Each macOS launch disables any old autostart entry and surfaces failures. Settings removes its login toggle and warning, using the helper schedule for unattended work. Windows retains its login preferences and warnings.
+
+### Windows window lifecycle
+
+Both platform main-window configs set `create: false` and `visible: false`. Windows background startup consumes restart intent without constructing a window. Tray Open, tray left-click and interactive second launch enqueue serialized creation from that config on a worker thread, then show/restore/focus on the event thread. Lifecycle failures reach tray reporting, including failures inside the worker. A native getter detects the retiring window between its Destroy message and Tauri's removal of the label; the worker waits up to five seconds for Destroyed before rebuilding, and reports the original failure if no destruction occurs.
+
+The frontend close guard protects unsaved edits on both platforms. Windows grants destroy only for `main`, clears busy on Destroyed, and keeps the tray running by preventing only `ExitRequested { code: None }`. Explicit tray Quit (`Some(0)`) and restart (`Some(RESTART_EXIT_CODE)`) remain available without a window. Restart intent uses window presence as the foreground decision. Windows sync, login registration, nightly policy, notifications and signed-update supervision are independent of the window.

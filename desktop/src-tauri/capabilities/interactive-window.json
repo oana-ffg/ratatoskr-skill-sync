@@ -1,0 +1,7 @@
+{
+  "identifier": "interactive-window",
+  "description": "Allow the interactive main window to close after the unsaved-changes guard",
+  "platforms": ["macOS", "windows"],
+  "windows": ["main"],
+  "permissions": ["core:window:allow-destroy"]
+}
