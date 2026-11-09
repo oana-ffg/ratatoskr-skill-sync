@@ -20,10 +20,12 @@ function destroyGrants(platform) {
   );
 }
 
-test("only macOS can destroy the main window; Windows retains close-to-tray", () => {
-  assert.equal(destroyGrants("windows").length, 0);
-  const macos = destroyGrants("macOS");
-  assert.equal(macos.length, 1);
-  assert.deepEqual(macos[0].platforms, ["macOS"]);
-  assert.deepEqual(macos[0].windows, ["main"]);
+test("macOS and Windows can destroy only the guarded main window", () => {
+  for (const platform of ["macOS", "windows"]) {
+    const grants = destroyGrants(platform);
+    assert.equal(grants.length, 1);
+    assert.deepEqual(grants[0].platforms, ["macOS", "windows"]);
+    assert.deepEqual(grants[0].windows, ["main"]);
+  }
+  assert.equal(destroyGrants("linux").length, 0);
 });

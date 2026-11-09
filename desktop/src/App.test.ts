@@ -146,6 +146,7 @@ test("native startup gates readiness and unsaved editors notify the native sched
   try {
     await screen.findByRole("heading", { name: /Skills/ });
     expect(calls).toHaveBeenCalledWith("startup_update", {});
+    expect(calls).not.toHaveBeenCalledWith("runtime_platform", {});
     expect(calls).toHaveBeenCalledWith("set_app_error_listener", {
       active: true,
     });

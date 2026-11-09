@@ -90,6 +90,16 @@ test("Windows tray settings in dark mode", async ({ page }) => {
   ).toHaveText(String(workspace.skills.length));
   await expect(page.getByLabel("Open Ratatoskr at login")).toBeChecked();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByLabel("Open Ratatoskr at login").uncheck();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /Skills/ })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Keep editing" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Keep editing" }).click();
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
   expect(
     await page
       .locator("body")

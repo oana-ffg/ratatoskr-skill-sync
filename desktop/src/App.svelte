@@ -46,7 +46,6 @@
         !!workspace.plan.content_status.error),
   );
   let ready = $state(false);
-  let residentMode = $state(false);
   let screen = $state<Screen>("Skills");
   let skill = $state<Skill | null>(null);
   let scope = $state("all");
@@ -225,8 +224,6 @@
     void runStartupUpdate(
       async () => {
         if (isTauri()) {
-          const platform = await api.command<string>("runtime_platform");
-          residentMode = platform === "windows";
           await api.command("startup_update");
         }
       },
@@ -278,7 +275,6 @@
     if (isTauri())
       void getCurrentWindow()
         .onCloseRequested((event) => {
-          if (residentMode) return;
           if (dirty) {
             event.preventDefault();
             closeAfterDiscard = true;
@@ -293,7 +289,7 @@
         })
         .catch(fail);
     function beforeUnload(e: BeforeUnloadEvent) {
-      if (!residentMode && dirty) {
+      if (dirty) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -604,7 +600,7 @@
     }}
     ><p>
       Save your work first, or discard your changes to {closeAfterDiscard
-        ? "close Ratatoskr"
+        ? "close this window"
         : "leave this screen"}.
     </p>
     <footer class="dialog-actions">

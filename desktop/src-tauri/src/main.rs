@@ -169,7 +169,25 @@ fn main() {
                 } if label == "main" => app.exit(0),
                 _ => (),
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(windows)]
+            match event {
+                tauri::RunEvent::ExitRequested { code, api, .. }
+                    if window_lifecycle::prevent_exit(code) =>
+                {
+                    api.prevent_exit()
+                }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } if label == "main" => {
+                    if let Err(error) = window_lifecycle::destroyed(app) {
+                        window_lifecycle::report(app, error);
+                    }
+                }
+                _ => (),
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
             let _ = (app, event);
         });
 }

@@ -1,9 +1,9 @@
 //! A macOS window is interactive; background updates never construct a webview.
+use super::{background_argument, launch_mode_path, main_window, show};
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
-pub(crate) const AUTOSTART_ARGS: [&str; 1] = ["--background"];
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 
 /// Held from bundle installation until the restart or failure path completes.
@@ -22,12 +22,6 @@ impl Drop for InstallGuard {
 }
 pub(crate) fn installing() -> bool {
     INSTALLING.load(Ordering::Acquire)
-}
-fn launch_mode_path() -> Result<std::path::PathBuf> {
-    Ok(ratatoskr_core::updates::desktop_data_dir()?.join("restart-background.json"))
-}
-fn background_argument() -> bool {
-    std::env::args_os().any(|arg| arg == "--background")
 }
 pub(crate) fn launching_hidden() -> bool {
     match launch_mode_path()
@@ -105,25 +99,9 @@ pub(crate) fn quiet_restart(app: &tauri::AppHandle) -> Result<()> {
 
 pub(crate) fn open(app: &tauri::AppHandle) -> Result<()> {
     app.set_activation_policy(tauri::ActivationPolicy::Regular)?;
-    let window = match app.get_webview_window("main") {
-        Some(window) => window,
-        None => {
-            let config = app
-                .config()
-                .app
-                .windows
-                .iter()
-                .find(|w| w.label == "main")
-                .context("Main window config missing")?;
-            tauri::WebviewWindowBuilder::from_config(app, config)?.build()?
-        }
-    };
-    window.show()?;
-    window.unminimize()?;
-    window.set_focus()?;
-    window.emit("workspace-window-visible", true)?;
-    Ok(())
+    show(&main_window(app)?)
 }
+
 pub(crate) fn setup(app: &tauri::AppHandle) -> Result<()> {
     // A corrupt saved intent must be visible in diagnostics, never a hidden dialog.
     let hidden = match ratatoskr_core::tray::consume_restart_mode(

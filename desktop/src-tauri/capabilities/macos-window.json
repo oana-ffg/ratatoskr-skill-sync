@@ -1,7 +1,0 @@
-{
-  "identifier": "macos-window",
-  "description": "Allow the macOS main window to close after the unsaved-changes guard",
-  "platforms": ["macOS"],
-  "windows": ["main"],
-  "permissions": ["core:window:allow-destroy"]
-}

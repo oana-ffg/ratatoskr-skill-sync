@@ -116,7 +116,7 @@ fn update_result<T>(context: &UpdateContext, result: anyhow::Result<T>) -> Reply
 
 #[tauri::command]
 pub(crate) async fn startup_update(app: tauri::AppHandle) -> Reply<bool> {
-    crate::update_scheduler::startup(app).await
+    crate::update_scheduler::window_startup(app).await
 }
 
 #[cfg(not(target_os = "macos"))]
