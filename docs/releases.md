@@ -44,6 +44,13 @@ sync becomes stale. The local watchdog must distinguish an intentional **Quit**
 or disabled login startup from a crash; an external monitor needs an explicitly
 configured destination. Neither is installed by this change.
 
+## v0.2.23 release notes
+
+- **On Windows, a closed window no longer keeps a hidden renderer running.** Login startup and unattended restarts create no window or WebView2 renderer. Closing the window destroys it and releases WebView2, while the tray keeps running for sync and nightly updates. Tray Open, a left-click or launching Ratatoskr again creates a fresh window.
+- **Closing a Windows window with unsaved edits now asks first.** It offers Keep editing or Discard and continue, the same prompt as macOS, because closing no longer keeps the page alive behind a hidden window. A clean window closes immediately. Tray **Quit** still stops the app and syncing.
+- **Reopened Windows windows show current status.** Only the first startup waits on the update decision. Later windows read current job status instead of replaying an old startup error.
+- **Macs on v0.2.22 receive this update through the launchd helper,** with automatic updates and Background sync enabled and no window open. macOS behavior is otherwise unchanged, apart from the shared close prompt now saying "close this window". Windows on v0.2.22 receives it through the running tray's supervised updater.
+
 ## v0.2.22 release notes
 
 - **On macOS, closing the window now quits the app,** with the unsaved-changes prompt when needed. No resident desktop process stays running after you close it. Open Ratatoskr any time to view or edit skills; Background sync continues through the independent launchd helper.
