@@ -384,27 +384,28 @@ test.each([
       }),
     );
     await fireEvent.click(await screen.findByRole("button", { name: "Save" }));
-    const notice = await screen.findByText(/Source saved\./);
-    expect(notice).toHaveTextContent(
-      installed
-        ? "Installed on this machine"
-        : "Not fully installed on this machine",
-    );
-    expect(notice).toHaveTextContent(
-      published ? "and published to the other machines" : "NOT published",
-    );
-    if (!installed) expect(notice).toHaveTextContent("Needs attention");
-    if (!published) expect(notice).toHaveTextContent("Push now");
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Save" })).toBeNull(),
     );
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull(),
     );
+    // A save that fully went through leaves no lingering message.
+    const notice = screen.queryByText(/^Saved, but:/);
+    if (installed && published) {
+      expect(notice).toBeNull();
+    } else {
+      expect(notice).not.toBeNull();
+      const text = notice!.textContent ?? "";
+      expect(text.includes("Not installed on this machine")).toBe(!installed);
+      expect(text.includes("Needs attention")).toBe(!installed);
+      expect(text.includes("NOT published")).toBe(!published);
+      expect(text.includes("Push now")).toBe(!published);
+    }
     await fireEvent.click(screen.getByRole("button", { name: /Projects/ }));
     expect(
       screen.queryByRole("dialog", { name: "You have unsaved changes" }),
     ).toBeNull();
-    expect(notice).toBeVisible();
+    if (notice) expect(notice).toBeVisible();
   },
 );

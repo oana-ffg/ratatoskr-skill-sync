@@ -532,12 +532,11 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     apply_locked(settings, expected)
 }
 
-/// Caller holds apply.lock (and, for Save, sync.lock before it).
+/// Caller validated `settings` and holds apply.lock (and, for Save, sync.lock before it).
 pub(crate) fn apply_locked(
     settings: &Settings,
     expected: Option<serde_json::Value>,
 ) -> Result<Plan> {
-    settings.validate()?;
     no_symlinks(&settings.state_dir)?;
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;

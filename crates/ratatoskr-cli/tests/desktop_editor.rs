@@ -699,7 +699,20 @@ fn source_conflict_copy_back_edit_and_backup_restore_are_published() {
                 expected: &serde_json::to_string(&preview).unwrap(),
             });
         }
-        f.edit(Edit::RestoreBackup { directory: &backup });
+        let restored = core::desktop_source_edit(
+            &f.settings,
+            None,
+            Edit::RestoreBackup { directory: &backup },
+        )
+        .unwrap();
+        // Undo returns to the pre-resolution state and never installs afterwards.
+        assert!(
+            matches!(
+                restored.outcome.installation,
+                core::SourceInstallation::NotRequired
+            ),
+            "{restored:?}"
+        );
         assert_eq!(
             f.remote_file("global/AGENTS.md"),
             "Original global instructions"
@@ -968,7 +981,14 @@ fn project_edit_reports_writing_and_installing() {
 fn save_publishes_even_when_local_install_conflicts_and_reports_both_failures() {
     let f = Fixture::new();
     core::apply(&f.settings).unwrap();
-    let installed = f.settings.state_dir.join("test/staging/codex/AGENTS.md");
+    // Join each component: a "/" inside one join argument stays literal on Windows.
+    let installed = f
+        .settings
+        .state_dir
+        .join("test")
+        .join("staging")
+        .join("codex")
+        .join("AGENTS.md");
     fs::write(&installed, "Hand edited here\n").unwrap();
     for offline in [false, true] {
         if offline {
@@ -1045,7 +1065,8 @@ fn project_save_installs_uncommitted_work_without_publication() {
         .unwrap()
         .install_targets
         .into_iter()
-        .find(|t| t.project.as_ref() == Some(&project))
+        // Registration stores the canonical root, which differs on Windows.
+        .find(|t| t.project.as_ref() == Some(&f.settings.projects[0]))
         .unwrap();
     assert!(
         fs::read_to_string(project_target.skills_root.join("local/SKILL.md"))

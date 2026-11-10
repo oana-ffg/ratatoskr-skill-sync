@@ -165,7 +165,8 @@ export interface StalePreview {
 }
 export interface SourceEditOutcome {
   installation:
-    { status: "installed" } | { status: "not_installed"; error: string };
+    | { status: "installed" | "not_required" }
+    | { status: "not_installed"; error: string };
   publication:
     | { status: "published" | "not_required" }
     | { status: "not_published"; error: string };
@@ -179,24 +180,17 @@ export type ApplyReply = {
   workspace: Snapshot;
 };
 
-export function sourceEditNotice(outcome: SourceEditOutcome) {
-  const installed = outcome.installation.status === "installed";
-  const published = outcome.publication.status === "published";
+/** What the user must still act on after a saved edit; null when it fully went through. */
+export function sourceEditNotice(outcome: SourceEditOutcome): string | null {
   const problems = [
     outcome.installation.status === "not_installed"
-      ? `Not installed here: ${outcome.installation.error}. Check Needs attention.`
+      ? `Not installed on this machine: ${outcome.installation.error}. Check Needs attention.`
       : "",
     outcome.publication.status === "not_published"
-      ? `NOT published: ${outcome.publication.error}`
+      ? `NOT published to your other machines: ${outcome.publication.error}`
       : "",
   ].filter(Boolean);
-  return {
-    partial: problems.length > 0,
-    text: [
-      `Source saved. ${installed ? "Installed on this machine" : "Not fully installed on this machine"}${published ? " and published to the other machines" : outcome.publication.status === "not_required" ? "; no publication required" : "; not published to other machines"}.`,
-      ...problems,
-    ].join(" "),
-  };
+  return problems.length ? ["Saved, but:", ...problems].join(" ") : null;
 }
 
 export interface Snapshot {

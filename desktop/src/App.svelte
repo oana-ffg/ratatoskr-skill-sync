@@ -466,11 +466,8 @@
           onclick={() => void refresh()}>Retry refresh</button
         >
       </div>{/if}
-    {#if saveNotice}<div
-        class={saveNotice.partial ? "global-error" : "success-message"}
-        role={saveNotice.partial ? "alert" : "status"}
-      >
-        <p>{saveNotice.text}</p>
+    {#if saveNotice}<div class="global-error" role="alert">
+        <p>{saveNotice}</p>
         <button
           aria-label="Dismiss save status"
           onclick={() => (sourceEdit = null)}>Dismiss</button

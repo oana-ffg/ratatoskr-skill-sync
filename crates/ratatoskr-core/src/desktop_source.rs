@@ -74,6 +74,13 @@ impl DesktopSourceEdit<'_> {
         }
     }
 
+    /// Undo restores the exact pre-resolution state, including the conflict it
+    /// resolved. Installing afterwards would either be refused because of that
+    /// conflict or change more than the undo did.
+    fn installs_after_write(&self) -> bool {
+        !matches!(self, Self::RestoreBackup { .. })
+    }
+
     // Scopes limit before/after fingerprints, not Git staging: the transaction
     // stages individual changed files only, including both sides of a move.
     fn paths(&self, settings: &Settings) -> Result<Vec<PathBuf>> {
@@ -215,6 +222,7 @@ pub struct SourceEditOutcome {
 pub enum SourceInstallation {
     Installed,
     NotInstalled { error: String },
+    NotRequired,
 }
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -231,8 +239,12 @@ pub struct SourceEditResult {
 
 pub(crate) fn install_source_edit(
     settings: &Settings,
+    install: bool,
     progress: &dyn Fn(SourceEditStage),
 ) -> SourceInstallation {
+    if !install {
+        return SourceInstallation::NotRequired;
+    }
     progress(SourceEditStage::Installing);
     match crate::engine::apply_locked(settings, None) {
         Ok(_) => SourceInstallation::Installed,
@@ -283,21 +295,22 @@ pub fn desktop_source_edit_with_progress(
     } else {
         edit.paths(settings)?
     };
+    let install = edit.installs_after_write();
     if paths.is_empty() {
-        // Conflict ownership actions and installed-only backup restores can change
-        // the next render too. They share project edits' write -> install path.
+        // Conflict ownership actions can change the next render too. They share
+        // project edits' write -> install path.
         progress(SourceEditStage::Writing);
         let path = edit.write(settings, project)?;
         return Ok(SourceEditResult {
             path,
             outcome: SourceEditOutcome {
-                installation: install_source_edit(settings, progress),
+                installation: install_source_edit(settings, install, progress),
                 publication: SourcePublication::NotRequired,
             },
         });
     }
     let message = format!("Ratatoskr editor: {}", edit.message());
-    git::publish_source_edit(settings, &paths, &message, progress, || {
+    git::publish_source_edit(settings, &paths, &message, install, progress, || {
         edit.write(settings, None)
     })
 }
