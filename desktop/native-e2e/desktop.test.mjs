@@ -319,10 +319,7 @@ test(
           .includes("Written in the native editor."),
       );
 
-      const apply =
-        "//button[contains(normalize-space(.), 'in the staging folder')]";
-      await navigate(session, "Review changes", apply);
-      await session.click(apply);
+      // Save itself installs before publishing; no reviewed Apply is needed.
       for (const harness of ["claude", "codex"]) {
         const staged = workspace.staged(
           `${harness}/skills/native-check/SKILL.md`,

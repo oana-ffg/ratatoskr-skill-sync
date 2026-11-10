@@ -15,7 +15,7 @@ pub(crate) async fn save_global_instructions(
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -85,7 +85,7 @@ pub(crate) async fn set_skill_enabled(
     enabled: bool,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -101,19 +101,14 @@ pub(crate) async fn set_skill_enabled(
     })
     .await
 }
-#[derive(Serialize)]
-pub(crate) struct ArchivedSkill {
-    path: PathBuf,
-    workspace: Snapshot,
-}
 #[tauri::command]
 pub(crate) async fn archive_source_skill(
     on_progress: Channel<String>,
     name: String,
     project: Option<PathBuf>,
-) -> Reply<ArchivedSkill> {
+) -> Reply<SavedPath> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         let mut path = PathBuf::new();
         let workspace = mutate_with_progress(&progress, |s| {
             path = progress
@@ -121,7 +116,7 @@ pub(crate) async fn archive_source_skill(
                 .ok_or_else(|| anyhow::anyhow!("Archive returned no path"))?;
             Ok(())
         })?;
-        Ok(ArchivedSkill { path, workspace })
+        Ok(SavedPath { path, workspace })
     })
     .await
 }
@@ -165,7 +160,7 @@ pub(crate) async fn add_agent_target(
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -206,7 +201,7 @@ pub(crate) async fn save_skill_draft(
     metadata_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -240,7 +235,7 @@ pub(crate) async fn save_structured_source(
     values: toml::Table,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -283,7 +278,7 @@ pub(crate) async fn add_skill_resource(
     from: PathBuf,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -309,7 +304,7 @@ pub(crate) async fn rename_source_skill(
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(
@@ -362,7 +357,7 @@ pub(crate) async fn save_local_settings(
     expected_hash: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |_| {
             progress.stage(core::SourceEditStage::Writing);
             core::save_local_configuration(
@@ -418,7 +413,7 @@ pub(crate) async fn create_desktop_skill(
     description: String,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(

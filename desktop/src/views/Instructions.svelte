@@ -218,7 +218,7 @@
       {#if !document.text}<p class="muted small">
           Your content repository has no global/AGENTS.md yet. Saving creates
           it. If an agent already has its own instructions file on a machine,
-          Review changes asks you to resolve it before anything is written.
+          Needs attention lets you resolve it before installation can finish.
         </p>{/if}
       <div class="editor-frame">
         <TemplateToolbar

@@ -160,6 +160,7 @@ test("Apply reports what it is doing through the shared status", async () => {
   const pending = gate();
   let channel!: Channel<string>;
   const workspace = structuredClone(fixture.workspace);
+  workspace.schedule_installed = false;
   workspace.plan.conflicts = [];
   workspace.plan.stale_targets = [];
   workspace.legacy = [];
@@ -173,7 +174,9 @@ test("Apply reports what it is doing through the shared status", async () => {
   });
   render(App);
   await screen.findByRole("heading", { name: /Skills/ });
-  await fireEvent.click(screen.getByRole("button", { name: /Review changes/ }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Needs attention/ }),
+  );
   await fireEvent.click(
     await screen.findByRole("button", {
       name: reviewSummary(workspace).applyAction,
@@ -182,6 +185,6 @@ test("Apply reports what it is doing through the shared status", async () => {
   const status = screen.getByRole("status", { name: "Save progress" });
   await act(() => channel.onmessage("Applying changes…"));
   expect(status).toHaveTextContent(/^Applying changes…$/);
-  await act(() => pending.resolve(workspace));
+  await act(() => pending.resolve({ status: "applied", workspace }));
   expect(status).toHaveTextContent(/^$/);
 });

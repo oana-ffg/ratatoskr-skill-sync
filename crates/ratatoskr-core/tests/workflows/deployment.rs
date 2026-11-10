@@ -289,7 +289,15 @@ fn reviewed_plan_refuses_changed_source_before_writing() {
     let f = Fixture::new();
     let preview = serde_json::to_string(&plan(&f.settings).unwrap()).unwrap();
     f.write("skills/review-code/extra.txt", "New source after review");
-    assert!(ratatoskr_core::apply_reviewed(&f.settings, &preview).is_err());
+    let error = ratatoskr_core::apply_reviewed(&f.settings, &preview).unwrap_err();
+    let changed = error.downcast::<ratatoskr_core::PlanChanged>().unwrap();
+    assert!(
+        changed
+            .plan
+            .changes
+            .iter()
+            .any(|c| c.path.ends_with("extra.txt"))
+    );
     assert!(!f.output().exists());
 }
 
@@ -341,4 +349,18 @@ fn dropping_an_applied_agent_explains_the_stale_ownership() {
         ratatoskr_core::apply_reviewed(&f.settings, &serde_json::to_string(&report).unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn reviewed_apply_returns_typed_fresh_plan_after_background_install() {
+    let f = Fixture::new();
+    let preview = serde_json::to_string(&plan(&f.settings).unwrap()).unwrap();
+    apply(&f.settings).unwrap();
+    let changed = ratatoskr_core::apply_reviewed(&f.settings, &preview)
+        .unwrap_err()
+        .downcast::<ratatoskr_core::PlanChanged>()
+        .unwrap();
+    assert!(changed.plan.changes.is_empty());
+    let fresh = serde_json::to_string(&changed.plan).unwrap();
+    ratatoskr_core::apply_reviewed(&f.settings, &fresh).unwrap();
 }

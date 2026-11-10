@@ -1,4 +1,4 @@
-//! Desktop-owned edits publish directly; the ordinary core/CLI writers stay write-only.
+//! Desktop saves install locally before publishing; core/CLI writers stay write-only.
 use crate::{
     Settings,
     config::{identifier, relative},
@@ -72,6 +72,13 @@ impl DesktopSourceEdit<'_> {
             Self::ResolveConflict { .. } => "resolve source conflict",
             Self::RestoreBackup { .. } => "restore source backup",
         }
+    }
+
+    /// Undo restores the exact pre-resolution state, including the conflict it
+    /// resolved. Installing afterwards would either be refused because of that
+    /// conflict or change more than the undo did.
+    fn installs_after_write(&self) -> bool {
+        !matches!(self, Self::RestoreBackup { .. })
     }
 
     // Scopes limit before/after fingerprints, not Git staging: the transaction
@@ -200,17 +207,60 @@ pub enum SourceEditStage {
     Fetching,
     Writing,
     Committing,
+    Installing,
     Pushing { remote: String, branch: String },
 }
 
-/// Serializes a complete desktop save with sync and apply. Project edits remain
-/// write-only; central edits use the user's Git identity and configured upstream.
-/// The returned path is the archive/backup receipt for operations producing one.
+/// A successful write may still need local or publication recovery.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SourceEditOutcome {
+    pub installation: SourceInstallation,
+    pub publication: SourcePublication,
+}
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SourceInstallation {
+    Installed,
+    NotInstalled { error: String },
+    NotRequired,
+}
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SourcePublication {
+    Published,
+    NotPublished { error: String },
+    NotRequired,
+}
+#[derive(Debug)]
+pub struct SourceEditResult {
+    pub path: Option<PathBuf>,
+    pub outcome: SourceEditOutcome,
+}
+
+pub(crate) fn install_source_edit(
+    settings: &Settings,
+    install: bool,
+    progress: &dyn Fn(SourceEditStage),
+) -> SourceInstallation {
+    if !install {
+        return SourceInstallation::NotRequired;
+    }
+    progress(SourceEditStage::Installing);
+    match crate::engine::apply_locked(settings, None) {
+        Ok(_) => SourceInstallation::Installed,
+        Err(error) => SourceInstallation::NotInstalled {
+            error: format!("{error:#}"),
+        },
+    }
+}
+
+/// Serializes Save with sync and apply. Project edits install without publishing.
+/// Errors mean the write failed; successful writes carry both subsequent outcomes.
 pub fn desktop_source_edit(
     settings: &Settings,
     project: Option<&Path>,
     edit: DesktopSourceEdit<'_>,
-) -> Result<Option<PathBuf>> {
+) -> Result<SourceEditResult> {
     desktop_source_edit_with_progress(settings, project, edit, &|_| {})
 }
 
@@ -221,7 +271,7 @@ pub fn desktop_source_edit_with_progress(
     project: Option<&Path>,
     edit: DesktopSourceEdit<'_>,
     progress: &dyn Fn(SourceEditStage),
-) -> Result<Option<PathBuf>> {
+) -> Result<SourceEditResult> {
     settings.validate()?;
     // Match sync_locked -> apply. Never acquire sync.lock from inside apply.lock.
     let _sync = crate::config::operation_lock(settings, "sync.lock")?;
@@ -239,16 +289,28 @@ pub fn desktop_source_edit_with_progress(
             ),
             "This action does not accept a project scope"
         );
-        progress(SourceEditStage::Writing);
-        return edit.write(settings, project);
     }
-    let paths = edit.paths(settings)?;
+    let paths = if project.is_some() {
+        vec![]
+    } else {
+        edit.paths(settings)?
+    };
+    let install = edit.installs_after_write();
     if paths.is_empty() {
+        // Conflict ownership actions can change the next render too. They share
+        // project edits' write -> install path.
         progress(SourceEditStage::Writing);
-        return edit.write(settings, None);
+        let path = edit.write(settings, project)?;
+        return Ok(SourceEditResult {
+            path,
+            outcome: SourceEditOutcome {
+                installation: install_source_edit(settings, install, progress),
+                publication: SourcePublication::NotRequired,
+            },
+        });
     }
     let message = format!("Ratatoskr editor: {}", edit.message());
-    git::publish_source_edit(settings, &paths, &message, progress, || {
+    git::publish_source_edit(settings, &paths, &message, install, progress, || {
         edit.write(settings, None)
     })
 }

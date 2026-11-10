@@ -5,6 +5,7 @@ use ratatoskr_core::{
     self as core, DesktopSourceEdit as Edit, Plan, Settings, SkillDocument, SkillEntry,
 };
 use serde::Serialize;
+use std::cell::RefCell;
 use std::{
     fs,
     path::PathBuf,
@@ -41,6 +42,8 @@ pub(crate) struct Snapshot {
     config_path: PathBuf,
     config_text: String,
     plan: Plan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_edit: Option<core::SourceEditOutcome>,
     skills: Vec<SkillEntry>,
     skills_error: Option<String>,
     helper: Option<PathBuf>,
@@ -53,6 +56,12 @@ pub(crate) struct Snapshot {
     source_files: Vec<String>,
     legacy: Vec<core::LegacySkill>,
     updates: UpdateStatus,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SavedPath {
+    path: PathBuf,
+    workspace: Snapshot,
 }
 
 #[derive(Serialize)]
@@ -141,6 +150,7 @@ fn snapshot_with(current: Option<Plan>) -> Reply<Snapshot> {
         config_text: fs::read_to_string(&path).map_err(|e| e.to_string())?,
         config_path: path,
         plan,
+        source_edit: None,
         skills,
         skills_error,
         helper: helper.as_ref().ok().cloned(),
@@ -156,11 +166,29 @@ fn snapshot_with(current: Option<Plan>) -> Reply<Snapshot> {
 }
 // A channel belongs to one invocation, so a finished command retains no sender.
 // Progress is advisory: a closed window must never interrupt publication.
-struct MutationProgress(Option<Channel<String>>);
+struct MutationProgress {
+    channel: Option<Channel<String>>,
+    // A saved edit is distinct from a command failure. Keep its typed outcomes
+    // alongside progress until the refreshed snapshot is returned to the editor.
+    source_edit: RefCell<Option<core::SourceEditOutcome>>,
+}
 
 impl MutationProgress {
+    fn new(channel: Option<Channel<String>>) -> Self {
+        Self {
+            channel,
+            source_edit: RefCell::new(None),
+        }
+    }
+
+    fn snapshot(&self) -> Reply<Snapshot> {
+        let mut workspace = snapshot()?;
+        workspace.source_edit = self.source_edit.borrow_mut().take();
+        Ok(workspace)
+    }
+
     fn send(&self, message: String) {
-        if let Some(channel) = &self.0
+        if let Some(channel) = &self.channel
             && let Err(error) = channel.send(message)
         {
             eprintln!("Ratatoskr: cannot show save progress: {error:#}");
@@ -172,6 +200,7 @@ impl MutationProgress {
             core::SourceEditStage::Fetching => "Getting the latest content…".into(),
             core::SourceEditStage::Writing => "Checking and saving your changes…".into(),
             core::SourceEditStage::Committing => "Committing…".into(),
+            core::SourceEditStage::Installing => "Installing on this machine…".into(),
             core::SourceEditStage::Pushing { remote, branch } => {
                 format!("Pushing to {remote}/{branch}…")
             }
@@ -184,22 +213,16 @@ impl MutationProgress {
         project: Option<&std::path::Path>,
         edit: Edit<'_>,
     ) -> anyhow::Result<Option<PathBuf>> {
-        core::desktop_source_edit_with_progress(settings, project, edit, &|stage| self.stage(stage))
+        let saved = core::desktop_source_edit_with_progress(settings, project, edit, &|stage| {
+            self.stage(stage)
+        })?;
+        *self.source_edit.borrow_mut() = Some(saved.outcome);
+        Ok(saved.path)
     }
 }
 
-/// A mutation that ends in an up-to-date plan, which the snapshot reuses.
-fn mutate_with_plan(
-    progress: &MutationProgress,
-    action: impl FnOnce(&Settings) -> anyhow::Result<Plan>,
-) -> Reply<Snapshot> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    let plan = action(&settings()?).map_err(|e| format!("{e:#}"))?;
-    progress.send("Refreshing…".into());
-    snapshot_with(Some(plan))
-}
 fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapshot> {
-    mutate_with_progress(&MutationProgress(None), action)
+    mutate_with_progress(&MutationProgress::new(None), action)
 }
 fn mutate_with_progress(
     progress: &MutationProgress,
@@ -208,7 +231,7 @@ fn mutate_with_progress(
     let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
     action(&settings()?).map_err(|e| format!("{e:#}"))?;
     progress.send("Refreshing…".into());
-    snapshot()
+    progress.snapshot()
 }
 
 // Synchronous Tauri commands run on the main thread, so anything that touches the disk, a
@@ -281,7 +304,7 @@ pub(crate) async fn read_content_status() -> Reply<core::ContentStatus> {
 #[tauri::command]
 pub(crate) async fn push_content(on_progress: Channel<String>) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             core::push_content_with_progress(s, &|stage| progress.stage(stage))
         })
@@ -289,17 +312,33 @@ pub(crate) async fn push_content(on_progress: Channel<String>) -> Reply<Snapshot
     .await
 }
 
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum ApplyReply {
+    Applied { workspace: Snapshot },
+    PlanChanged { workspace: Snapshot },
+}
+
 #[tauri::command]
 pub(crate) async fn apply_workspace(
     on_progress: Channel<String>,
     expected_plan: String,
-) -> Reply<Snapshot> {
+) -> Reply<ApplyReply> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
-        mutate_with_plan(&progress, |s| {
-            progress.send("Applying changes…".into());
-            core::apply_reviewed(s, &expected_plan)
-        })
+        let progress = MutationProgress::new(Some(on_progress));
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        progress.send("Applying changes…".into());
+        match core::apply_reviewed(&settings()?, &expected_plan) {
+            Ok(plan) => Ok(ApplyReply::Applied {
+                workspace: snapshot_with(Some(plan))?,
+            }),
+            Err(error) => match error.downcast::<core::PlanChanged>() {
+                Ok(changed) => Ok(ApplyReply::PlanChanged {
+                    workspace: snapshot_with(Some(*changed.plan))?,
+                }),
+                Err(error) => Err(format!("{error:#}")),
+            },
+        }
     })
     .await
 }
@@ -327,7 +366,7 @@ pub(crate) async fn restore_workspace(
     backup: PathBuf,
 ) -> Reply<Snapshot> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         mutate_with_progress(&progress, |s| {
             progress
                 .edit(s, None, Edit::RestoreBackup { directory: &backup })
@@ -351,11 +390,13 @@ pub(crate) async fn sync_workspace(
     let _ = app;
     #[cfg(not(windows))]
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
-        mutate_with_plan(&progress, |s| {
-            progress.send("Syncing…".into());
-            core::sync(s)
-        })
+        let progress = MutationProgress::new(Some(on_progress));
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        progress.send("Syncing…".into());
+        let plan = core::sync(&settings()?).map_err(|e| format!("{e:#}"))?;
+        progress.send("Refreshing…".into());
+        // The sync's own up-to-date plan saves a second render.
+        snapshot_with(Some(plan))
     })
     .await
 }
@@ -465,11 +506,11 @@ pub(crate) async fn preview_conflict(
 pub(crate) async fn resolve_conflict(
     on_progress: Channel<String>,
     expected: String,
-) -> Reply<String> {
+) -> Reply<SavedPath> {
     off_main_thread(move || {
-        let progress = MutationProgress(Some(on_progress));
+        let progress = MutationProgress::new(Some(on_progress));
         let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-        progress
+        let path = progress
             .edit(
                 &settings()?,
                 None,
@@ -480,8 +521,11 @@ pub(crate) async fn resolve_conflict(
             .and_then(|p| {
                 p.ok_or_else(|| anyhow::anyhow!("Conflict resolution returned no backup path"))
             })
-            .map(|p| p.display().to_string())
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(SavedPath {
+            path,
+            workspace: progress.snapshot()?,
+        })
     })
     .await
 }

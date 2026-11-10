@@ -175,7 +175,7 @@ test("all main screens", async ({ page }) => {
   );
   await capture("global-instructions");
   for (const [screen, file] of [
-    ["Review changes", "review-changes"],
+    ["Needs attention", "review-changes"],
     ["Projects", "projects"],
     ["Agents & machines", "agents-machines"],
     ["Activity", "activity"],
@@ -188,7 +188,7 @@ test("all main screens", async ({ page }) => {
     await expect(
       page.getByRole("heading", { name: new RegExp(screen), level: 1 }),
     ).toBeVisible();
-    if (screen === "Review changes") {
+    if (screen === "Needs attention") {
       await expect(
         page.getByRole("button", {
           name: "Write 17 files in the staging folder",
@@ -196,7 +196,7 @@ test("all main screens", async ({ page }) => {
         }),
       ).toBeVisible();
       await expect(page.locator(".page-heading .muted")).toContainText(
-        "5 items needing attention · 17 ready files · 2 decisions",
+        "5 items · 17 pending files · 2 decisions",
       );
       await expect(
         page.locator(".conflict-card .diff-add, .conflict-card .diff-remove"),
@@ -282,7 +282,7 @@ test("all main screens", async ({ page }) => {
     }
     // Project counts use a dedicated populated fixture below.
     if (screen !== "Projects") await capture(file);
-    if (screen === "Review changes" || screen === "Agents & machines") {
+    if (screen === "Needs attention" || screen === "Agents & machines") {
       await captureOverview(file);
     }
     if (screen === "Settings") {
@@ -361,7 +361,7 @@ test("review former target decisions and their exact archive preview", async ({
   await page.goto("/");
   await page
     .getByRole("navigation")
-    .getByRole("button", { name: /Review changes/ })
+    .getByRole("button", { name: /Needs attention/ })
     .click();
   const section = page.getByRole("region", { name: "Former target locations" });
   await expect(

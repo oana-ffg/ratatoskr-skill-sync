@@ -1,5 +1,6 @@
 import {
   render,
+  act,
   screen,
   fireEvent,
   waitFor,
@@ -7,8 +8,10 @@ import {
 } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { mockIPC, clearMocks, mockWindows } from "@tauri-apps/api/mocks";
+import { EditorView } from "@codemirror/view";
+import type { SourceDocument } from "./api";
 import App from "./App.svelte";
-import { fixture, fixtureIPC } from "../tests/fixture";
+import { fixture, fixtureIPC, oracle } from "../tests/fixture";
 beforeEach(() => {
   clearMocks();
   mockIPC((cmd, args) => fixtureIPC(cmd, args as Record<string, unknown>));
@@ -321,3 +324,88 @@ test("creating a skill opens it in the editor without an unsaved-changes prompt"
     screen.queryByRole("dialog", { name: "You have unsaved changes" }),
   ).toBeNull();
 });
+
+test.each([
+  [true, true],
+  [true, false],
+  [false, true],
+  [false, false],
+])(
+  "Save cleans the editor and reports installation=%s publication=%s",
+  async (installed, published) => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+    let document = oracle("read_global_instructions") as SourceDocument;
+    mockIPC((cmd, args) => {
+      if (cmd === "read_global_instructions") return document;
+      if (cmd === "save_global_instructions") {
+        document = {
+          ...document,
+          text: (args as { markdown: string }).markdown,
+        };
+        return {
+          ...fixture.workspace,
+          source_edit: {
+            installation: installed
+              ? { status: "installed" }
+              : {
+                  status: "not_installed",
+                  error: "1 conflict needs your decision",
+                },
+            publication: published
+              ? { status: "published" }
+              : { status: "not_published", error: "offline; use Push now" },
+          },
+        };
+      }
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    });
+    const { container } = render(App);
+    await screen.findByRole("heading", { name: /Skills/ });
+    await fireEvent.click(
+      screen.getByRole("button", { name: /Global instructions/ }),
+    );
+    await screen.findByRole("textbox", { name: "Global instructions editor" });
+    const view = EditorView.findFromDOM(
+      container.querySelector(".cm-editor") as HTMLElement,
+    )!;
+    await act(() =>
+      view.dispatch({
+        changes: { from: view.state.doc.length, insert: "\nSaved edit." },
+      }),
+    );
+    await fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull(),
+    );
+    // A save that fully went through leaves no lingering message.
+    const notice = screen.queryByText(/^Saved, but:/);
+    if (installed && published) {
+      expect(notice).toBeNull();
+    } else {
+      expect(notice).not.toBeNull();
+      const text = notice!.textContent ?? "";
+      expect(text.includes("Not installed on this machine")).toBe(!installed);
+      expect(text.includes("Needs attention")).toBe(!installed);
+      expect(text.includes("NOT published")).toBe(!published);
+      expect(text.includes("Push now")).toBe(!published);
+    }
+    await fireEvent.click(screen.getByRole("button", { name: /Projects/ }));
+    expect(
+      screen.queryByRole("dialog", { name: "You have unsaved changes" }),
+    ).toBeNull();
+    if (notice) expect(notice).toBeVisible();
+  },
+);

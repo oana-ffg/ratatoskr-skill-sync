@@ -94,7 +94,7 @@ impl Fixture {
     fn edit(&self, edit: Edit<'_>) -> Option<PathBuf> {
         let result = core::desktop_source_edit(&self.settings, None, edit).unwrap();
         assert_eq!(self.head(), git(&self.remote(), &["rev-parse", "main"]));
-        result
+        result.path
     }
     fn head(&self) -> String {
         git(&self.settings.source, &["rev-parse", "HEAD"])
@@ -105,14 +105,14 @@ impl Fixture {
     fn remote_file(&self, file: &str) -> String {
         git(&self.remote(), &["show", &format!("main:{file}")])
     }
-    fn save_global(&self, text: &str) -> anyhow::Result<Option<PathBuf>> {
+    fn save_global(&self, text: &str) -> anyhow::Result<core::SourceEditResult> {
         self.save_global_with_progress(text, &|_| {})
     }
     fn save_global_with_progress(
         &self,
         text: &str,
         progress: &dyn Fn(Stage),
-    ) -> anyhow::Result<Option<PathBuf>> {
+    ) -> anyhow::Result<core::SourceEditResult> {
         let current = core::read_global_instructions(&self.settings).unwrap();
         core::desktop_source_edit_with_progress(
             &self.settings,
@@ -430,8 +430,10 @@ fn commit_failure_leaves_saved_file_in_place_and_reports_it() {
     let f = Fixture::new();
     let original = f.head();
     f.hook("pre-commit", "echo 'Commit hook refused' >&2\nexit 1");
-    let error = f.save_global("Saved despite failed commit\n").unwrap_err();
-    let error = format!("{error:#}");
+    let saved = f.save_global("Saved despite failed commit\n").unwrap();
+    let core::SourcePublication::NotPublished { error } = saved.outcome.publication else {
+        panic!("{saved:?}")
+    };
     assert!(
         error.contains("Source saved in place but Git commit failed"),
         "{error}"
@@ -461,8 +463,19 @@ fn push_failure_keeps_local_commit_status_and_deduplicated_sync_alert_then_retry
         &f.settings.source,
         &["config", "remote.origin.pushurl", "../offline.git"],
     );
-    let error = f.save_global("Local commit awaiting push\n").unwrap_err();
-    assert!(format!("{error:#}").contains("saved and committed locally but NOT pushed"));
+    let saved = f.save_global("Local commit awaiting push\n").unwrap();
+    assert!(matches!(
+        saved.outcome.installation,
+        core::SourceInstallation::Installed
+    ));
+    let core::SourcePublication::NotPublished { error } = saved.outcome.publication else {
+        panic!("{saved:?}")
+    };
+    assert!(error.contains("saved and committed locally but NOT pushed"));
+    assert_eq!(
+        fs::read_to_string(f.settings.state_dir.join("test/staging/codex/AGENTS.md")).unwrap(),
+        "Local commit awaiting push\n"
+    );
     let status = core::content_status(&f.settings);
     assert_eq!(status.changed_files, 0);
     assert_eq!(status.outgoing_commits, Some(1));
@@ -686,12 +699,60 @@ fn source_conflict_copy_back_edit_and_backup_restore_are_published() {
                 expected: &serde_json::to_string(&preview).unwrap(),
             });
         }
-        f.edit(Edit::RestoreBackup { directory: &backup });
+        let restored = core::desktop_source_edit(
+            &f.settings,
+            None,
+            Edit::RestoreBackup { directory: &backup },
+        )
+        .unwrap();
+        // Undo returns to the pre-resolution state and never installs afterwards.
+        assert!(
+            matches!(
+                restored.outcome.installation,
+                core::SourceInstallation::NotRequired
+            ),
+            "{restored:?}"
+        );
         assert_eq!(
             f.remote_file("global/AGENTS.md"),
             "Original global instructions"
         );
     }
+}
+
+#[test]
+fn undo_commit_failure_reports_no_installation_step() {
+    let f = Fixture::new();
+    core::apply(&f.settings).unwrap();
+    let installed = f.settings.state_dir.join("test/staging/codex/AGENTS.md");
+    fs::write(&installed, "Installed hand edit\n").unwrap();
+    let preview =
+        core::preview_resolution(&f.settings, &installed, core::ConflictAction::CopyBack).unwrap();
+    let backup = f
+        .edit(Edit::ResolveConflict {
+            expected: &serde_json::to_string(&preview).unwrap(),
+        })
+        .unwrap();
+    f.hook("pre-commit", "echo 'Commit hook refused' >&2\nexit 1");
+    let restored = core::desktop_source_edit(
+        &f.settings,
+        None,
+        Edit::RestoreBackup { directory: &backup },
+    )
+    .unwrap();
+    // Undo never installs, so a failed commit must not suggest installation recovery.
+    assert!(
+        matches!(
+            restored.outcome.installation,
+            core::SourceInstallation::NotRequired
+        ),
+        "{restored:?}"
+    );
+    let core::SourcePublication::NotPublished { error } = restored.outcome.publication else {
+        panic!("{restored:?}")
+    };
+    assert!(error.contains("Git commit failed"), "{error}");
+    assert_eq!(f.remote_file("global/AGENTS.md"), "Installed hand edit");
 }
 
 #[test]
@@ -732,8 +793,19 @@ fn dirty_behind_checkout_keeps_other_drafts_and_retains_a_rejected_local_commit(
         "Unrelated dirty notes\n",
     )
     .unwrap();
-    let error = f.save_global("Local instructions\n").unwrap_err();
-    assert!(format!("{error:#}").contains("saved and committed locally but NOT pushed"));
+    let saved = f.save_global("Local instructions\n").unwrap();
+    assert!(matches!(
+        saved.outcome.installation,
+        core::SourceInstallation::Installed
+    ));
+    let core::SourcePublication::NotPublished { error } = saved.outcome.publication else {
+        panic!("{saved:?}")
+    };
+    assert!(error.contains("saved and committed locally but NOT pushed"));
+    assert_eq!(
+        fs::read_to_string(f.settings.state_dir.join("test/staging/codex/AGENTS.md")).unwrap(),
+        "Local instructions\n"
+    );
     assert_eq!(core::content_status(&f.settings).outgoing_commits, Some(1));
     assert_eq!(core::content_status(&f.settings).changed_files, 1);
     assert_eq!(
@@ -802,7 +874,16 @@ fn central_edit_reports_real_stages_in_order_and_waits_for_publication() {
                     "Progress save\n"
                 );
             }
+            Stage::Installing => {
+                assert_ne!(f.head(), head);
+                assert_eq!(git(&f.remote(), &["rev-parse", "main"]), head);
+            }
             Stage::Pushing { .. } => {
+                assert_eq!(
+                    fs::read_to_string(f.settings.state_dir.join("test/staging/codex/AGENTS.md"))
+                        .unwrap(),
+                    "Progress save\n"
+                );
                 assert_ne!(f.head(), head);
                 assert_eq!(git(&f.remote(), &["rev-parse", "main"]), head);
             }
@@ -816,6 +897,7 @@ fn central_edit_reports_real_stages_in_order_and_waits_for_publication() {
             Stage::Fetching,
             Stage::Writing,
             Stage::Committing,
+            Stage::Installing,
             push_stage()
         ]
     );
@@ -841,7 +923,12 @@ fn unchanged_edit_and_return_to_head_skip_commit_progress() {
         .unwrap();
         assert_eq!(
             *stages.borrow(),
-            vec![Stage::Fetching, Stage::Writing, push_stage()]
+            vec![
+                Stage::Fetching,
+                Stage::Writing,
+                Stage::Installing,
+                push_stage()
+            ]
         );
         assert_eq!(f.head(), head);
     }
@@ -874,18 +961,22 @@ fn failed_push_reports_destination_and_preserves_existing_error_and_commit() {
         &["config", "remote.origin.pushurl", "../offline.git"],
     );
     let stages = RefCell::new(vec![]);
-    let error = f
+    let saved = f
         .save_global_with_progress("Local progress commit\n", &|stage| {
             stages.borrow_mut().push(stage)
         })
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("saved and committed locally but NOT pushed"));
+        .unwrap();
+    let core::SourcePublication::NotPublished { error } = saved.outcome.publication else {
+        panic!("{saved:?}")
+    };
+    assert!(error.contains("saved and committed locally but NOT pushed"));
     assert_eq!(
         *stages.borrow(),
         vec![
             Stage::Fetching,
             Stage::Writing,
             Stage::Committing,
+            Stage::Installing,
             push_stage()
         ]
     );
@@ -899,7 +990,7 @@ fn failed_push_reports_destination_and_preserves_existing_error_and_commit() {
 }
 
 #[test]
-fn project_edit_reports_only_writing() {
+fn project_edit_reports_writing_and_installing() {
     let mut f = Fixture::new();
     let project = f.root.join("progress-project");
     fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
@@ -917,6 +1008,145 @@ fn project_edit_reports_only_writing() {
         &|stage| stages.borrow_mut().push(stage),
     )
     .unwrap();
-    assert_eq!(*stages.borrow(), vec![Stage::Writing]);
+    assert_eq!(*stages.borrow(), vec![Stage::Writing, Stage::Installing]);
+    assert!(!f.settings.source.join(".git/FETCH_HEAD").exists());
+}
+
+#[test]
+fn save_publishes_even_when_local_install_conflicts_and_reports_both_failures() {
+    let f = Fixture::new();
+    core::apply(&f.settings).unwrap();
+    // Join each component: a "/" inside one join argument stays literal on Windows.
+    let installed = f
+        .settings
+        .state_dir
+        .join("test")
+        .join("staging")
+        .join("codex")
+        .join("AGENTS.md");
+    fs::write(&installed, "Hand edited here\n").unwrap();
+    for offline in [false, true] {
+        if offline {
+            git(
+                &f.settings.source,
+                &["config", "remote.origin.pushurl", "../offline.git"],
+            );
+        }
+        let saved = f
+            .save_global(if offline {
+                "Second saved change\n"
+            } else {
+                "Published despite conflict\n"
+            })
+            .unwrap();
+        let core::SourceInstallation::NotInstalled { error } = saved.outcome.installation else {
+            panic!("{saved:?}")
+        };
+        assert!(error.contains("conflict"), "{error}");
+        assert!(error.contains(installed.to_str().unwrap()), "{error}");
+        if offline {
+            assert!(matches!(
+                saved.outcome.publication,
+                core::SourcePublication::NotPublished { .. }
+            ));
+        } else {
+            assert!(matches!(
+                saved.outcome.publication,
+                core::SourcePublication::Published
+            ));
+            assert_eq!(
+                f.remote_file("global/AGENTS.md"),
+                "Published despite conflict"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&installed).unwrap(),
+            "Hand edited here\n"
+        );
+    }
+}
+
+#[test]
+fn project_save_installs_uncommitted_work_without_publication() {
+    let mut f = Fixture::new();
+    let project = f.root.join("project");
+    fs::create_dir_all(project.join("agent-skills/skills")).unwrap();
+    git(&project, &["init", "-b", "main"]);
+    core::add_project(&f.config, &project, "agent-skills").unwrap();
+    f.settings = core::load(&f.config).unwrap();
+    let head = f.head();
+    let saved = core::desktop_source_edit(
+        &f.settings,
+        Some(&project),
+        Edit::Create {
+            name: "local",
+            description: "Project source",
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            saved.outcome.installation,
+            core::SourceInstallation::Installed
+        ),
+        "{saved:?}"
+    );
+    assert!(matches!(
+        saved.outcome.publication,
+        core::SourcePublication::NotRequired
+    ));
+    assert!(core::plan(&f.settings).unwrap().changes.is_empty());
+    let project_target = core::plan(&f.settings)
+        .unwrap()
+        .install_targets
+        .into_iter()
+        // Registration stores the canonical root, which differs on Windows.
+        .find(|t| t.project.as_ref() == Some(&f.settings.projects[0]))
+        .unwrap();
+    assert!(
+        fs::read_to_string(project_target.skills_root.join("local/SKILL.md"))
+            .unwrap()
+            .contains("Project source")
+    );
+    assert_eq!(head, f.head());
+    assert!(!f.settings.source.join(".git/FETCH_HEAD").exists());
+    assert!(
+        !output(&project, &["rev-parse", "--verify", "HEAD"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn installed_only_conflict_resolution_installs_without_git_paths() {
+    let f = Fixture::new();
+    core::apply(&f.settings).unwrap();
+    let installed = f.settings.state_dir.join("test/staging/codex/AGENTS.md");
+    fs::write(&installed, "Hand edit\n").unwrap();
+    let preview =
+        core::preview_resolution(&f.settings, &installed, core::ConflictAction::Adopt).unwrap();
+    let head = f.head();
+    let saved = core::desktop_source_edit(
+        &f.settings,
+        None,
+        Edit::ResolveConflict {
+            expected: &serde_json::to_string(&preview).unwrap(),
+        },
+    )
+    .unwrap();
+    assert!(saved.path.unwrap().exists());
+    assert!(matches!(
+        saved.outcome.installation,
+        core::SourceInstallation::Installed
+    ));
+    assert!(matches!(
+        saved.outcome.publication,
+        core::SourcePublication::NotRequired
+    ));
+    assert_eq!(
+        fs::read_to_string(&installed).unwrap(),
+        "Original global instructions\n"
+    );
+    assert_eq!(head, f.head());
     assert!(!f.settings.source.join(".git/FETCH_HEAD").exists());
 }

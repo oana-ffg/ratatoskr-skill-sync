@@ -260,6 +260,13 @@ fn applying_with_nothing_to_do_rewrites_nothing() {
     assert_eq!((applied.added, applied.updated, applied.removed), (0, 0, 0));
     assert_eq!(identity(&manifest), manifest_before);
     assert_eq!(snapshot(&outputs), outputs_before);
+    // The caller-held lock refactor must preserve the same no-op contract for
+    // manual reviewed Apply as the minute background sync's apply path.
+    let expected =
+        serde_json::to_string(&ratatoskr_core::plan(&library.settings).unwrap()).unwrap();
+    ratatoskr_core::apply_reviewed(&library.settings, &expected).unwrap();
+    assert_eq!(identity(&manifest), manifest_before);
+    assert_eq!(snapshot(&outputs), outputs_before);
 }
 
 #[test]
