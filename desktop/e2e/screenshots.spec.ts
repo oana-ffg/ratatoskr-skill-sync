@@ -196,7 +196,7 @@ test("all main screens", async ({ page }) => {
         }),
       ).toBeVisible();
       await expect(page.locator(".page-heading .muted")).toContainText(
-        "5 items needing attention · 17 ready files · 2 decisions",
+        "5 items · 17 pending files · 2 decisions",
       );
       await expect(
         page.locator(".conflict-card .diff-add, .conflict-card .diff-remove"),
