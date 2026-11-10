@@ -44,6 +44,14 @@ sync becomes stale. The local watchdog must distinguish an intentional **Quit**
 or disabled login startup from a crash; an external monitor needs an explicitly
 configured destination. Neither is installed by this change.
 
+## v0.2.24 release notes
+
+- **Saving in the desktop app now installs on this machine right away,** then publishes to your other machines. Save installs the whole workspace whether or not Background sync is on, so there is no separate review step after an edit. If installing or publishing fails, the edit stays saved and a notice says what still needs doing, such as **Push now**. A fully successful save shows no notice.
+- **Review changes is now Needs attention.** It lists pending file changes and the decisions that need you, such as conflicts, former install locations and older Codex copies. **Apply** appears only when Background sync is off; with it on, pending changes install on the next sync once those decisions are resolved.
+- **A stale review no longer leaves a red error.** If background sync installs the reviewed changes first, the page refreshes and says they are already installed. If the plan changed, it shows the new plan to review.
+- **Undoing a conflict resolution only restores the previous files.** It no longer installs anything afterwards, and it is committed and pushed only when it changes central sources.
+- Macs on v0.2.23 receive this update through the launchd helper, with automatic updates and Background sync enabled. Windows on v0.2.23 receives it through the running tray's supervised updater.
+
 ## v0.2.23 release notes
 
 - **On Windows, a closed window no longer keeps a hidden renderer running.** Login startup and unattended restarts create no window or WebView2 renderer. Closing the window destroys it and releases WebView2, while the tray keeps running for sync and nightly updates. Tray Open, a left-click or launching Ratatoskr again creates a fresh window.
