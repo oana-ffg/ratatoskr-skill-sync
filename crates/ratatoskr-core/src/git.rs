@@ -249,10 +249,14 @@ pub(crate) fn publish_source_edit(
                 (installation, publication)
             }
             Err(error) => (
-                crate::SourceInstallation::NotInstalled {
+                if install {
+                    crate::SourceInstallation::NotInstalled {
                     error:
                         "Preparing the saved source commit failed; installation was not attempted"
                             .into(),
+                }
+                } else {
+                    crate::SourceInstallation::NotRequired
                 },
                 crate::SourcePublication::NotPublished {
                     error: format!("{error:#}"),

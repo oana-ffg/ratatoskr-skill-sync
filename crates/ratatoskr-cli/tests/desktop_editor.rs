@@ -721,6 +721,41 @@ fn source_conflict_copy_back_edit_and_backup_restore_are_published() {
 }
 
 #[test]
+fn undo_commit_failure_reports_no_installation_step() {
+    let f = Fixture::new();
+    core::apply(&f.settings).unwrap();
+    let installed = f.settings.state_dir.join("test/staging/codex/AGENTS.md");
+    fs::write(&installed, "Installed hand edit\n").unwrap();
+    let preview =
+        core::preview_resolution(&f.settings, &installed, core::ConflictAction::CopyBack).unwrap();
+    let backup = f
+        .edit(Edit::ResolveConflict {
+            expected: &serde_json::to_string(&preview).unwrap(),
+        })
+        .unwrap();
+    f.hook("pre-commit", "echo 'Commit hook refused' >&2\nexit 1");
+    let restored = core::desktop_source_edit(
+        &f.settings,
+        None,
+        Edit::RestoreBackup { directory: &backup },
+    )
+    .unwrap();
+    // Undo never installs, so a failed commit must not suggest installation recovery.
+    assert!(
+        matches!(
+            restored.outcome.installation,
+            core::SourceInstallation::NotRequired
+        ),
+        "{restored:?}"
+    );
+    let core::SourcePublication::NotPublished { error } = restored.outcome.publication else {
+        panic!("{restored:?}")
+    };
+    assert!(error.contains("Git commit failed"), "{error}");
+    assert_eq!(f.remote_file("global/AGENTS.md"), "Installed hand edit");
+}
+
+#[test]
 fn commit_and_push_hooks_observe_both_locks_held() {
     let f = Fixture::new();
     fn quote(path: &Path) -> String {
