@@ -221,16 +221,6 @@ impl MutationProgress {
     }
 }
 
-/// A mutation that ends in an up-to-date plan, which the snapshot reuses.
-fn mutate_with_plan(
-    progress: &MutationProgress,
-    action: impl FnOnce(&Settings) -> anyhow::Result<Plan>,
-) -> Reply<Snapshot> {
-    let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
-    let plan = action(&settings()?).map_err(|e| format!("{e:#}"))?;
-    progress.send("Refreshing…".into());
-    snapshot_with(Some(plan))
-}
 fn mutate(action: impl FnOnce(&Settings) -> anyhow::Result<()>) -> Reply<Snapshot> {
     mutate_with_progress(&MutationProgress::new(None), action)
 }
@@ -401,10 +391,12 @@ pub(crate) async fn sync_workspace(
     #[cfg(not(windows))]
     off_main_thread(move || {
         let progress = MutationProgress::new(Some(on_progress));
-        mutate_with_plan(&progress, |s| {
-            progress.send("Syncing…".into());
-            core::sync(s)
-        })
+        let _guard = MUTATION.lock().map_err(|e| e.to_string())?;
+        progress.send("Syncing…".into());
+        let plan = core::sync(&settings()?).map_err(|e| format!("{e:#}"))?;
+        progress.send("Refreshing…".into());
+        // The sync's own up-to-date plan saves a second render.
+        snapshot_with(Some(plan))
     })
     .await
 }
