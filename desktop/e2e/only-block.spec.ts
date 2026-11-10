@@ -130,7 +130,7 @@ test("the Conflict editor's toolbar is not pinned, so its Find panel cannot cove
   await page.goto("/");
   await page
     .getByRole("navigation")
-    .getByRole("button", { name: /Review changes/ })
+    .getByRole("button", { name: /Needs attention/ })
     .click();
   await page.getByRole("button", { name: "Edit source…" }).first().click();
   const dialog = page.getByRole("dialog");

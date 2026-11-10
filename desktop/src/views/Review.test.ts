@@ -12,7 +12,10 @@ import { fixture } from "../../tests/fixture";
 import { reviewSummary, type Snapshot } from "../api";
 beforeEach(() => clearMocks());
 const props = (workspace: Snapshot) => ({
-  workspace,
+  workspace: {
+    ...workspace,
+    schedule_installed: workspace.schedule_installed ?? false,
+  },
   onupdate: vi.fn(),
   onerror: vi.fn(),
   ondirty: vi.fn(),
@@ -44,15 +47,15 @@ test("attention badge groups eight files per skill and agent, and counts legacy 
   ).toHaveTextContent("/fixture-home/.agents/skills");
 });
 test.each([false, true])(
-  "ready count and Apply agree with conflicts and removals=%s",
+  "pending count and Apply agree with conflicts and removals=%s",
   (withRemoval) => {
     const workspace = structuredClone(fixture.workspace);
     if (withRemoval) workspace.plan.changes[0].action = "remove";
     const summary = reviewSummary(workspace);
-    expect(summary.readyCount).toBe(17);
+    expect(summary.pendingCount).toBe(17);
     render(Review, props(workspace));
-    expect(screen.getByText(/items needing attention ·/)).toHaveTextContent(
-      `${summary.readyCount} ready files`,
+    expect(screen.getByText(/items ·/)).toHaveTextContent(
+      `${summary.pendingCount} pending files`,
     );
     const button = screen.getByRole("button", {
       name: /in the staging folder/,
@@ -61,7 +64,7 @@ test.each([false, true])(
       Number(m[1]),
     );
     expect(counts.reduce((total, count) => total + count, 0)).toBe(
-      summary.readyCount,
+      summary.pendingCount,
     );
     expect(button).toHaveTextContent(
       withRemoval
@@ -288,3 +291,83 @@ test("a changed former target stays open for review and reports the failure", as
   expect(p.onupdate).not.toHaveBeenCalled();
   expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
+
+const readyWorkspace = () => {
+  const workspace = structuredClone(fixture.workspace);
+  workspace.plan.conflicts = [];
+  workspace.plan.conflict_details = [];
+  workspace.plan.stale_targets = [];
+  workspace.legacy = [];
+  return workspace;
+};
+test.each([true, false])(
+  "macOS schedule active=%s controls reviewed Apply",
+  (active) => {
+    const workspace = { ...readyWorkspace(), schedule_installed: active };
+    render(Review, props(workspace));
+    expect(
+      screen.getByRole("heading", { name: /Needs attention/ }),
+    ).toBeVisible();
+    if (active) {
+      expect(
+        screen.queryByRole("button", { name: /Write .*files/ }),
+      ).toBeNull();
+      expect(
+        screen.getByText(/Pending changes install automatically/),
+      ).toBeVisible();
+    } else
+      expect(
+        screen.getByRole("button", { name: /Write .*files/ }),
+      ).toBeEnabled();
+  },
+);
+test.each([false, true])(
+  "Windows paused=%s controls reviewed Apply",
+  async (paused) => {
+    const workspace = readyWorkspace();
+    delete workspace.schedule_installed;
+    const p = { ...props(workspace), workspace };
+    mockIPC((cmd) => {
+      if (cmd === "background_status") return { paused, migration_error: null };
+      throw new Error(`Unexpected command ${cmd}`);
+    });
+    render(Review, p);
+    if (paused)
+      expect(
+        await screen.findByRole("button", { name: /Write .*files/ }),
+      ).toBeEnabled();
+    else {
+      expect(
+        await screen.findByText(/Pending changes install automatically/),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: /Write .*files/ }),
+      ).toBeNull();
+    }
+  },
+);
+test.each([true, false])(
+  "plan-changed reply refreshes without a global error, installed=%s",
+  async (installed) => {
+    const workspace = readyWorkspace();
+    const fresh = structuredClone(workspace);
+    if (installed) fresh.plan.changes = [];
+    mockIPC((cmd) => {
+      if (cmd === "apply_workspace")
+        return { status: "plan_changed", workspace: fresh };
+      throw new Error(`Unexpected command ${cmd}`);
+    });
+    const p = props(workspace);
+    render(Review, p);
+    await fireEvent.click(
+      screen.getByRole("button", { name: /Write .*files/ }),
+    );
+    await waitFor(() => expect(p.onupdate).toHaveBeenCalledWith(fresh));
+    expect(p.onerror).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      installed
+        ? "Already installed by background sync"
+        : "The plan changed. Review",
+    );
+  },
+);

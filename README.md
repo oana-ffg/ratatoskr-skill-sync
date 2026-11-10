@@ -62,7 +62,7 @@ Each agent on each machine then gets its own rendered copy: the right Python pat
 <table>
   <tr>
     <td width="50%"><img src="docs/screenshots/only-for-picker-dark.png" alt="The Only for picker choosing which agents, systems and machines a section applies to"></td>
-    <td width="50%"><img src="docs/screenshots/review-changes-overview-dark.png" alt="Review changes with a side-by-side, word-level diff and a decision about an older Codex copy"></td>
+    <td width="50%"><img src="docs/screenshots/review-changes-overview-dark.png" alt="Needs attention with a side-by-side, word-level diff and a decision about an older Codex copy"></td>
   </tr>
   <tr>
     <td><strong>Mark what differs, without template syntax.</strong> Pick the agents, systems and machines a section applies to.</td>

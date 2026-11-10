@@ -163,7 +163,44 @@ export interface StalePreview {
   archives: string[];
   revision: string;
 }
+export interface SourceEditOutcome {
+  installation:
+    { status: "installed" } | { status: "not_installed"; error: string };
+  publication:
+    | { status: "published" | "not_required" }
+    | { status: "not_published"; error: string };
+}
+export interface SavedPath {
+  path: string;
+  workspace: Snapshot;
+}
+export type ApplyReply = {
+  status: "applied" | "plan_changed";
+  workspace: Snapshot;
+};
+
+export function sourceEditNotice(outcome: SourceEditOutcome) {
+  const installed = outcome.installation.status === "installed";
+  const published = outcome.publication.status === "published";
+  const problems = [
+    outcome.installation.status === "not_installed"
+      ? `Not installed here: ${outcome.installation.error}. Check Needs attention.`
+      : "",
+    outcome.publication.status === "not_published"
+      ? `NOT published: ${outcome.publication.error}`
+      : "",
+  ].filter(Boolean);
+  return {
+    partial: problems.length > 0,
+    text: [
+      `Source saved. ${installed ? "Installed on this machine" : "Not fully installed on this machine"}${published ? " and published to the other machines" : outcome.publication.status === "not_required" ? "; no publication required" : "; not published to other machines"}.`,
+      ...problems,
+    ].join(" "),
+  };
+}
+
 export interface Snapshot {
+  source_edit?: SourceEditOutcome;
   plan: Plan;
   skills: Skill[];
   skills_error: string | null;
@@ -358,7 +395,7 @@ const within = (path: string, root: string) =>
 /** Group by actual rendered destination, including custom roots and project scope. */
 export function reviewSummary(workspace: Snapshot) {
   const { plan, legacy } = workspace;
-  const readyChanges = plan.changes.filter(
+  const pendingChanges = plan.changes.filter(
     (change) => !plan.conflict_details.some((c) => within(change.path, c.path)),
   );
   const groups = new Map<string, ReviewGroup>();
@@ -395,7 +432,7 @@ export function reviewSummary(workspace: Snapshot) {
     }
     return value;
   }
-  for (const change of readyChanges) group(change.path).changes.push(change);
+  for (const change of pendingChanges) group(change.path).changes.push(change);
   for (const conflict of plan.conflict_details)
     group(conflict.path).conflicts.push(conflict);
   const errors = plan.conflicts.filter(
@@ -410,10 +447,10 @@ export function reviewSummary(workspace: Snapshot) {
     errors.length +
     legacy.length +
     plan.stale_targets.length;
-  const writes = readyChanges.filter((c) => c.action !== "remove").length;
-  const removes = readyChanges.length - writes;
+  const writes = pendingChanges.filter((c) => c.action !== "remove").length;
+  const removes = pendingChanges.length - writes;
   return {
-    readyCount: readyChanges.length,
+    pendingCount: pendingChanges.length,
     applyAction: applyAction(plan.mode, writes, removes),
     groups: items,
     errors,

@@ -5,7 +5,7 @@ import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import { fixture, fixtureIPC } from "../tests/fixture";
 import App from "./App.svelte";
 import { emit } from "@tauri-apps/api/event";
-import type { Snapshot } from "./api";
+import type { Snapshot, ApplyReply } from "./api";
 const native = vi.hoisted(() => ({
   close: new Set<(event: { preventDefault: () => void }) => void>(),
   visible: true,
@@ -54,6 +54,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 let reads: Mock<() => Snapshot | Promise<Snapshot>>;
 let current: Snapshot;
+let applyReply: ApplyReply | undefined;
 beforeEach(() => {
   vi.stubGlobal(
     "ResizeObserver",
@@ -75,11 +76,13 @@ beforeEach(() => {
   native.stopFocus.mockClear();
   native.stopResize.mockClear();
   native.stopShown.mockClear();
+  applyReply = undefined;
   current = structuredClone(fixture.workspace);
   reads = vi.fn<() => Snapshot | Promise<Snapshot>>(() => current);
   mockIPC(
     (cmd, args) => {
       if (cmd === "read_workspace") return reads();
+      if (cmd === "apply_workspace" && applyReply) return applyReply;
       if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
       return fixtureIPC(cmd, args as Record<string, unknown>);
     },
@@ -106,7 +109,9 @@ async function focus() {
 }
 test("native focus and explicit tray show refresh header, review and counts without navigating", async () => {
   await start();
-  await fireEvent.click(screen.getByRole("button", { name: /Review changes/ }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Needs attention/ }),
+  );
   current = {
     ...current,
     plan: {
@@ -125,7 +130,7 @@ test("native focus and explicit tray show refresh header, review and counts with
   await focus();
   expect(await screen.findByText("Live")).toBeVisible();
   expect(
-    screen.getByRole("heading", { name: /^Review changes/ }),
+    screen.getByRole("heading", { name: /^Needs attention/ }),
   ).toBeVisible();
   expect(
     screen.queryByRole("region", { name: "Older Codex copies" }),
@@ -333,4 +338,27 @@ test("dirty close keeps editing, then explicit discard destroys the window", asy
     screen.getByRole("button", { name: "Discard and continue" }),
   );
   await waitFor(() => expect(native.destroy).toHaveBeenCalledOnce());
+});
+
+test("plan-changed refresh preserves an unrelated save error", async () => {
+  current.schedule_installed = false;
+  current.plan.conflicts = [];
+  current.plan.conflict_details = [];
+  current.legacy = [];
+  const fresh = structuredClone(current);
+  fresh.plan.changes = [];
+  applyReply = { status: "plan_changed", workspace: fresh };
+  await start();
+  await emit("app-error", "A previous save failed: source changed");
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Needs attention/ }),
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", { name: /Write .*files/ }),
+  );
+  expect(
+    await screen.findByText("Already installed by background sync."),
+  ).toBeVisible();
+  expect(screen.getByRole("alert")).toHaveTextContent("A previous save failed");
+  expect(screen.queryByText(/Workspace changed since preview/)).toBeNull();
 });

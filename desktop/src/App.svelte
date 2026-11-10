@@ -9,6 +9,8 @@
     errorText,
     relativeTime,
     reviewSummary,
+    sourceEditNotice,
+    type SourceEditOutcome,
     type Snapshot,
     type ContentStatus,
     type Skill,
@@ -33,7 +35,7 @@
   type Screen =
     | "Skills"
     | "Global instructions"
-    | "Review changes"
+    | "Needs attention"
     | "Projects"
     | "Agents & machines"
     | "Activity"
@@ -65,6 +67,8 @@
     return () => clearInterval(timer);
   });
   let error = $state("");
+  let sourceEdit = $state<SourceEditOutcome | null>(null);
+  const saveNotice = $derived(sourceEdit ? sourceEditNotice(sourceEdit) : null);
   setContext("ratatoskr-errors", { message: () => error });
   let pending = $state<(() => void) | null>(null);
   let closeAfterDiscard = $state(false);
@@ -80,7 +84,7 @@
   const items: { name: Screen; icon: string }[] = [
     { name: "Skills", icon: "◇" },
     { name: "Global instructions", icon: "¶" },
-    { name: "Review changes", icon: "⇄" },
+    { name: "Needs attention", icon: "⇄" },
     { name: "Projects", icon: "▱" },
     { name: "Agents & machines", icon: "◈" },
     { name: "Activity", icon: "↗" },
@@ -88,8 +92,8 @@
   ];
   function fail(e: unknown) {
     error = errorText(e);
-    // Failed publication can leave a real local commit while the editor remains
-    // dirty. Refresh only Git state; never replace or discard that draft.
+    // Failed commands can leave Git work behind. Refresh only Git status;
+    // never discard a draft when the write itself failed.
     if (workspace) {
       const source = workspace.plan.source;
       void api
@@ -108,6 +112,8 @@
     error = "";
     try {
       const next = await api.command<Snapshot>("push_content");
+      if (sourceEdit?.publication.status === "not_published")
+        sourceEdit = { ...sourceEdit, publication: { status: "published" } };
       if (dirty || unsaved) {
         if (workspace) workspace.plan.content_status = next.plan.content_status;
       } else update(next);
@@ -130,6 +136,7 @@
   function update(w: Snapshot | null, asOf = Date.now()) {
     revision++;
     workspace = w;
+    if (w?.source_edit) sourceEdit = w.source_edit;
     snapshotAt = asOf;
     refreshError = "";
     deferred = false;
@@ -344,7 +351,7 @@
           ><span class="nav-icon">{item.icon}</span
           >{item.name}{#if item.name === "Skills" && workspace && !workspace.skills_error}<span
               class="nav-count">{workspace.skills.length}</span
-            >{:else if item.name === "Review changes" && workspace && reviewSummary(workspace).total}<span
+            >{:else if item.name === "Needs attention" && workspace && reviewSummary(workspace).total}<span
               class="nav-count review-count"
               >{reviewSummary(workspace).total}</span
             >{/if}</button
@@ -459,6 +466,16 @@
           onclick={() => void refresh()}>Retry refresh</button
         >
       </div>{/if}
+    {#if saveNotice}<div
+        class={saveNotice.partial ? "global-error" : "success-message"}
+        role={saveNotice.partial ? "alert" : "status"}
+      >
+        <p>{saveNotice.text}</p>
+        <button
+          aria-label="Dismiss save status"
+          onclick={() => (sourceEdit = null)}>Dismiss</button
+        >
+      </div>{/if}
     {#if error}<div class="global-error" role="alert">
         <div>
           <strong>Something needs attention</strong>
@@ -560,7 +577,7 @@
               ondirty={(v) => (dirty = v)}
             />{:catch e}<p role="alert" class="error-message">
               Global instructions failed to load: {errorText(e)}
-            </p>{/await}{:else if screen === "Review changes"}<Review
+            </p>{/await}{:else if screen === "Needs attention"}<Review
             {workspace}
             onupdate={update}
             onerror={fail}

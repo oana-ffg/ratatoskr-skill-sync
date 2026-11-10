@@ -219,55 +219,87 @@ fn git_paths(root: &Path, args: &[&str], paths: &[PathBuf]) -> Result<Vec<u8>> {
     git_command(root, args, Some(paths))
 }
 
-pub(crate) fn publish_source_edit<T>(
+pub(crate) fn publish_source_edit(
     settings: &Settings,
     scopes: &[PathBuf],
     message: &str,
     progress: &dyn Fn(SourceEditStage),
-    write: impl FnOnce() -> Result<T>,
-) -> Result<T> {
+    write: impl FnOnce() -> Result<Option<PathBuf>>,
+) -> Result<crate::SourceEditResult> {
     let remote = prepare_source_edit(settings, progress)?;
     progress(SourceEditStage::Writing);
     let before = source_fingerprints(scopes)?;
     let result = write()?;
-    let after = source_fingerprints(scopes)
-        .context("Source saved but inspecting changed paths failed; NOT committed or pushed")?;
-    let paths: std::collections::BTreeSet<_> = before
-        .keys()
-        .chain(after.keys())
-        .filter(|p| before.get(*p) != after.get(*p))
-        .cloned()
-        .collect();
-    let paths: Vec<_> = paths
-        .iter()
-        .map(|p| p.strip_prefix(&settings.source).map(Path::to_path_buf))
-        .collect::<std::result::Result<_, _>>()?;
-    if !paths.is_empty() {
-        let commit: Result<()> = (|| {
-            git_paths(&settings.source, &["add", "-A"], &paths)?;
-            // --only excludes even unrelated entries already in the user's index.
-            // A save that returns a file to HEAD needs no empty commit.
-            if !git_paths(
-                &settings.source,
-                &["diff", "--cached", "--name-only"],
-                &paths,
-            )?
-            .is_empty()
-            {
-                progress(SourceEditStage::Committing);
-                git_paths(
+    let commit: Result<()> = (|| {
+        let after = source_fingerprints(scopes)
+            .context("Source saved but inspecting changed paths failed; NOT committed or pushed")?;
+        let paths: std::collections::BTreeSet<_> = before
+            .keys()
+            .chain(after.keys())
+            .filter(|p| before.get(*p) != after.get(*p))
+            .cloned()
+            .collect();
+        let paths: Vec<_> = paths
+            .iter()
+            .map(|p| p.strip_prefix(&settings.source).map(Path::to_path_buf))
+            .collect::<std::result::Result<_, _>>()?;
+        if !paths.is_empty() {
+            let commit: Result<()> = (|| {
+                git_paths(&settings.source, &["add", "-A"], &paths)?;
+                // --only excludes even unrelated entries already in the user's index.
+                // A save that returns a file to HEAD needs no empty commit.
+                if !git_paths(
                     &settings.source,
-                    &["commit", "--only", "-m", message],
+                    &["diff", "--cached", "--name-only"],
                     &paths,
-                )?;
-            }
-            Ok(())
-        })();
-        commit.context("Source saved in place but Git commit failed; NOT pushed")?;
-    }
-    push_to_upstream(settings, &remote, progress)
-        .context("saved and committed locally but NOT pushed")?;
-    Ok(result)
+                )?
+                .is_empty()
+                {
+                    progress(SourceEditStage::Committing);
+                    git_paths(
+                        &settings.source,
+                        &["commit", "--only", "-m", message],
+                        &paths,
+                    )?;
+                }
+                Ok(())
+            })();
+            commit.context("Source saved in place but Git commit failed; NOT pushed")?;
+        }
+        Ok(())
+    })();
+    let (installation, publication) = match commit {
+        Ok(()) => {
+            // This result must never short-circuit publication: another machine
+            // may be able to install even when this machine is blocked.
+            let installation = crate::desktop_source::install_source_edit(settings, progress);
+            let publication = match push_to_upstream(settings, &remote, progress) {
+                Ok(()) => crate::SourcePublication::Published,
+                Err(error) => crate::SourcePublication::NotPublished {
+                    error: format!(
+                        "saved and committed locally but NOT pushed; use Push now: {error:#}"
+                    ),
+                },
+            };
+            (installation, publication)
+        }
+        Err(error) => (
+            crate::SourceInstallation::NotInstalled {
+                error: "Preparing the saved source commit failed; installation was not attempted"
+                    .into(),
+            },
+            crate::SourcePublication::NotPublished {
+                error: format!("{error:#}"),
+            },
+        ),
+    };
+    Ok(crate::SourceEditResult {
+        path: result,
+        outcome: crate::SourceEditOutcome {
+            installation,
+            publication,
+        },
+    })
 }
 
 fn push_to_upstream(

@@ -52,8 +52,8 @@ job). `npm run build:native-e2e` builds a debug app with the `e2e-webdriver`
 feature, which embeds a W3C WebDriver server bound to `127.0.0.1`. The feature
 refuses to compile into release builds. `npm run test:native` creates a
 disposable workspace with the real CLI and a local bare remote. It creates, edits
-and saves a skill in the app, checks the push reached the remote, and applies it
-from Review changes. On Windows it then starts the tray app with `--background`
+and saves a skill in the app, checks that Save installed it directly, and checks
+the push reached the remote. On Windows it then starts the tray app with `--background`
 and waits for a skill published from another checkout to sync. The journeys
 only run with `RATATOSKR_NATIVE_E2E=1`, because the app shares its
 single-instance record and app data with any installed copy. Do not set it on a

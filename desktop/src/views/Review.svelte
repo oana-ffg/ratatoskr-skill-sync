@@ -1,6 +1,11 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { watchWindow } from "../window-refresh";
   import {
     api,
+    type BackgroundStatus,
+    type ApplyReply,
+    type SavedPath,
     agentName,
     basename,
     type Snapshot,
@@ -26,6 +31,27 @@
     ondirty: (v: boolean) => void;
   } = $props();
   const summary = $derived(reviewSummary(workspace));
+  let backgroundStatus = $state<BackgroundStatus | null>(null);
+  let backgroundLoaded = $state(false);
+  const backgroundSyncActive = $derived(
+    workspace.schedule_installed ??
+      (backgroundStatus !== null &&
+        !backgroundStatus.paused &&
+        !backgroundStatus.migration_error),
+  );
+  let applyNote = $state("");
+  onMount(() =>
+    watchWindow(() => {
+      if (workspace.schedule_installed !== undefined) return;
+      void api
+        .command<BackgroundStatus | null>("background_status")
+        .then((status) => {
+          backgroundStatus = status;
+          backgroundLoaded = true;
+        })
+        .catch(onerror);
+    }, onerror),
+  );
   const hasStaleTargets = $derived(workspace.plan.stale_targets.length > 0);
   let sourceConflict = $state<Conflict | null>(null);
   let resolution = $state<Resolution | null>(null);
@@ -97,12 +123,12 @@
     if (!resolution) return;
     busy = true;
     try {
-      backup = await api.command<string>("resolve_conflict", {
+      const saved = await api.command<SavedPath>("resolve_conflict", {
         expected: JSON.stringify(resolution),
       });
+      backup = saved.path;
       resolution = null;
-      const w = await api.workspace();
-      if (w) onupdate(w);
+      onupdate(saved.workspace);
     } catch (e) {
       onerror(e);
     } finally {
@@ -112,11 +138,17 @@
   async function apply() {
     busy = true;
     try {
-      onupdate(
-        await api.command<Snapshot>("apply_workspace", {
-          expectedPlan: JSON.stringify(workspace.plan),
-        }),
-      );
+      const reply = await api.command<ApplyReply>("apply_workspace", {
+        expectedPlan: JSON.stringify(workspace.plan),
+      });
+      onupdate(reply.workspace);
+      applyNote =
+        reply.status === "plan_changed"
+          ? !reply.workspace.plan.changes.length &&
+            !reply.workspace.plan.conflicts.length
+            ? "Already installed by background sync."
+            : "The plan changed. Review the updated changes and decisions below."
+          : "Changes installed on this machine.";
     } catch (e) {
       onerror(e);
     } finally {
@@ -150,42 +182,51 @@
 <section class="page">
   <div class="page-heading">
     <div>
-      <h1>Review changes <span class="count">{summary.total}</span></h1>
+      <h1>Needs attention <span class="count">{summary.total}</span></h1>
       <p class="muted">
         {summary.total}
-        {summary.total === 1 ? "item" : "items"} needing attention · {summary.readyCount}
-        ready files · {summary.decisions}
+        {summary.total === 1 ? "item" : "items"} · {summary.pendingCount}
+        pending files · {summary.decisions}
         {summary.decisions === 1 ? "decision" : "decisions"}
       </p>
     </div>
-    <button
-      class="primary"
-      disabled={busy ||
-        workspace.plan.conflicts.length > 0 ||
-        !workspace.plan.changes.length ||
-        workspace.legacy.length > 0 ||
-        hasStaleTargets}
-      onclick={apply}
-      aria-describedby="apply-destination">{summary.applyAction}</button
+    {#if !backgroundSyncActive && (backgroundLoaded || workspace.schedule_installed !== undefined)}<button
+        class="primary"
+        disabled={busy ||
+          workspace.plan.conflicts.length > 0 ||
+          !workspace.plan.changes.length ||
+          workspace.legacy.length > 0 ||
+          hasStaleTargets}
+        onclick={apply}
+        aria-describedby="apply-destination">{summary.applyAction}</button
+      >{/if}
+  </div>
+  {#if applyNote}<p role="status">{applyNote}</p>{/if}
+  {#if backgroundSyncActive && workspace.plan.changes.length}<p class="muted">
+      Pending changes install automatically on the next background sync. Resolve
+      any decisions below first.
+    </p>{/if}
+  {#if !backgroundSyncActive && (backgroundLoaded || workspace.schedule_installed !== undefined) && workspace.plan.changes.length}<div
+      id="apply-destination"
+      class="apply-destination"
     >
-  </div>
-  <div id="apply-destination" class="apply-destination">
-    {#if workspace.plan.mode === "staging"}
-      <p>
-        Apply writes only to the staging folder <code
-          >{workspace.plan.staging_root}</code
-        >. Your real agent folders are not touched.
-      </p>
-    {:else}
-      <p>Apply changes files in these real agent folders:</p>
-      <ul>
-        {#each workspace.plan.install_targets as target}<li>
-            {agentName(target.harness)}: <code>{target.skills_root}</code> and
-            <code>{target.instructions_file}</code>
-          </li>{/each}
-      </ul>
-    {/if}
-  </div>
+      {#if workspace.plan.mode === "staging"}
+        <p>
+          Apply writes only to the staging folder <code
+            >{workspace.plan.staging_root}</code
+          >. Your real agent folders are not touched.
+        </p>
+      {:else}
+        <p>Apply changes files in these real agent folders:</p>
+        <ul>
+          {#each workspace.plan.install_targets as target}<li>
+              {agentName(target.harness)}: <code>{target.skills_root}</code> and
+              <code>{target.instructions_file}</code>
+            </li>{/each}
+        </ul>
+      {/if}
+    </div>
+  {/if}
   {#if backup}<p role="status" class="success-message">
       Saved a recovery backup. <button
         onclick={async () => {

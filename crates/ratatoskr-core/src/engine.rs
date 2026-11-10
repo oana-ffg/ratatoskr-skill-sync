@@ -513,12 +513,34 @@ pub fn apply_reviewed(settings: &Settings, expected: &str) -> Result<Plan> {
     apply_inner(settings, Some(serde_json::from_str(expected)?))
 }
 
+/// A reviewed plan was overtaken by another operation. No writes were made.
+#[derive(Debug)]
+pub struct PlanChanged {
+    pub plan: Box<Plan>,
+}
+
+impl std::fmt::Display for PlanChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Workspace changed since preview. Review the new plan.")
+    }
+}
+impl std::error::Error for PlanChanged {}
+
 fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Result<Plan> {
+    settings.validate()?;
+    let _lock = crate::config::operation_lock(settings, "apply.lock")?;
+    apply_locked(settings, expected)
+}
+
+/// Caller holds apply.lock (and, for Save, sync.lock before it).
+pub(crate) fn apply_locked(
+    settings: &Settings,
+    expected: Option<serde_json::Value>,
+) -> Result<Plan> {
     settings.validate()?;
     no_symlinks(&settings.state_dir)?;
     let state = settings.state_dir.join(&settings.machine);
     fs::create_dir_all(&state)?;
-    let lock = crate::config::operation_lock(settings, "apply.lock")?;
     let desired = desired(settings)?;
     let old = manifest(settings)?;
     let preflight = preflight(settings, &desired, &old)?;
@@ -526,11 +548,13 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
     // checkout changes between the two calls.
     let applied = AppliedChanges::from_changes(&preflight.changes);
     let nothing_to_write = preflight.changes.is_empty();
-    if let Some(expected) = expected {
-        ensure!(
-            serde_json::to_value(&preflight)? == expected,
-            "Workspace changed since preview. Refresh and review the new plan."
-        );
+    if let Some(expected) = expected
+        && serde_json::to_value(&preflight)? != expected
+    {
+        return Err(PlanChanged {
+            plan: Box::new(preflight),
+        }
+        .into());
     }
     ensure!(
         preflight.conflicts.is_empty(),
@@ -593,7 +617,6 @@ fn apply_inner(settings: &Settings, expected: Option<serde_json::Value>) -> Resu
         return Ok(report);
     }
     atomic_write(&path, &serialized)?;
-    drop(lock);
     let mut report = plan(settings)?;
     report.applied = Some(applied);
     Ok(report)
