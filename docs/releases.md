@@ -48,6 +48,7 @@ configured destination. Neither is installed by this change.
 
 - **The find panel now stays on screen while you scroll.** In the skill and instructions editors it stays pinned under the formatting toolbar.
 - **Find now shows how many matches there are,** as a browser does. The count reads, for example, **12 matches** while you type, then **3 of 12** once Enter, Next or Previous selects a match. It says **No matches** or **Invalid regexp** when there is nothing to find.
+- **Pasting into Find with the right-click menu now searches right away.** Before, the search waited until you pressed a key or left the field.
 - Macs on v0.2.24 receive this update through the launchd helper, with automatic updates and Background sync enabled. Windows on v0.2.24 receives it through the running tray's supervised updater.
 
 ## v0.2.24 release notes
