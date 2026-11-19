@@ -137,13 +137,17 @@ class FindPanel implements Panel {
   }
 }
 
+// Overlapping matches count too: searching backwards selects them ("aa" at 1 in "aaa"), though a
+// single forward cursor would skip them.
 function findMatches(state: EditorState, query: SearchQuery): Match[] {
   if (!query.valid) return [];
   const matches: Match[] = [];
-  const cursor = query.getCursor(state);
-  for (let next = cursor.next(); !next.done; next = cursor.next())
+  for (let from = 0; ;) {
+    const next = query.getCursor(state, from).next();
+    if (next.done) return matches;
     matches.push({ from: next.value.from, to: next.value.to });
-  return matches;
+    from = next.value.from + 1;
+  }
 }
 
 /** "3 of 12" once a match is selected, like a browser; until then only how many there are. */

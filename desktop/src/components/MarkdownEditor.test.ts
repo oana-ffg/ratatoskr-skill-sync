@@ -10,6 +10,13 @@ import {
   transposeChars,
   undo,
 } from "@codemirror/commands";
+import {
+  SearchQuery,
+  findNext,
+  findPrevious,
+  openSearchPanel,
+  setSearchQuery,
+} from "@codemirror/search";
 import MarkdownEditor from "./MarkdownEditor.svelte";
 import { fixture, oracle } from "../../tests/fixture";
 import { sourceField } from "../editor/source";
@@ -349,4 +356,31 @@ test("copying lines refuses one marker of a box without the other", async () => 
     `Before.\n${OPEN}\nFirst.\n${CLOSE}\nAfter.\n`.repeat(2),
   );
   unmount();
+});
+
+test("the find count follows every match the search selects, overlapping ones included", async () => {
+  const markdown = "aaa\n";
+  const { container } = render(MarkdownEditor, {
+    label: "Skill Markdown editor",
+    value: markdown,
+    analysis: oracle("analyze_skill", { markdown }) as Analysis,
+    frontmatter: null,
+    onchange: vi.fn(),
+    onselection: vi.fn(),
+    onblock: vi.fn(),
+  });
+  const view = EditorView.findFromDOM(
+    container.querySelector(".cm-editor") as HTMLElement,
+  )!;
+  openSearchPanel(view);
+  view.dispatch({
+    effects: setSearchQuery.of(new SearchQuery({ search: "aa" })),
+  });
+  const count = () => container.querySelector(".find-count")?.textContent;
+  expect(count()).toBe("2 matches");
+  findNext(view);
+  expect(count()).toBe("1 of 2");
+  findPrevious(view);
+  expect(view.state.selection.main).toMatchObject({ from: 1, to: 3 });
+  expect(count()).toBe("2 of 2");
 });
