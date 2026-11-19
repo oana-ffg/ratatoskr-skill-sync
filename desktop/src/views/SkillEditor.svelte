@@ -579,12 +579,6 @@
         />
       </div>
       <div class="editor-frame">
-        <TemplateToolbar
-          {editor}
-          bind:raw
-          ononly={() => openOnly()}
-          onvalue={() => (picker = "value")}
-        />
         <MarkdownEditor
           bind:this={editor}
           label="Skill Markdown editor"
@@ -596,7 +590,16 @@
           onselection={(range) =>
             (selected = { from: range.from, to: range.to })}
           {onblock}
-        />
+        >
+          {#snippet toolbar()}
+            <TemplateToolbar
+              {editor}
+              bind:raw
+              ononly={() => openOnly()}
+              onvalue={() => (picker = "value")}
+            />
+          {/snippet}
+        </MarkdownEditor>
       </div>
       {#if previewError}<p role="alert" class="error-message">
           {previewError}

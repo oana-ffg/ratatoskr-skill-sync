@@ -61,7 +61,7 @@
 .editor-frame {
   border: 1px solid var(--border);
   border-radius: 10px;
-  /* Clips the rounded corners like hidden, but lets the toolbar stick to the page's scroller. */
+  /* Clips the rounded corners like hidden, but lets the header stick to the page's scroller. */
   overflow: clip;
   background: var(--surface);
 }
@@ -74,8 +74,8 @@
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
 }
-/* TemplateToolbar publishes its height for the editor below; only that one can stay pinned. */
-.editor-frame > .format-toolbar {
+/* MarkdownEditor's toolbar and find panel, pinned together while the page scrolls. */
+.editor-header {
   position: sticky;
   top: 0;
   z-index: 4;
@@ -109,9 +109,6 @@
   outline: 0 !important;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
-.cm-editor .cm-panels-top {
-  top: var(--format-toolbar-height, 0) !important;
-}
 .cm-scroller {
   line-height: 1.85 !important;
   font-family: inherit !important;
@@ -131,6 +128,8 @@
   opacity: 0.7;
 }
 .cm-panels {
+  /* The header already pins it; CodeMirror's own sticky would nest a second one inside. */
+  position: static !important;
   background: var(--surface) !important;
   color: var(--text) !important;
   border-color: var(--border) !important;
@@ -161,6 +160,23 @@
 }
 .cm-search .cm-textfield {
   width: 220px;
+}
+/* The match count sits inside the find field's right edge, like a browser's. */
+.cm-search .find-field {
+  position: relative;
+  display: inline-block;
+}
+.cm-search .find-field .cm-textfield {
+  padding-right: 80px;
+}
+.cm-search .find-count {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
 }
 .cm-search label {
   display: inline-flex;

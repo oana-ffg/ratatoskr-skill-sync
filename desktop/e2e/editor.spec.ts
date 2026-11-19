@@ -321,7 +321,9 @@ test("archive waits for queued edits and keeps its result when dismissed mid-req
   ).toBeVisible();
 });
 
-test("the Find button and shortcut search the skill body", async ({ page }) => {
+test("the Find button and shortcut search the skill body and count the matches", async ({
+  page,
+}) => {
   const backend = editorFixture();
   await installFixture(page, backend.invoke);
   await openEditor(page);
@@ -337,6 +339,13 @@ test("the Find button and shortcut search the skill body", async ({ page }) => {
   const word = (await editor.innerText()).match(/[A-Za-z]{6,}/)![0];
   await field.pressSequentially(word);
   await expect(page.locator(".cm-searchMatch").first()).toBeVisible();
+  const count = page.locator(".find-count");
+  await expect(count).toHaveText(/^\d+ match(es)?$/);
+  const total = parseInt(await count.innerText());
+  await page.keyboard.press("Enter");
+  await expect(count).toHaveText(new RegExp(`^\\d+ of ${total}$`));
+  await field.fill(`${word}zzz`);
+  await expect(count).toHaveText("No matches");
 });
 
 test("typing a sentence over a slow backend keeps backend work bounded", async ({

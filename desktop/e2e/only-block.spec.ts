@@ -100,15 +100,18 @@ test.describe("the toolbar stays reachable", () => {
     expect(cursor.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height);
   });
 
-  test("the search panel sits below the toolbar instead of under it", async ({
+  test("the search panel stays pinned below the toolbar while the page scrolls", async ({
     page,
   }) => {
     await open(page);
-    await page.locator(".main-content").evaluate((e) => (e.scrollTop = 1800));
+    const scroller = page.locator(".main-content");
+    await scroller.evaluate((e) => (e.scrollTop = 1800));
     await page.getByRole("button", { name: "Find" }).click();
     const toolbar = (await page.locator(".format-toolbar").boundingBox())!;
     const panel = (await page.locator(".cm-panels-top").boundingBox())!;
     expect(panel.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height - 1);
+    await scroller.evaluate((e) => (e.scrollTop += 600));
+    expect(await page.locator(".cm-panels-top").boundingBox()).toEqual(panel);
   });
 });
 

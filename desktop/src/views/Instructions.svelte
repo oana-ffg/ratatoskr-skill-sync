@@ -221,12 +221,6 @@
           Needs attention lets you resolve it before installation can finish.
         </p>{/if}
       <div class="editor-frame">
-        <TemplateToolbar
-          {editor}
-          bind:raw
-          ononly={() => openOnly()}
-          onvalue={() => (picker = "value")}
-        />
         <MarkdownEditor
           bind:this={editor}
           label="Global instructions editor"
@@ -242,7 +236,16 @@
               void edit({ kind: "remove-only", from: b.opening.from });
             else openOnly(b);
           }}
-        />
+        >
+          {#snippet toolbar()}
+            <TemplateToolbar
+              {editor}
+              bind:raw
+              ononly={() => openOnly()}
+              onvalue={() => (picker = "value")}
+            />
+          {/snippet}
+        </MarkdownEditor>
       </div>
       {#if previewError}<p role="alert" class="error-message">
           {previewError}
