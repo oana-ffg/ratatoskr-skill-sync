@@ -44,6 +44,13 @@ sync becomes stale. The local watchdog must distinguish an intentional **Quit**
 or disabled login startup from a crash; an external monitor needs an explicitly
 configured destination. Neither is installed by this change.
 
+## v0.2.26 release notes
+
+- **New Antigravity agent preset.** Google Antigravity installs skills to `~/.gemini/config/skills` and global instructions to `~/.gemini/config/AGENTS.md`. See [agent presets](agent-presets.md) for its overlap with Gemini CLI and hosts that pass `--gemini-dir`.
+- **Choose which agents write project skills.** A machine profile's optional `project_harnesses` lists the agents that render registered project skills; it defaults to all enabled `harnesses`. Agents that read the same project folder, such as Codex and Antigravity with `.agents/skills`, can now both be enabled: list one of them. Previously that combination failed every live sync with "Harness output roots overlap". The desktop's Agents & machines form edits the subset, and project-skill previews only offer agents that write project skills.
+- Removing an agent from `project_harnesses` leaves its installed project copies as a former-target decision, the same as removing it from `harnesses`. Nothing is deleted silently.
+- Macs on v0.2.25 receive this update through the launchd helper, with automatic updates and Background sync enabled. Windows on v0.2.25 receives it through the running tray's supervised updater.
+
 ## v0.2.25 release notes
 
 - **The find panel now stays on screen while you scroll.** In the skill and instructions editors it stays pinned under the formatting toolbar.
