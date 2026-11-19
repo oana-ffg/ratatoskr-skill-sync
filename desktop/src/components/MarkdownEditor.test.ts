@@ -358,8 +358,7 @@ test("copying lines refuses one marker of a box without the other", async () => 
   unmount();
 });
 
-test("the find count follows every match the search selects, overlapping ones included", async () => {
-  const markdown = "aaa\n";
+function findIn(markdown: string) {
   const { container } = render(MarkdownEditor, {
     label: "Skill Markdown editor",
     value: markdown,
@@ -373,14 +372,34 @@ test("the find count follows every match the search selects, overlapping ones in
     container.querySelector(".cm-editor") as HTMLElement,
   )!;
   openSearchPanel(view);
-  view.dispatch({
-    effects: setSearchQuery.of(new SearchQuery({ search: "aa" })),
-  });
-  const count = () => container.querySelector(".find-count")?.textContent;
+  return {
+    view,
+    search: (spec: ConstructorParameters<typeof SearchQuery>[0]) =>
+      view.dispatch({ effects: setSearchQuery.of(new SearchQuery(spec)) }),
+    count: () => container.querySelector(".find-count")?.textContent,
+  };
+}
+
+test("the find count follows every text match the search selects, overlapping ones included", () => {
+  const { view, search, count } = findIn("aaa\n");
+  search({ search: "aa" });
   expect(count()).toBe("2 matches");
   findNext(view);
   expect(count()).toBe("1 of 2");
   findPrevious(view);
   expect(view.state.selection.main).toMatchObject({ from: 1, to: 3 });
   expect(count()).toBe("2 of 2");
+});
+
+test("regexp counts keep the matches' context and survive empty matches at the end", () => {
+  const { view, search, count } = findIn("word\n");
+  search({ search: "\\b[^ ]+", regexp: true });
+  expect(count()).toBe("1 match");
+  search({ search: "[^ ]+", regexp: true, wholeWord: true });
+  expect(count()).toBe("1 match");
+  findNext(view);
+  findNext(view);
+  expect(count()).toBe("1 of 1");
+  search({ search: "$", regexp: true });
+  expect(count()).toBe("2 matches");
 });

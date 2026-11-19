@@ -1,4 +1,5 @@
 import {
+  SearchCursor,
   SearchQuery,
   closeSearchPanel,
   findNext,
@@ -137,17 +138,19 @@ class FindPanel implements Panel {
   }
 }
 
-// Overlapping matches count too: searching backwards selects them ("aa" at 1 in "aaa"), though a
-// single forward cursor would skip them.
+// Counts exactly what Next and Previous can select: text searches include overlapping matches ("aa"
+// at 1 in "aaa"), regexp searches do not. One pass over the document either way.
 function findMatches(state: EditorState, query: SearchQuery): Match[] {
   if (!query.valid) return [];
+  const cursor = query.getCursor(state);
+  const step =
+    cursor instanceof SearchCursor
+      ? () => cursor.nextOverlapping()
+      : () => cursor.next();
   const matches: Match[] = [];
-  for (let from = 0; ;) {
-    const next = query.getCursor(state, from).next();
-    if (next.done) return matches;
+  for (let next = step(); !next.done; next = step())
     matches.push({ from: next.value.from, to: next.value.to });
-    from = next.value.from + 1;
-  }
+  return matches;
 }
 
 /** "3 of 12" once a match is selected, like a browser; until then only how many there are. */
