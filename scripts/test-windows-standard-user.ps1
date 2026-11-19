@@ -32,10 +32,16 @@ try {
     & icacls.exe $root /grant "*${sid}:(OI)(CI)M"
     if ($LASTEXITCODE -ne 0) { throw "Grant fixture permissions failed: $LASTEXITCODE" }
     Copy-Item (Join-Path $PSScriptRoot '../target/debug/ratatoskr.exe') (Join-Path $root 'ratatoskr.exe')
-    $tests = @(Get-ChildItem (Join-Path $PSScriptRoot '../target/debug/deps/windows_schedule-*.exe'))
-    if ($tests.Count -eq 0) { throw "Windows migration test executable missing" }
-    $tests = @($tests | Sort-Object LastWriteTimeUtc -Descending)
-    Copy-Item $tests[0].FullName (Join-Path $root 'windows_schedule.exe')
+    # Cargo decides where test executables live (Rust 1.100 moved them out of target/debug/deps),
+    # so ask it for the one the earlier cargo test step built instead of globbing a layout.
+    $test = cargo test --locked --quiet --manifest-path (Join-Path $PSScriptRoot '../Cargo.toml') `
+        -p ratatoskr-skill-sync --test windows_schedule --no-run --message-format=json |
+        ForEach-Object { $_ | ConvertFrom-Json } |
+        Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'windows_schedule' -and $_.executable } |
+        Select-Object -ExpandProperty executable -Last 1
+    if ($LASTEXITCODE -ne 0) { throw "Locating the Windows migration test failed: $LASTEXITCODE" }
+    if (-not $test) { throw 'Windows migration test executable missing' }
+    Copy-Item $test (Join-Path $root 'windows_schedule.exe')
     $child = Join-Path $root 'standard-user-check.ps1'
     Copy-Item (Join-Path $PSScriptRoot 'windows-standard-user-check.ps1') $child
     Start-Service seclogon
