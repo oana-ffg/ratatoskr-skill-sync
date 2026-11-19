@@ -230,3 +230,33 @@ fn global_instructions_save_validates_every_profile_and_previews_each_target() {
                 .contains("Notes live in /notes.")
     }));
 }
+
+#[test]
+fn antigravity_live_preset_installs_config_instructions_and_skills() {
+    let f = Fixture::new();
+    f.presets(&["antigravity"], "live");
+    apply(&f.settings).unwrap();
+    let root = f.root.join("home/.gemini/config");
+    assert_eq!(
+        fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        "Global instructions.\n"
+    );
+    assert!(root.join("skills/review-code/SKILL.md").is_file());
+    assert_eq!(
+        ratatoskr_core::preview_global_instructions_path(&f.settings, "test", "antigravity")
+            .unwrap(),
+        root.join("AGENTS.md")
+    );
+}
+
+#[test]
+fn antigravity_and_gemini_global_roots_overlap() {
+    let f = Fixture::new();
+    f.presets(&["gemini", "antigravity"], "live");
+    assert!(
+        plan(&f.settings)
+            .unwrap_err()
+            .to_string()
+            .contains("Harness output roots overlap")
+    );
+}

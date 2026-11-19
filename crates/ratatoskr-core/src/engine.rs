@@ -957,7 +957,48 @@ pub(crate) fn preview_files(
     Ok(files)
 }
 
-pub(crate) fn template_contexts(settings: &Settings) -> Result<Vec<(String, String, toml::Table)>> {
+/// Selects harnesses for a scope and validates project selection even for global renders.
+/// Keep this shared by deployment and editor targets so previews cannot offer excluded outputs.
+pub(crate) fn scope_harnesses<'a>(
+    machine: &str,
+    profile: &'a toml::Table,
+    project: bool,
+) -> Result<&'a [toml::Value]> {
+    let enabled = profile
+        .get("harnesses")
+        .and_then(|value| value.as_array())
+        .with_context(|| format!("Machine {machine} must enable harnesses"))?;
+    ensure!(
+        !enabled.is_empty(),
+        "Machine {machine} must enable at least one harness"
+    );
+    let Some(selected) = profile.get("project_harnesses") else {
+        return Ok(enabled);
+    };
+    let selected = selected
+        .as_array()
+        .with_context(|| format!("Machine {machine}: project_harnesses must be an array"))?;
+    let mut seen = BTreeSet::new();
+    for value in selected {
+        let name = value.as_str().with_context(|| {
+            format!("Machine {machine}: project_harnesses entry must be a string: {value}")
+        })?;
+        ensure!(
+            enabled.iter().any(|value| value.as_str() == Some(name)),
+            "Machine {machine}: project_harnesses entry {name:?} is not in harnesses"
+        );
+        ensure!(
+            seen.insert(name),
+            "Machine {machine}: duplicate project_harnesses entry {name:?}"
+        );
+    }
+    Ok(if project { selected } else { enabled })
+}
+
+pub(crate) fn template_contexts(
+    settings: &Settings,
+    project: bool,
+) -> Result<Vec<(String, String, toml::Table)>> {
     settings.validate()?;
     let harnesses = read_toml(&settings.source.join("harnesses.toml"))?;
     let mut contexts = Vec::new();
@@ -972,11 +1013,7 @@ pub(crate) fn template_contexts(settings: &Settings) -> Result<Vec<(String, Stri
             .context("Non-UTF8 machine name")?;
         identifier(machine)?;
         let profile = read_toml(&settings.source.join(&file))?;
-        for value in profile
-            .get("harnesses")
-            .and_then(|v| v.as_array())
-            .context("Machine must enable harnesses")?
-        {
+        for value in scope_harnesses(machine, &profile, project)? {
             let harness = value.as_str().context("Harness name must be a string")?;
             identifier(harness)?;
             ensure!(

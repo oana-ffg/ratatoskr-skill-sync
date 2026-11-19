@@ -54,6 +54,7 @@
   );
   const hasStaleTargets = $derived(workspace.plan.stale_targets.length > 0);
   let sourceConflict = $state<Conflict | null>(null);
+  let sourceProject = $state<string | null>(null);
   let resolution = $state<Resolution | null>(null);
   let busy = $state(false);
   let backup = $state("");
@@ -368,7 +369,10 @@
                 >Restore from source</button
               ><button
                 disabled={!conflict.source || hasStaleTargets}
-                onclick={() => (sourceConflict = conflict)}>Edit source…</button
+                onclick={() => {
+                  sourceConflict = conflict;
+                  sourceProject = group.project;
+                }}>Edit source…</button
               ><button
                 disabled={busy || hasStaleTargets}
                 onclick={() => choose(conflict, "adopt")}
@@ -515,6 +519,7 @@
       Opening source editor…
     </p>{:then { default: ConflictSource }}<ConflictSource
       conflict={sourceConflict}
+      project={sourceProject}
       {workspace}
       onclose={() => (sourceConflict = null)}
       {onerror}

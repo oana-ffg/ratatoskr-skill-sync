@@ -246,14 +246,7 @@ pub(super) fn render_scope_inner(
         matches!(mode, "staging" | "live"),
         "Mode must be staging or live"
     );
-    let enabled = machine
-        .get("harnesses")
-        .and_then(|v| v.as_array())
-        .context("Machine must enable harnesses")?;
-    ensure!(
-        !enabled.is_empty(),
-        "Machine must enable at least one harness"
-    );
+    let enabled = scope_harnesses(machine_name, &machine, scope.project.is_some())?;
     let mut result = Desired {
         files: BTreeMap::new(),
         roots: BTreeSet::new(),

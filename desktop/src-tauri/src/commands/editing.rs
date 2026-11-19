@@ -142,13 +142,21 @@ pub(crate) async fn preview_source_edit(
 #[tauri::command]
 pub(crate) async fn analyze_skill(
     name: String,
+    project: Option<PathBuf>,
     markdown: String,
     machine: String,
     harness: String,
 ) -> Reply<core::TemplateAnalysis> {
     off_main_thread(move || {
-        core::analyze_skill(&settings()?, &name, &markdown, &machine, &harness)
-            .map_err(|e| format!("{e:#}"))
+        core::analyze_skill(
+            &settings()?,
+            project.as_deref(),
+            &name,
+            &markdown,
+            &machine,
+            &harness,
+        )
+        .map_err(|e| format!("{e:#}"))
     })
     .await
 }

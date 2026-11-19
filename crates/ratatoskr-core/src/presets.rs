@@ -25,8 +25,8 @@ pub struct AgentPreset {
     pub sources: Vec<String>,
 }
 
-// Official path documentation, verified 2026-10-16. Defaults only; environment overrides
-// such as CODEX_HOME and XDG_CONFIG_HOME belong in the editable source definitions.
+// Official path documentation, verified 2026-10-16 (Antigravity: 2026-11-19). Defaults only;
+// environment overrides such as CODEX_HOME and XDG_CONFIG_HOME belong in source definitions.
 pub fn agent_presets() -> Vec<AgentPreset> {
     vec![
 AgentPreset {
@@ -83,6 +83,17 @@ AgentPreset {
  instructions_folder: None,
  },
  sources: vec!["https://opencode.ai/docs/skills/".into(), "https://opencode.ai/docs/rules/".into()],
+},
+AgentPreset {
+ title: "Antigravity".into(),
+ target: AgentTarget {
+ tag: "antigravity".into(),
+ global_folder: "{{af:home}}/.gemini/config".into(),
+ project_folder: ".agents".into(),
+ instructions_file: "AGENTS.md".into(),
+ instructions_folder: None,
+ },
+ sources: vec!["https://antigravity.google/docs/skills".into(), "https://antigravity.google/docs/rules".into()],
 }
     ]
 }

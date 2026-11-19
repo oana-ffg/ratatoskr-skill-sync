@@ -203,7 +203,11 @@ export interface Snapshot {
   schedule_installed?: boolean;
   jobs: Jobs;
   presets: Preset[];
-  preview_targets: { machine: string; harness: string }[];
+  preview_targets: {
+    machine: string;
+    harness: string;
+    project_enabled: boolean;
+  }[];
   source_files: string[];
   updates: {
     automatic: boolean;
@@ -278,8 +282,20 @@ export const api = {
       metadata,
       edit,
     }),
-  analyze: (name: string, markdown: string, machine: string, harness: string) =>
-    invoke<Analysis>("analyze_skill", { name, markdown, machine, harness }),
+  analyze: (
+    name: string,
+    markdown: string,
+    machine: string,
+    harness: string,
+    project: string | null = null,
+  ) =>
+    invoke<Analysis>("analyze_skill", {
+      name,
+      markdown,
+      machine,
+      harness,
+      project,
+    }),
   preview: (
     skill: Skill,
     markdown: string,
@@ -338,6 +354,7 @@ export function agentName(tag: string): string {
         gemini: "Gemini CLI",
         copilot: "GitHub Copilot",
         opencode: "OpenCode",
+        antigravity: "Antigravity",
       } as Record<string, string>
     )[tag] ?? tag
   );

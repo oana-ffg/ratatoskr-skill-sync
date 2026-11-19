@@ -382,3 +382,30 @@ fn source_validation_labels_non_string_harnesses_with_the_profile_and_value() {
     assert_eq!(report.profiles[0].harnesses[0].skills_rendered, 1);
     assert!(!f.settings.state_dir.exists());
 }
+
+#[test]
+fn invalid_project_harnesses_fail_planning_and_source_validation_with_machine_context() {
+    for (selection, message) in [
+        ("['unknown']", "is not in harnesses"),
+        ("[42]", "entry must be a string: 42"),
+        ("['codex', 'codex']", "duplicate project_harnesses entry"),
+        ("'codex'", "must be an array"),
+    ] {
+        let f = Fixture::new();
+        f.write(
+            "machines/test.toml",
+            &format!("os='macos'\nharnesses=['codex']\nproject_harnesses={selection}\n"),
+        );
+        let error = plan(&f.settings).unwrap_err().to_string();
+        assert!(error.contains("Machine test"), "{error}");
+        assert!(error.contains(message), "{error}");
+        let report = ratatoskr_core::validate_source(&f.settings.source).unwrap();
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(report.problems[0].path, "machines/test.toml");
+        assert_eq!(report.problems[0].message, error);
+        assert_eq!(report.problems[0].contexts[0].machine, "test");
+        assert!(!f.settings.state_dir.exists());
+        assert!(apply(&f.settings).is_err());
+        assert!(!f.output().exists());
+    }
+}

@@ -142,7 +142,7 @@ fn skill_analysis_returns_parser_ranges_in_utf16_and_resolved_values() {
     let f = Fixture::new();
     let markdown = "---\nname: review-code\ndescription: Review changed code\n---\n🌳 Café.\n<!-- only harness=codex -->Read {{af:paths.vault}}.<!-- /only -->\n";
     let analysis =
-        ratatoskr_core::analyze_skill(&f.settings, "review-code", markdown, "test", "codex")
+        ratatoskr_core::analyze_skill(&f.settings, None, "review-code", markdown, "test", "codex")
             .unwrap();
     assert!(analysis.diagnostics.is_empty());
     assert_eq!(analysis.blocks.len(), 1);
@@ -168,7 +168,7 @@ fn skill_analysis_reports_dead_sections_unknown_variables_and_frontmatter_errors
     let f = Fixture::new();
     let markdown = "---\nname: review-code\ndescription: Review changed code\n---\n<!-- only harness=absent -->{{af:unknown}}<!-- /only -->\n{{af:missing}}";
     let analysis =
-        ratatoskr_core::analyze_skill(&f.settings, "review-code", markdown, "test", "codex")
+        ratatoskr_core::analyze_skill(&f.settings, None, "review-code", markdown, "test", "codex")
             .unwrap();
     assert!(!analysis.blocks[0].reachable);
     assert!(!analysis.variables[0].active);
@@ -195,7 +195,7 @@ fn skill_analysis_reports_dead_sections_unknown_variables_and_frontmatter_errors
         "a".repeat(1025)
     );
     let analysis =
-        ratatoskr_core::analyze_skill(&f.settings, "review-code", &markdown, "test", "codex")
+        ratatoskr_core::analyze_skill(&f.settings, None, "review-code", &markdown, "test", "codex")
             .unwrap();
     assert!(
         analysis
@@ -205,7 +205,7 @@ fn skill_analysis_reports_dead_sections_unknown_variables_and_frontmatter_errors
     );
     let markdown = markdown.replace("wrong-name", "review-code");
     let analysis =
-        ratatoskr_core::analyze_skill(&f.settings, "review-code", &markdown, "test", "codex")
+        ratatoskr_core::analyze_skill(&f.settings, None, "review-code", &markdown, "test", "codex")
             .unwrap();
     assert!(
         analysis
@@ -226,9 +226,15 @@ fn skill_analysis_and_rendering_agree_on_invalid_only_blocks() {
     ] {
         let markdown =
             format!("---\nname: review-code\ndescription: Review changed code\n---\n{body}\n");
-        let analysis =
-            ratatoskr_core::analyze_skill(&f.settings, "review-code", &markdown, "test", "codex")
-                .unwrap();
+        let analysis = ratatoskr_core::analyze_skill(
+            &f.settings,
+            None,
+            "review-code",
+            &markdown,
+            "test",
+            "codex",
+        )
+        .unwrap();
         assert!(analysis.diagnostics.iter().any(|d| d.severity == "error"));
         assert!(
             ratatoskr_core::preview_skill(

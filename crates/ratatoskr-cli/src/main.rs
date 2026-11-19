@@ -531,7 +531,12 @@ fn run() -> Result<i32> {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&core::analyze_skill(
-                            &settings, &name, &markdown, &machine, &harness
+                            &settings,
+                            project.as_deref(),
+                            &name,
+                            &markdown,
+                            &machine,
+                            &harness
                         )?)?
                     );
                 }

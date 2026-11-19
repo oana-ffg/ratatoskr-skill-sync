@@ -3,7 +3,7 @@
 Ratatoskr reads the existing agentfiles layout:
 
 - `harnesses.toml`: a table for each agent tag, containing portable relative `skills_dir`, relative `global_file`, optional `project_root`, optional `global_root` for a separately located global instructions directory, and `roots` mapping OS names to absolute root templates.
-- `machines/`: one TOML file per machine identifier. Required fields are `os` and a nonempty `harnesses` list. `mode` defaults to `staging`; `live` also requires a verified `home`. Optional `paths` and `capabilities` provide template values and skill selection.
+- `machines/`: one TOML file per machine identifier. Required fields are `os` and a nonempty `harnesses` list. `mode` defaults to `staging`; `live` also requires a verified `home`. Optional `project_harnesses` selects which enabled harnesses render registered project skills; when absent it defaults to `harnesses`. It must be an array of strings from that machine's `harnesses`, with no duplicates; `[]` disables project output. Global skills and instructions still use all of `harnesses`. Optional `paths` and `capabilities` provide template values and skill selection.
 - `skills/`: one directory per portable skill name. Each contains `SKILL.md` with YAML `name` matching the directory and a nonempty `description`, plus required `skill.toml`.
 - `global/AGENTS.md`: optional shared global instructions, rendered to each target's configured global filename.
 
@@ -33,12 +33,20 @@ Portable filenames exclude traversal, Windows device names, invalid Windows char
 
 ## Local project marker
 
-`.ratatoskr.toml` contains a `source` string, a portable path relative to the Git root. The local registry stores only explicitly registered project roots. Ratatoskr monitors this source and marker for Git changes and renders its `skills/` content using shared global harness/machine settings. Live outputs use `project_root` (default `.<harness>`) and `skills_dir` inside the project. Staging outputs use a project-path hash beneath Ratatoskr state. A project source does not need its own harness or machine files. Global instructions are not rendered into projects.
+`.ratatoskr.toml` contains a `source` string, a portable path relative to the Git root. The local registry stores only explicitly registered project roots. Ratatoskr monitors this source and marker for Git changes and renders its `skills/` content using shared global harness/machine settings. Live outputs use `project_root` (default `.<harness>`) and `skills_dir` inside the project. Staging outputs use a project-path hash beneath Ratatoskr state. A project source does not need its own harness or machine files. Global instructions are not rendered into projects. Only the machine's `project_harnesses` render project skills, defaulting to all enabled `harnesses` when absent. For example, Codex and Antigravity both read project `.agents/skills`, so choose one writer while keeping both global installations:
+
+```toml
+os = "macos"
+harnesses = ["codex", "antigravity"]
+project_harnesses = ["codex"]
+```
+
+Removing a harness from `project_harnesses`, including setting it to `[]`, leaves owned project output as a pending former-target decision, just like removing a harness from `harnesses`. It never silently deletes installed copies.
 
 
 ## Agent target form
 
-The desktop preset/custom form previews a complete `harnesses.toml` update and saves it with the source hash checked. It creates a definition, without changing machine selection. Add its tag to each intended profile's `harnesses` array using the source editor. A definition contains `skills_dir = "skills"`, the chosen `global_file`, `project_root`, and per-OS `roots`. Codex additionally uses `global_root = "{{af:home}}/.codex"` while its skill root is `{{af:home}}/.agents`. Staging keeps both under the isolated harness staging directory. Existing definitions are not migrated automatically.
+The desktop preset/custom form previews a complete `harnesses.toml` update and saves it with the source hash checked. It creates a definition, without changing machine selection. Add its tag to each intended profile's `harnesses` array using the source editor or Agents & machines. That form also supports an explicit project-agent subset and preserves `project_harnesses` when editing other profile values. A definition contains `skills_dir = "skills"`, the chosen `global_file`, `project_root`, and per-OS `roots`. Codex additionally uses `global_root = "{{af:home}}/.codex"` while its skill root is `{{af:home}}/.agents`. Staging keeps both under the isolated harness staging directory. Existing definitions are not migrated automatically.
 
 The form accepts an absolute global folder or a `{{af:home}}` template, a portable project subfolder, an instructions filename, and an optional separate global instructions folder. Power-users can keep different per-OS roots in text. Presets and their official references are listed in [agent-presets.md](agent-presets.md). `ratatoskr agent presets` emits the same definitions; `agent preview --input` accepts a JSON target and returns candidate source text with its original hash. `agent add --input --expected-hash` saves it after validation.
 
