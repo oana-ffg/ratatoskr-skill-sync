@@ -138,8 +138,9 @@ class FindPanel implements Panel {
   }
 }
 
-// Counts exactly what Next and Previous can select: text searches include overlapping matches ("aa"
-// at 1 in "aaa"), regexp searches do not. One pass over the document either way.
+// Walks matches the way Next and Previous do: text searches include overlapping matches ("aa" at 1
+// in "aaa"), regexp searches do not. CodeMirror's navigation can still select a range outside this
+// list (a regexp near the caret or a chunk edge); the count then shows only the total.
 function findMatches(state: EditorState, query: SearchQuery): Match[] {
   if (!query.valid) return [];
   const cursor = query.getCursor(state);
