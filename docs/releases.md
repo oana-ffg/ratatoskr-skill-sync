@@ -44,6 +44,13 @@ sync becomes stale. The local watchdog must distinguish an intentional **Quit**
 or disabled login startup from a crash; an external monitor needs an explicitly
 configured destination. Neither is installed by this change.
 
+## v0.2.25 release notes
+
+- **The find panel now stays on screen while you scroll.** In the skill and instructions editors it stays pinned under the formatting toolbar.
+- **Find now shows how many matches there are,** as a browser does. The count reads, for example, **12 matches** while you type, then **3 of 12** once Enter, Next or Previous selects a match. It says **No matches** or **Invalid regexp** when there is nothing to find.
+- **Pasting into Find with the right-click menu now searches right away.** Before, the search waited until you pressed a key or left the field.
+- Macs on v0.2.24 receive this update through the launchd helper, with automatic updates and Background sync enabled. Windows on v0.2.24 receives it through the running tray's supervised updater.
+
 ## v0.2.24 release notes
 
 - **Saving in the desktop app now installs on this machine right away,** then publishes to your other machines. Save installs the whole workspace whether or not Background sync is on, so there is no separate review step after an edit. If installing or publishing fails, the edit stays saved and a notice says what still needs doing, such as **Push now**. A fully successful save shows no notice.
