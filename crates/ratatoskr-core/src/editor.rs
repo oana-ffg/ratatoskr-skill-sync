@@ -209,7 +209,7 @@ pub fn value_options(
     machine: &str,
     harness: &str,
 ) -> Result<Vec<ValueOption>> {
-    let contexts = crate::engine::template_contexts(settings)?;
+    let contexts = crate::engine::template_contexts(settings, false)?;
     let (_, _, context) = contexts
         .iter()
         .find(|(m, h, _)| m == machine && h == harness)
@@ -438,7 +438,7 @@ pub fn preview_global_instructions(
     machine: &str,
     harness: &str,
 ) -> Result<String> {
-    let (context, _) = preview_target(settings, machine, harness)?;
+    let (context, _) = preview_target(settings, None, machine, harness)?;
     crate::engine::render_global_instructions(markdown, &context)
 }
 
@@ -575,13 +575,19 @@ pub fn add_skill_resource(
 pub fn skill_target_statuses(
     settings: &Settings,
 ) -> Result<BTreeMap<String, BTreeMap<String, bool>>> {
-    let contexts = crate::engine::template_contexts(settings)?;
+    let contexts = crate::engine::template_contexts(settings, false)?;
+    let project_contexts = crate::engine::template_contexts(settings, true)?;
     let mut result = BTreeMap::new();
     for skill in crate::list_skills(settings)? {
         let doc = crate::read_skill(settings, skill.project.as_deref(), &skill.name)?;
         let table: toml::Table = toml::from_str(&doc.metadata)?;
         let mut targets = BTreeMap::new();
-        for (_, h, context) in &contexts {
+        let contexts = if skill.project.is_some() {
+            &project_contexts
+        } else {
+            &contexts
+        };
+        for (_, h, context) in contexts {
             let included = skill.enabled
                 && match table.get("target") {
                     Some(target) => crate::template::selectors_match(
@@ -614,10 +620,11 @@ pub fn skill_target_statuses(
 /// The template context and `harnesses.toml` definition of an enabled machine × harness.
 fn preview_target(
     settings: &Settings,
+    project: Option<&Path>,
     machine: &str,
     harness: &str,
 ) -> Result<(toml::Table, toml::Table)> {
-    let (_, _, context) = crate::engine::template_contexts(settings)?
+    let (_, _, context) = crate::engine::template_contexts(settings, project.is_some())?
         .into_iter()
         .find(|(m, h, _)| m == machine && h == harness)
         .context("Select an enabled preview target")?;
@@ -693,7 +700,7 @@ pub fn preview_install_path(
     harness: &str,
 ) -> Result<PathBuf> {
     identifier(name)?;
-    let (context, target) = preview_target(settings, machine, harness)?;
+    let (context, target) = preview_target(settings, project, machine, harness)?;
     let root = preview_root(settings, project, machine, harness, &context, &target)?;
     Ok(root
         .join(relative(definition_text(&target, "skills_dir")?)?)
@@ -707,7 +714,7 @@ pub fn preview_global_instructions_path(
     machine: &str,
     harness: &str,
 ) -> Result<PathBuf> {
-    let (context, target) = preview_target(settings, machine, harness)?;
+    let (context, target) = preview_target(settings, None, machine, harness)?;
     let root = match target.get("global_root").and_then(|v| v.as_str()) {
         Some(root) if !staging(&context) => {
             PathBuf::from(crate::template::render(root, &context, false)?)

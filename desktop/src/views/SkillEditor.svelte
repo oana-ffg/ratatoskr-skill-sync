@@ -59,12 +59,13 @@
   let installPath = $state("");
   let validating = $state(true);
   let busy = $state(false);
-  const agents = $derived([
-    ...new Set(workspace.preview_targets.map((t) => t.harness)),
-  ]);
-  const machines = $derived([
-    ...new Set(workspace.preview_targets.map((t) => t.machine)),
-  ]);
+  const previewTargets = $derived(
+    workspace.preview_targets.filter(
+      (target) => !skill.project || target.project_enabled,
+    ),
+  );
+  const agents = $derived([...new Set(previewTargets.map((t) => t.harness))]);
+  const machines = $derived([...new Set(previewTargets.map((t) => t.machine))]);
   let machine = $state("");
   let harness = $state("");
   let raw = $state(false);
@@ -139,6 +140,7 @@
         input.markdown,
         input.machine,
         input.harness,
+        skill.project,
       );
       proceed();
       const v = await api.view(input.markdown, input.metadata);
@@ -158,7 +160,7 @@
           input.harness,
         );
         alternate = await Promise.all(
-          workspace.preview_targets
+          previewTargets
             .filter(
               (t) => t.machine === input.machine && t.harness !== input.harness,
             )
@@ -226,10 +228,12 @@
     }
   });
   onMount(() => {
-    machine = workspace.plan.machine;
-    harness =
-      workspace.preview_targets.find((t) => t.machine === machine)?.harness ??
-      "";
+    machine = previewTargets.some(
+      (target) => target.machine === workspace.plan.machine,
+    )
+      ? workspace.plan.machine
+      : (previewTargets[0]?.machine ?? "");
+    harness = previewTargets.find((t) => t.machine === machine)?.harness ?? "";
     void load();
     return () => validation.cancel();
   });
@@ -695,13 +699,10 @@
     </section>
     <aside class="live-preview">
       <p class="eyebrow">LIVE PREVIEW <span class="live-dot"></span></p>
-      <PreviewTargets
-        targets={workspace.preview_targets}
-        bind:machine
-        bind:harness
-      />
+      <PreviewTargets targets={previewTargets} bind:machine bind:harness />
       <div class="preview-document" aria-label="Rendered preview">
-        {#if validating}<span class="muted">Updating preview…</span
+        {#if !harness}<p class="muted">No agents enabled for project skills.</p>
+        {:else if validating}<span class="muted">Updating preview…</span
           >{:else if previewError}<p class="muted">
             Preview will return when the errors are fixed.
           </p>{:else if !preview.length}<p class="muted">

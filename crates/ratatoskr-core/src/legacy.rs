@@ -83,7 +83,7 @@ fn keep_in(settings: &Settings, expected: &str, actual_home: &Path) -> Result<()
         .context("Old copy preserved; could not save the keep-both decision. Choose again to retry")
 }
 fn duplicates_in(settings: &Settings, actual_home: &Path) -> Result<Vec<LegacySkill>> {
-    let contexts = crate::engine::template_contexts(settings)?;
+    let contexts = crate::engine::template_contexts(settings, false)?;
     let Some((_, _, context)) = contexts
         .iter()
         .find(|(m, h, _)| m == &settings.machine && h == "codex")

@@ -167,7 +167,7 @@ fn validate_scope(
                 source: &source,
                 machine: &machine,
                 content: &content,
-                project: None,
+                project: (content != source).then_some(content.as_path()),
                 output: Output::Validation,
                 focus,
             },

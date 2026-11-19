@@ -366,13 +366,15 @@ fn variable_regex() -> &'static Regex {
 
 pub fn analyze_skill(
     settings: &crate::Settings,
+    project: Option<&std::path::Path>,
     name: &str,
     markdown: &str,
     machine: &str,
     harness: &str,
 ) -> Result<TemplateAnalysis> {
     super::config::identifier(name)?;
-    let (mut analysis, rendered) = analyze_template(settings, markdown, machine, harness)?;
+    let (mut analysis, rendered) =
+        analyze_template(settings, project.is_some(), markdown, machine, harness)?;
     if let Some(rendered) = rendered {
         // Reuse the deployment frontmatter validation instead of inventing an editor grammar.
         let header_end = markdown
@@ -404,18 +406,19 @@ pub fn analyze_global_instructions(
     machine: &str,
     harness: &str,
 ) -> Result<TemplateAnalysis> {
-    analyze_template(settings, markdown, machine, harness).map(|(analysis, _)| analysis)
+    analyze_template(settings, false, markdown, machine, harness).map(|(analysis, _)| analysis)
 }
 
 /// Analyzes conditions and values for one machine × harness. The rendered text
 /// (LF-normalized) is returned only when the template has no errors.
 fn analyze_template(
     settings: &crate::Settings,
+    project: bool,
     markdown: &str,
     machine: &str,
     harness: &str,
 ) -> Result<(TemplateAnalysis, Option<String>)> {
-    let contexts = crate::engine::template_contexts(settings)?;
+    let contexts = crate::engine::template_contexts(settings, project)?;
     let context = contexts
         .iter()
         .find(|(m, h, _)| m == machine && h == harness)

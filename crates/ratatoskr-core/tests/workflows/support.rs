@@ -38,6 +38,69 @@ impl Fixture {
             settings,
         }
     }
+    /// Keep live outputs inside the fixture while satisfying the host-home identity check.
+    pub(super) fn presets(&self, tags: &[&str], mode: &str) {
+        self.write("harnesses.toml", "");
+        let fixture_root = |template: &str| {
+            self.root
+                .join("home")
+                .join(template.strip_prefix("{{af:home}}/").unwrap())
+                .to_string_lossy()
+                .into_owned()
+        };
+        for tag in tags {
+            let mut target = ratatoskr_core::agent_presets()
+                .into_iter()
+                .find(|preset| preset.target.tag == *tag)
+                .unwrap()
+                .target;
+            target.global_folder = fixture_root(&target.global_folder);
+            target.instructions_folder = target.instructions_folder.map(|root| fixture_root(&root));
+            let preview = ratatoskr_core::preview_agent_target(&self.settings, &target).unwrap();
+            self.write("harnesses.toml", &preview.text);
+        }
+        let actual_home = directories::BaseDirs::new()
+            .unwrap()
+            .home_dir()
+            .to_path_buf();
+        let profile = toml::Table::from_iter([
+            ("os".into(), std::env::consts::OS.into()),
+            ("mode".into(), mode.into()),
+            (
+                "home".into(),
+                actual_home.to_string_lossy().into_owned().into(),
+            ),
+            (
+                "harnesses".into(),
+                toml::Value::Array(tags.iter().map(|tag| (*tag).into()).collect()),
+            ),
+        ]);
+        self.write("machines/test.toml", &toml::to_string(&profile).unwrap());
+        self.write(
+            "skills/review-code/SKILL.md",
+            "---\nname: review-code\ndescription: Review code\n---\nReview it.\n",
+        );
+        self.write("global/AGENTS.md", "Global instructions.\n");
+    }
+
+    pub(super) fn register_skill_project(&mut self) -> PathBuf {
+        let project = self.root.join("project");
+        let skill = project.join("agent-skills/skills/project-review");
+        fs::create_dir_all(&skill).unwrap();
+        git(&project, &["init", "-b", "main"]);
+        fs::write(skill.join("skill.toml"), "").unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: project-review\ndescription: Review project\n---\nReview it.\n",
+        )
+        .unwrap();
+        let config = self.root.join("config.toml");
+        ratatoskr_core::save(&config, &self.settings).unwrap();
+        ratatoskr_core::add_project(&config, &project, "agent-skills").unwrap();
+        self.settings = ratatoskr_core::load(&config).unwrap();
+        self.settings.projects[0].clone()
+    }
+
     pub(super) fn output(&self) -> PathBuf {
         self.settings
             .state_dir

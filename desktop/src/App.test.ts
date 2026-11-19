@@ -11,6 +11,7 @@ import { mockIPC, clearMocks, mockWindows } from "@tauri-apps/api/mocks";
 import { EditorView } from "@codemirror/view";
 import type { SourceDocument } from "./api";
 import App from "./App.svelte";
+import SkillEditor from "./views/SkillEditor.svelte";
 import { fixture, fixtureIPC, oracle } from "../tests/fixture";
 beforeEach(() => {
   clearMocks();
@@ -407,5 +408,72 @@ test.each([
       screen.queryByRole("dialog", { name: "You have unsaved changes" }),
     ).toBeNull();
     if (notice) expect(notice).toBeVisible();
+  },
+);
+
+test.each([true, false])(
+  "skill preview picker honors project eligibility (project=%s)",
+  async (project) => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+    const workspace = structuredClone(fixture.workspace);
+    workspace.preview_targets = workspace.preview_targets.map((target) => ({
+      ...target,
+      project_enabled: target.harness === "codex",
+    }));
+    const calls = vi.fn((cmd: string, args: unknown) => {
+      // The oracle owns a global fixture; this test checks UI target routing for its project copy.
+      const input = { ...(args as Record<string, unknown>), project: null };
+      return fixtureIPC(cmd, input);
+    });
+    mockIPC(calls);
+    render(SkillEditor, {
+      skill: {
+        name: "recordings",
+        enabled: true,
+        project: project ? "/projects/audio-tools" : null,
+      },
+      workspace,
+      onupdate: vi.fn(),
+      onerror: vi.fn(),
+      ondirty: vi.fn(),
+      onrenamed: vi.fn(),
+      onarchived: vi.fn(),
+    });
+    const picker = await screen.findByRole("combobox", {
+      name: "Preview agent",
+    });
+    expect(
+      within(picker).getByRole("option", { name: "Codex" }),
+    ).toBeInTheDocument();
+    if (project) {
+      expect(
+        within(picker).queryByRole("option", { name: "Claude Code" }),
+      ).toBeNull();
+    } else {
+      expect(
+        within(picker).getByRole("option", { name: "Claude Code" }),
+      ).toBeInTheDocument();
+    }
+    await waitFor(() =>
+      expect(calls).toHaveBeenCalledWith("preview_skill", expect.anything()),
+    );
+    const previews = calls.mock.calls.filter(
+      ([cmd]) => cmd === "preview_skill",
+    );
+    expect(
+      previews.some(
+        ([, args]) => (args as { harness: string }).harness === "claude",
+      ),
+    ).toBe(!project);
   },
 );

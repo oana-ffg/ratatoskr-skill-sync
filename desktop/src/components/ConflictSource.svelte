@@ -19,12 +19,14 @@
   import ValuePicker from "./ValuePicker.svelte";
   let {
     conflict,
+    project,
     workspace,
     onclose,
     onpreview,
     onerror,
   }: {
     conflict: Conflict;
+    project: string | null;
     workspace: Snapshot;
     onclose: () => void;
     onpreview: (preview: Resolution) => void;
@@ -51,8 +53,20 @@
         .at(conflict.path.split(/[\\/]/).lastIndexOf("skills") + 1) ??
       "",
   );
+  const previewTargets = $derived(
+    workspace.preview_targets.filter(
+      (target) => !project || target.project_enabled,
+    ),
+  );
   const target = $derived(
-    workspace.preview_targets.find((t) => t.machine === workspace.plan.machine),
+    previewTargets.find(
+      (target) =>
+        target.machine === workspace.plan.machine &&
+        target.harness === conflict.harness,
+    ) ??
+      previewTargets.find(
+        (target) => target.machine === workspace.plan.machine,
+      ),
   );
   const check = createLivePreview(
     async (value: string) => {
@@ -64,6 +78,7 @@
           value,
           target.machine,
           target.harness,
+          project,
         ),
       };
     },
@@ -179,8 +194,8 @@
     </footer>{:else}<p>Opening source…</p>{/if}</Dialog
 >
 {#if condition}<OnlyPicker
-    agents={[...new Set(workspace.preview_targets.map((t) => t.harness))]}
-    machines={[...new Set(workspace.preview_targets.map((t) => t.machine))]}
+    agents={[...new Set(previewTargets.map((t) => t.harness))]}
+    machines={[...new Set(previewTargets.map((t) => t.machine))]}
     initial={editing?.selectors ?? {}}
     onclose={() => (condition = false)}
     onapply={(selectors) => {

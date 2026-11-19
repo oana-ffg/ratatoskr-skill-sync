@@ -265,8 +265,40 @@
         options={Object.keys(agents?.values ?? {})}
         selected={array(profile, "harnesses")}
         dimension="agent"
-        onchange={(v) => (profile.values.harnesses = v)}
+        onchange={(values) => {
+          profile.values.harnesses = values;
+          if (Object.hasOwn(profile.values, "project_harnesses")) {
+            profile.values.project_harnesses = array(
+              profile,
+              "project_harnesses",
+            ).filter((tag) => values.includes(tag));
+          }
+        }}
       />
+      <label class="checkbox-label">
+        <input
+          type="checkbox"
+          checked={!Object.hasOwn(profile.values, "project_harnesses")}
+          onchange={(event) => {
+            if (event.currentTarget.checked)
+              delete profile.values.project_harnesses;
+            else
+              profile.values.project_harnesses = [
+                ...array(profile, "harnesses"),
+              ];
+          }}
+        />
+        Use all enabled agents for project skills
+      </label>
+      {#if Object.hasOwn(profile.values, "project_harnesses")}
+        <Chips
+          label="Project agents"
+          options={array(profile, "harnesses")}
+          selected={array(profile, "project_harnesses")}
+          dimension="agent"
+          onchange={(values) => (profile.values.project_harnesses = values)}
+        />
+      {/if}
       <Capabilities
         selected={array(profile, "capabilities")}
         onchange={(values) => (profile.values.capabilities = values)}

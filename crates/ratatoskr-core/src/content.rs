@@ -377,13 +377,23 @@ pub(crate) fn draft_workspace(
 pub struct PreviewTarget {
     pub machine: String,
     pub harness: String,
+    pub project_enabled: bool,
 }
 
 pub fn preview_targets(settings: &Settings) -> Result<Vec<PreviewTarget>> {
-    Ok(crate::engine::template_contexts(settings)?
+    crate::engine::template_contexts(settings, false)?
         .into_iter()
-        .map(|(machine, harness, _)| PreviewTarget { machine, harness })
-        .collect())
+        .map(|(machine, harness, context)| {
+            let project_enabled = crate::engine::scope_harnesses(&machine, &context, true)?
+                .iter()
+                .any(|value| value.as_str() == Some(harness.as_str()));
+            Ok(PreviewTarget {
+                machine,
+                harness,
+                project_enabled,
+            })
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -406,7 +416,7 @@ pub fn preview_skill(
     identifier(name)?;
     identifier(machine)?;
     identifier(harness)?;
-    let (_, _, context) = crate::engine::template_contexts(settings)?
+    let (_, _, context) = crate::engine::template_contexts(settings, project.is_some())?
         .into_iter()
         .find(|(m, h, _)| m == machine && h == harness)
         .context("Select an enabled machine × harness")?;

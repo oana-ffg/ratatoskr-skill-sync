@@ -17,16 +17,23 @@ fn draft_preview_never_touches_the_temporary_directory() {
     .unwrap();
     fs::write(
         source.join("machines/test.toml"),
-        "os='macos'\nmode='staging'\nharnesses=['codex']\n",
+        "os='macos'\nmode='staging'\nharnesses=['codex']\nproject_harnesses=['codex']\n",
     )
     .unwrap();
     let markdown = "---\nname: review\ndescription: Review\n---\nSaved.\n";
     fs::write(source.join("skills/review/SKILL.md"), markdown).unwrap();
     fs::write(source.join("skills/review/skill.toml"), "").unwrap();
+    let project = root.join("project");
+    let project_skill = project.join("agent-skills/skills/review");
+    fs::create_dir_all(&project_skill).unwrap();
+    fs::write(project.join(".ratatoskr.toml"), "source='agent-skills'\n").unwrap();
+    fs::write(project_skill.join("SKILL.md"), markdown).unwrap();
+    fs::write(project_skill.join("skill.toml"), "").unwrap();
     let settings = ratatoskr_core::Settings {
         source,
         state_dir: root.join("state"),
         machine: "test".into(),
+        projects: vec![project.clone()],
         ..Default::default()
     };
     let missing: PathBuf = root.join("no-such-temporary-directory");
@@ -48,6 +55,17 @@ fn draft_preview_never_touches_the_temporary_directory() {
     )
     .unwrap();
     assert!(files[0].text.as_ref().unwrap().contains("Draft."));
+    let files = ratatoskr_core::preview_skill(
+        &settings,
+        Some(&project),
+        "review",
+        markdown,
+        "",
+        "test",
+        "codex",
+    )
+    .unwrap();
+    assert!(files[0].text.as_ref().unwrap().contains("Saved."));
     assert!(!missing.exists());
     assert!(
         !settings.state_dir.exists(),

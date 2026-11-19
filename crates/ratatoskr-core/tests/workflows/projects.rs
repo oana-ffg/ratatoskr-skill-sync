@@ -261,3 +261,220 @@ fn a_directory_whose_git_points_at_another_worktree_is_not_a_checkout_root() {
         "{error}"
     );
 }
+
+#[test]
+fn project_harness_selection_avoids_shared_roots_and_filters_editor_targets() {
+    let mut f = Fixture::new();
+    f.presets(&["codex", "antigravity"], "live");
+    let project = f.register_skill_project();
+    let profile = fs::read_to_string(f.settings.source.join("machines/test.toml")).unwrap();
+    assert!(
+        plan(&f.settings)
+            .unwrap_err()
+            .to_string()
+            .contains("Harness output roots overlap")
+    );
+    f.write(
+        "machines/test.toml",
+        &format!("project_harnesses=['codex']\n{profile}"),
+    );
+    let report = plan(&f.settings).unwrap();
+    assert_eq!(report.skills, 3);
+    assert_eq!(
+        report
+            .changes
+            .iter()
+            .filter(|change| change.path.starts_with(&project))
+            .count(),
+        1
+    );
+    apply(&f.settings).unwrap();
+    let output = project.join(".agents/skills/project-review/SKILL.md");
+    assert!(output.is_file());
+    for path in [
+        ".agents/skills/review-code/SKILL.md",
+        ".codex/AGENTS.md",
+        ".gemini/config/skills/review-code/SKILL.md",
+        ".gemini/config/AGENTS.md",
+    ] {
+        assert!(f.root.join("home").join(path).is_file(), "{path}");
+    }
+    let statuses = ratatoskr_core::skill_target_statuses(&f.settings).unwrap();
+    let project_key = format!("{}:project-review", project.display());
+    assert_eq!(
+        statuses[&project_key],
+        std::collections::BTreeMap::from([("codex".into(), true)])
+    );
+    assert!(statuses[":review-code"]["antigravity"]);
+    let targets = ratatoskr_core::preview_targets(&f.settings).unwrap();
+    assert!(
+        targets
+            .iter()
+            .find(|target| target.harness == "codex")
+            .unwrap()
+            .project_enabled
+    );
+    assert!(
+        !targets
+            .iter()
+            .find(|target| target.harness == "antigravity")
+            .unwrap()
+            .project_enabled
+    );
+    let document =
+        ratatoskr_core::read_skill(&f.settings, Some(&project), "project-review").unwrap();
+    for harness in ["codex", "antigravity"] {
+        let preview = ratatoskr_core::preview_skill(
+            &f.settings,
+            Some(&project),
+            "project-review",
+            &document.markdown,
+            &document.metadata,
+            "test",
+            harness,
+        );
+        let path = ratatoskr_core::preview_install_path(
+            &f.settings,
+            Some(&project),
+            "project-review",
+            "test",
+            harness,
+        );
+        if harness == "codex" {
+            assert_eq!(preview.unwrap().len(), 1);
+            assert_eq!(path.unwrap().join("SKILL.md"), output);
+        } else {
+            assert!(preview.is_err());
+            assert!(path.is_err());
+        }
+    }
+    assert!(
+        ratatoskr_core::preview_skill(
+            &f.settings,
+            None,
+            "review-code",
+            &document.markdown.replace("project-review", "review-code"),
+            "",
+            "test",
+            "antigravity"
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn empty_project_harnesses_preserve_outputs_until_former_target_review() {
+    let mut f = Fixture::new();
+    f.presets(&["codex", "antigravity"], "live");
+    let project = f.register_skill_project();
+    let profile = fs::read_to_string(f.settings.source.join("machines/test.toml")).unwrap();
+    f.write(
+        "machines/test.toml",
+        &format!("project_harnesses=['codex']\n{profile}"),
+    );
+    apply(&f.settings).unwrap();
+    let output = project.join(".agents/skills/project-review/SKILL.md");
+    let owned = f.ownership();
+    f.write(
+        "machines/test.toml",
+        &format!("project_harnesses=[]\n{profile}"),
+    );
+    let report = plan(&f.settings).unwrap();
+    assert_eq!(report.skills, 2);
+    assert_eq!(report.stale_targets.len(), 1);
+    assert!(report.stale_targets[0].path.starts_with(&project));
+    assert!(apply(&f.settings).is_err());
+    assert!(output.is_file());
+    assert_eq!(f.ownership(), owned);
+    let preview = ratatoskr_core::preview_stale_target(
+        &f.settings,
+        &report.stale_targets[0].path,
+        ratatoskr_core::StaleAction::Forget,
+    )
+    .unwrap();
+    ratatoskr_core::resolve_stale_target(&f.settings, &serde_json::to_string(&preview).unwrap())
+        .unwrap();
+    apply(&f.settings).unwrap();
+    assert!(
+        output.is_file(),
+        "Keeping a former target must preserve its installed copy"
+    );
+    assert!(
+        f.ownership()["files"]
+            .get(output.to_str().unwrap())
+            .is_none()
+    );
+    assert!(plan(&f.settings).unwrap().stale_targets.is_empty());
+}
+
+#[test]
+fn staging_project_targets_and_draft_validation_use_only_project_harnesses() {
+    let mut f = Fixture::new();
+    f.presets(&["codex", "antigravity"], "staging");
+    let project = f.register_skill_project();
+    let profile = fs::read_to_string(f.settings.source.join("machines/test.toml")).unwrap();
+    f.write(
+        "machines/test.toml",
+        &format!("project_harnesses=['codex']\n{profile}"),
+    );
+    let report = plan(&f.settings).unwrap();
+    assert_eq!(report.skills, 3);
+    let output = ratatoskr_core::preview_install_path(
+        &f.settings,
+        Some(&project),
+        "project-review",
+        "test",
+        "codex",
+    )
+    .unwrap();
+    assert!(
+        report
+            .changes
+            .iter()
+            .any(|change| change.path == output.join("SKILL.md"))
+    );
+    assert!(output.starts_with(&f.settings.state_dir));
+    let document =
+        ratatoskr_core::read_skill(&f.settings, Some(&project), "project-review").unwrap();
+    let draft = format!(
+        "{}\n<!-- only harness=antigravity -->{{{{af:missing}}}}<!-- /only -->\n",
+        document.markdown
+    );
+    let analysis = ratatoskr_core::analyze_skill(
+        &f.settings,
+        Some(&project),
+        "project-review",
+        &draft,
+        "test",
+        "codex",
+    )
+    .unwrap();
+    assert!(
+        !analysis.blocks[0].reachable,
+        "Excluded project harnesses cannot make a condition reachable"
+    );
+    assert!(
+        ratatoskr_core::analyze_skill(
+            &f.settings,
+            Some(&project),
+            "project-review",
+            &draft,
+            "test",
+            "antigravity"
+        )
+        .is_err()
+    );
+    ratatoskr_core::save_skill_draft(
+        &f.settings,
+        Some(&project),
+        "project-review",
+        &draft,
+        &document.metadata,
+        &document.markdown_hash,
+        &document.metadata_hash,
+    )
+    .unwrap();
+    apply(&f.settings).unwrap();
+    assert!(output.join("SKILL.md").is_file());
+    assert!(!project.join(".agents").exists());
+}
