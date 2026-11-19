@@ -11,16 +11,6 @@
     ononly: () => void;
     onvalue: () => void;
   } = $props();
-  let toolbar = $state<HTMLDivElement>();
-  let height = $state(0);
-  // The toolbar stays pinned while the page scrolls; the editor keeps its caret and search panel
-  // clear of it using this height.
-  $effect(() => {
-    toolbar?.parentElement?.style.setProperty(
-      "--format-toolbar-height",
-      `${height}px`,
-    );
-  });
   // Ctrl/Cmd+F anywhere on the editor screen searches the document. Inside the
   // editor, CodeMirror handles the key itself; dialogs keep their own keys.
   function findShortcut(e: KeyboardEvent) {
@@ -40,13 +30,7 @@
 
 <svelte:window onkeydown={findShortcut} />
 
-<div
-  bind:this={toolbar}
-  bind:offsetHeight={height}
-  class="format-toolbar"
-  role="toolbar"
-  aria-label="Markdown formatting"
->
+<div class="format-toolbar" role="toolbar" aria-label="Markdown formatting">
   <button aria-label="Bold" onclick={() => editor?.format("bold")}
     ><b>B</b></button
   ><button aria-label="Heading" onclick={() => editor?.format("heading")}

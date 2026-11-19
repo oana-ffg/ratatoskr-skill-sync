@@ -6,7 +6,7 @@
     sourceExtension,
     setSource,
   } from "../editor/source";
-  import { onMount } from "svelte";
+  import { onMount, type Snippet } from "svelte";
   import {
     Compartment,
     EditorSelection,
@@ -19,6 +19,7 @@
     lineNumbers,
     drawSelection,
     highlightActiveLine,
+    panels,
   } from "@codemirror/view";
   import {
     defaultKeymap,
@@ -32,6 +33,7 @@
   import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
   import { tags } from "@lezer/highlight";
   import { structuredDecorations } from "../editor/decorations";
+  import { findPanel } from "../editor/find-panel";
   import { present } from "../editor/presentation";
   import { type Analysis, type Block, type Range } from "../api";
   let {
@@ -40,6 +42,7 @@
     analysis,
     frontmatter,
     raw = false,
+    toolbar,
     onchange,
     onselection,
     onblock,
@@ -49,6 +52,8 @@
     analysis: Analysis;
     frontmatter: Range | null;
     raw?: boolean;
+    /** Pinned with the find panel above the text while the page scrolls. */
+    toolbar?: Snippet;
     onchange: (text: string) => void;
     onselection: (range: Range) => void;
     onblock: (block: Block, remove: boolean) => void;
@@ -56,6 +61,8 @@
   const gutter = new Compartment();
   const undoHistory = new Compartment();
   let host: HTMLDivElement;
+  let header: HTMLDivElement;
+  let panelHost: HTMLDivElement;
   let view = $state<EditorView>();
 
   export function replace(text: string) {
@@ -115,7 +122,9 @@
           drawSelection(),
           highlightActiveLine(),
           undoHistory.of(history()),
-          search({ top: true }),
+          // The find panel lives in the pinned header, so it scrolls with the toolbar as one piece.
+          panels({ topContainer: panelHost }),
+          search({ createPanel: findPanel }),
           keymap.of([
             ...defaultKeymap,
             ...historyKeymap,
@@ -125,16 +134,8 @@
             ...searchKeymap,
             indentWithTab,
           ]),
-          // Keep the caret clear of the toolbar that stays pinned above the editor.
-          // Keep the caret clear of the toolbar that stays pinned above the editor.
-          EditorView.scrollMargins.of((view) => ({
-            top:
-              parseFloat(
-                getComputedStyle(view.dom).getPropertyValue(
-                  "--format-toolbar-height",
-                ),
-              ) || 0,
-          })),
+          // Keep the caret and search matches clear of the pinned header.
+          EditorView.scrollMargins.of(() => ({ top: header.offsetHeight })),
           markdown(),
           syntaxHighlighting(
             HighlightStyle.define([
@@ -215,4 +216,8 @@
   $effect(() => updatePresentation());
 </script>
 
+<div class="editor-header" bind:this={header}>
+  {@render toolbar?.()}
+  <div bind:this={panelHost}></div>
+</div>
 <div class="markdown-editor" bind:this={host}></div>
