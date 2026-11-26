@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import type {
@@ -104,12 +105,27 @@ export function fixtureIPC(
   }
 }
 
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
 /** Stateful editor bridge; save goes through the Rust core and reads disk back. */
 export function editorFixture() {
   let document = structuredClone(fixture.document);
   return {
     get document() {
       return document;
+    },
+    writeExternal(update: { markdown?: string; metadata?: string }) {
+      const markdown = update.markdown ?? document.markdown;
+      const metadata = update.metadata ?? document.metadata;
+      document = {
+        ...document,
+        markdown,
+        metadata,
+        markdown_hash: sha256(markdown),
+        metadata_hash: sha256(metadata),
+      };
     },
     invoke(cmd: string, args: Record<string, unknown> = {}): unknown {
       if (cmd === "read_source_skill") return document;
@@ -133,6 +149,9 @@ export function instructionsFixture() {
   return {
     get document() {
       return document;
+    },
+    writeExternal(text: string) {
+      document = { ...document, text, hash: sha256(text) };
     },
     invoke(cmd: string, args: Record<string, unknown> = {}): unknown {
       if (cmd === "read_global_instructions") return document;

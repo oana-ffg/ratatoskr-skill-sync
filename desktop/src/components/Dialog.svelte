@@ -4,10 +4,29 @@
     title,
     children,
     onclose,
-  }: { title: string; children: Snippet; onclose: () => void } = $props();
+    wide = false,
+    showError = true,
+  }: {
+    title: string;
+    children: Snippet;
+    onclose: () => void;
+    wide?: boolean;
+    showError?: boolean | ((message: string) => boolean);
+  } = $props();
   const errors = getContext<{ message: () => string } | undefined>(
     "ratatoskr-errors",
   );
+  const visibleError = $derived.by(() => {
+    const message = errors?.message() ?? "";
+    if (!message) return "";
+    return typeof showError === "function"
+      ? showError(message)
+        ? message
+        : ""
+      : showError
+        ? message
+        : "";
+  });
   let element: HTMLDialogElement;
   onMount(() => {
     element.showModal();
@@ -17,6 +36,7 @@
 
 <dialog
   bind:this={element}
+  class:wide
   oncancel={(e) => {
     e.preventDefault();
     onclose();
@@ -30,7 +50,7 @@
     >
   </header>
   {@render children()}
-  {#if errors?.message()}<p role="alert" class="error-message">
-      {errors.message()}
+  {#if visibleError}<p role="alert" class="error-message">
+      {visibleError}
     </p>{/if}
 </dialog>

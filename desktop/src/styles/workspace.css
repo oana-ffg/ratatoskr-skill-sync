@@ -318,6 +318,12 @@ nav button.active {
 .global-error button {
   align-self: start;
 }
+.global-error-actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  flex-shrink: 0;
+}
 .error-message {
   background: var(--danger-soft);
   border: 1px solid var(--danger);

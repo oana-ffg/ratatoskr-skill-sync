@@ -2,10 +2,10 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { flushSync } from "svelte";
 import { test, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
-import { fixture, fixtureIPC } from "../tests/fixture";
+import { fixture, fixtureIPC, oracle } from "../tests/fixture";
 import App from "./App.svelte";
 import { emit } from "@tauri-apps/api/event";
-import type { Snapshot, ApplyReply } from "./api";
+import type { Snapshot, ApplyReply, SourceDocument } from "./api";
 const native = vi.hoisted(() => ({
   close: new Set<(event: { preventDefault: () => void }) => void>(),
   visible: true,
@@ -361,4 +361,239 @@ test("plan-changed refresh preserves an unrelated save error", async () => {
   ).toBeVisible();
   expect(screen.getByRole("alert")).toHaveTextContent("A previous save failed");
   expect(screen.queryByText(/Workspace changed since preview/)).toBeNull();
+});
+
+test("clean global instructions auto-reload on refresh and focus without rescanning workspace", async () => {
+  let instructions = structuredClone(
+    oracle("read_global_instructions") as SourceDocument,
+  );
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (cmd === "read_global_instructions") return instructions;
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Global instructions/ }),
+  );
+  const editor = await screen.findByRole("textbox", {
+    name: "Global instructions editor",
+  });
+  expect(editor).not.toHaveTextContent("Pulled from another machine.");
+
+  // Background sync updates the file on disk while the editor is clean; quick focus
+  // refreshes the open file without rescanning the entire workspace.
+  instructions = {
+    ...instructions,
+    text: `${instructions.text}\nPulled from another machine.\n`,
+    hash: "updated-hash-1",
+  };
+  await focus();
+  await waitFor(() =>
+    expect(editor).toHaveTextContent("Pulled from another machine."),
+  );
+  expect(reads).toHaveBeenCalledTimes(1);
+
+  // Minute-timer workspace refresh also picks up later disk edits while clean.
+  instructions = {
+    ...instructions,
+    text: `${instructions.text}Second background update.\n`,
+    hash: "updated-hash-2",
+  };
+  await vi.advanceTimersByTimeAsync(60_000);
+  await waitFor(() =>
+    expect(editor).toHaveTextContent("Second background update."),
+  );
+  expect(reads).toHaveBeenCalledTimes(2);
+});
+
+test("clean Settings auto-reloads on workspace refresh and exposes Discard & reload on save conflict", async () => {
+  let local = {
+    settings: structuredClone(fixture.local_settings),
+    hash: "config-v1",
+  };
+  let failOnce = true;
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (cmd === "read_local_settings") return structuredClone(local);
+      if (cmd === "save_local_settings") {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error("Local configuration changed; reload before saving");
+        }
+        return current;
+      }
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  const autoCheck = await screen.findByLabelText(
+    "Check for updates automatically",
+  );
+  expect(autoCheck).toBeChecked();
+
+  // External config edit picked up automatically on refresh while clean.
+  local = {
+    settings: {
+      ...local.settings,
+      updates: { ...local.settings.updates, automatic: false },
+    },
+    hash: "config-v2",
+  };
+  await vi.advanceTimersByTimeAsync(60_000);
+  await waitFor(() => expect(autoCheck).not.toBeChecked());
+
+  // Make an unsaved edit, hit conflict on Save, then use Discard & reload in the banner.
+  await fireEvent.click(autoCheck);
+  expect(autoCheck).toBeChecked();
+  local = {
+    settings: {
+      ...local.settings,
+      updates: { ...local.settings.updates, automatic: false },
+    },
+    hash: "config-v3",
+  };
+  await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Local configuration changed; reload before saving",
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Discard & reload" }),
+  );
+  await waitFor(() => expect(autoCheck).not.toBeChecked());
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("failed reload during Discard & reload keeps the error visible and preserves the draft", async () => {
+  let local = {
+    settings: structuredClone(fixture.local_settings),
+    hash: "config-v1",
+  };
+  let failReads = false;
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (cmd === "read_local_settings") {
+        if (failReads) throw new Error("Disk read failed during reload");
+        return structuredClone(local);
+      }
+      if (cmd === "save_local_settings") {
+        throw new Error("Local configuration changed; reload before saving");
+      }
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  const login = await screen.findByLabelText("Open Ratatoskr at login");
+  await fireEvent.click(login);
+  expect(login).toBeChecked();
+  await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Local configuration changed; reload before saving",
+  );
+  failReads = true;
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Discard & reload" }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Disk read failed during reload",
+  );
+  expect(login).toBeChecked();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(),
+  );
+});
+
+test("clean Agents & machines auto-reloads on workspace refresh", async () => {
+  let home = "/fixture-home";
+  let hash = "profile-v1";
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (
+        cmd === "read_structured_source" &&
+        (args as { file: string }).file === "machines/brunnr.toml"
+      ) {
+        const result = structuredClone(
+          fixtureIPC(cmd, args as Record<string, unknown>),
+        ) as { hash: string; values: Record<string, unknown> };
+        result.hash = hash;
+        result.values.home = home;
+        return result;
+      }
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Agents & machines/ }),
+  );
+  const homeField = (
+    await screen.findAllByRole("textbox", { name: "Home" })
+  )[0];
+  expect(homeField).toHaveValue("/fixture-home");
+  home = "/synced-home";
+  hash = "profile-v2";
+  await vi.advanceTimersByTimeAsync(60_000);
+  await waitFor(() => expect(homeField).toHaveValue("/synced-home"));
+});
+
+test("in-flight clean reload never overwrites an edit started before IPC returns", async () => {
+  let local = {
+    settings: structuredClone(fixture.local_settings),
+    hash: "config-v1",
+  };
+  let finishRead: ((value: typeof local) => void) | undefined;
+  let readCount = 0;
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (cmd === "read_local_settings") {
+        readCount++;
+        if (readCount === 2) {
+          return new Promise<typeof local>((resolve) => {
+            finishRead = resolve;
+          });
+        }
+        return structuredClone(local);
+      }
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  const login = await screen.findByLabelText("Open Ratatoskr at login");
+  expect(login).not.toBeChecked();
+
+  // Trigger a focus reload while clean; start editing before the IPC resolves.
+  await focus();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(finishRead).toBeDefined();
+  await fireEvent.click(login);
+  expect(login).toBeChecked();
+  finishRead!({
+    settings: {
+      ...local.settings,
+      updates: { ...local.settings.updates, automatic: false },
+    },
+    hash: "config-v2",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(login).toBeChecked();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });

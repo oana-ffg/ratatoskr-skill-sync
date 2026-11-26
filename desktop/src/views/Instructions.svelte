@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import {
     api,
     errorText,
@@ -12,21 +12,27 @@
     type ValueOption,
   } from "../api";
   import { createLivePreview } from "../live-preview";
+  import { mergeThreeWay, type MergeResult } from "../editor/merge";
   import MarkdownEditor from "../components/MarkdownEditor.svelte";
   import OnlyPicker from "../components/OnlyPicker.svelte";
   import ValuePicker from "../components/ValuePicker.svelte";
   import TemplateToolbar from "../components/TemplateToolbar.svelte";
   import PreviewTargets from "../components/PreviewTargets.svelte";
+  import SourceConflictDialog from "../components/SourceConflictDialog.svelte";
   let {
     workspace,
+    syncToken = 0,
     onupdate,
     onerror,
+    onclearerror,
     ondirty,
     onunsaved,
   }: {
     workspace: Snapshot;
+    syncToken?: number;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
+    onclearerror?: () => void;
     ondirty: (v: boolean) => void;
     onunsaved?: (v: boolean) => void;
   } = $props();
@@ -49,6 +55,12 @@
   let editor = $state<MarkdownEditor>();
   let editQueue = Promise.resolve();
   let pendingEdits = $state(0);
+  let conflict = $state<{ latest: SourceDocument; merged: MergeResult } | null>(
+    null,
+  );
+  let disposed = false;
+  let loadRequest = 0;
+  let lastSync: number | null = null;
   const agents = $derived([
     ...new Set(workspace.preview_targets.map((t) => t.harness)),
   ]);
@@ -60,7 +72,11 @@
     analysis.diagnostics.some((d) => d.severity === "error"),
   );
   $effect(() => onunsaved?.(dirty));
-  $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
+  $effect(() =>
+    ondirty(
+      dirty || busy || pendingEdits > 0 || picker !== null || conflict !== null,
+    ),
+  );
   const validation = createLivePreview(
     async (
       input: { markdown: string; machine: string; harness: string },
@@ -136,15 +152,61 @@
       workspace.preview_targets.find((t) => t.machine === machine)?.harness ??
       "";
     void load();
-    return () => validation.cancel();
+    return () => {
+      disposed = true;
+      validation.cancel();
+    };
   });
-  async function load() {
+  $effect(() => {
+    const token = syncToken;
+    if (lastSync === null) {
+      lastSync = token;
+      return;
+    }
+    if (token === lastSync) return;
+    lastSync = token;
+    if (
+      !untrack(() => document) ||
+      untrack(
+        () =>
+          dirty ||
+          busy ||
+          pendingEdits > 0 ||
+          picker !== null ||
+          conflict !== null,
+      )
+    )
+      return;
+    untrack(() => void load(true));
+  });
+  async function load(background = false): Promise<boolean> {
+    const request = ++loadRequest;
     try {
       const d = await api.readInstructions();
+      if (disposed || request !== loadRequest) return false;
+      if (
+        background &&
+        (dirty ||
+          busy ||
+          pendingEdits > 0 ||
+          picker !== null ||
+          conflict !== null)
+      )
+        return false;
+      if (
+        background &&
+        document &&
+        d.hash === document.hash &&
+        d.text === document.text
+      )
+        return true;
       document = d;
       markdown = d.text;
+      conflict = null;
+      return true;
     } catch (e) {
-      onerror(e);
+      if (!disposed && request === loadRequest) onerror(e);
+      return false;
     }
   }
   function edit(operation: Record<string, unknown>): Promise<void> {
@@ -178,10 +240,52 @@
       busy = false;
     }
   }
-  export async function discard() {
+  export async function discard(): Promise<boolean> {
     await editQueue;
     picker = null;
-    await load();
+    const ok = await load();
+    if (ok) conflict = null;
+    return ok;
+  }
+  export async function reviewConflict() {
+    if (!document || busy) return;
+    await editQueue;
+    busy = true;
+    try {
+      const latest = await api.readInstructions();
+      if (disposed || !document) return;
+      conflict = {
+        latest,
+        merged: mergeThreeWay(document.text, latest.text, markdown),
+      };
+    } finally {
+      busy = false;
+    }
+  }
+  function combineConflict() {
+    if (!conflict || !conflict.merged.ok) return;
+    const { latest, merged } = conflict;
+    document = latest;
+    if (merged.text !== markdown) {
+      editor?.replace(merged.text);
+      markdown = merged.text;
+    }
+    conflict = null;
+    onclearerror?.();
+  }
+  function reloadFromConflict() {
+    if (!conflict) return;
+    const { latest } = conflict;
+    document = latest;
+    markdown = latest.text;
+    conflict = null;
+    onclearerror?.();
+  }
+  function keepDraftFromConflict() {
+    if (!conflict) return;
+    document = conflict.latest;
+    conflict = null;
+    onclearerror?.();
   }
   function openOnly(b: Block | null = null) {
     block = b;
@@ -306,4 +410,19 @@
       void edit({ kind: "variable", ...selected, name });
       picker = null;
     }}
+  />{/if}
+{#if conflict}<SourceConflictDialog
+    files={[
+      {
+        label: "global/AGENTS.md",
+        latest: conflict.latest.text,
+        draft: markdown,
+      },
+    ]}
+    canCombine={conflict.merged.ok}
+    {busy}
+    oncombine={combineConflict}
+    onreload={reloadFromConflict}
+    onkeepdraft={keepDraftFromConflict}
+    onclose={() => (conflict = null)}
   />{/if}
