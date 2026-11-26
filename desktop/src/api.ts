@@ -374,6 +374,11 @@ export function basename(path: string): string {
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+export function isSourceChangedError(error: unknown): boolean {
+  return /(?:Source|Local configuration) changed; reload before (?:saving|renaming)|Source changed since opening the editor/i.test(
+    errorText(error),
+  );
+}
 export function relativeTime(seconds: number | null | undefined): string {
   if (!seconds) return "No completed sync yet";
   const minutes = Math.max(0, Math.floor((Date.now() / 1000 - seconds) / 60));

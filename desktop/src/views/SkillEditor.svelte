@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import {
     api,
     agentName,
@@ -19,6 +19,7 @@
     type Value,
   } from "../api";
   import { createLivePreview } from "../live-preview";
+  import { mergeThreeWay, type MergeResult } from "../editor/merge";
   import MarkdownEditor from "../components/MarkdownEditor.svelte";
   import Chips from "../components/Chips.svelte";
   import Dialog from "../components/Dialog.svelte";
@@ -26,11 +27,14 @@
   import ValuePicker from "../components/ValuePicker.svelte";
   import TemplateToolbar from "../components/TemplateToolbar.svelte";
   import PreviewTargets from "../components/PreviewTargets.svelte";
+  import SourceConflictDialog from "../components/SourceConflictDialog.svelte";
   let {
     skill,
     workspace,
+    syncToken = 0,
     onupdate,
     onerror,
+    onclearerror,
     ondirty,
     onunsaved,
     onrenamed,
@@ -38,8 +42,10 @@
   }: {
     skill: Skill;
     workspace: Snapshot;
+    syncToken?: number;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
+    onclearerror?: () => void;
     ondirty: (v: boolean) => void;
     onunsaved?: (v: boolean) => void;
     onrenamed: (skill: Skill) => void;
@@ -93,6 +99,14 @@
   let descriptionText = $state("");
   let activeDescriptionIndex = $state<number | null>(null);
   let pendingDescriptionStructure = $state(0);
+  let conflict = $state<{
+    latest: SkillDocument;
+    markdownMerge: MergeResult;
+    metadataMerge: MergeResult;
+  } | null>(null);
+  let disposed = false;
+  let loadRequest = 0;
+  let lastSync: number | null = null;
   function growDescription(node: HTMLTextAreaElement, _value: string) {
     let active = true;
     let width = 0;
@@ -124,7 +138,11 @@
       (markdown !== document.markdown || metadata !== document.metadata),
   );
   $effect(() => onunsaved?.(dirty));
-  $effect(() => ondirty(dirty || busy || pendingEdits > 0 || picker !== null));
+  $effect(() =>
+    ondirty(
+      dirty || busy || pendingEdits > 0 || picker !== null || conflict !== null,
+    ),
+  );
   const validation = createLivePreview(
     async (
       input: {
@@ -235,21 +253,92 @@
       : (previewTargets[0]?.machine ?? "");
     harness = previewTargets.find((t) => t.machine === machine)?.harness ?? "";
     void load();
-    return () => validation.cancel();
+    return () => {
+      disposed = true;
+      validation.cancel();
+    };
   });
-  async function load() {
+  $effect(() => {
+    const token = syncToken;
+    if (lastSync === null) {
+      lastSync = token;
+      return;
+    }
+    if (token === lastSync) return;
+    lastSync = token;
+    if (
+      !untrack(() => document) ||
+      untrack(
+        () =>
+          dirty ||
+          busy ||
+          pendingEdits > 0 ||
+          picker !== null ||
+          conflict !== null,
+      )
+    )
+      return;
+    untrack(() => void load(true));
+  });
+  async function load(background = false) {
+    const request = ++loadRequest;
     try {
       const d = await api.readSkill(skill);
-      const v = await api.view(d.markdown, d.metadata);
+      if (disposed || request !== loadRequest) return;
+      if (
+        background &&
+        (dirty ||
+          busy ||
+          pendingEdits > 0 ||
+          picker !== null ||
+          conflict !== null)
+      )
+        return;
+      if (
+        background &&
+        document &&
+        d.markdown_hash === document.markdown_hash &&
+        d.metadata_hash === document.metadata_hash
+      ) {
+        const nextResources = await api.resources(skill);
+        if (
+          disposed ||
+          request !== loadRequest ||
+          dirty ||
+          busy ||
+          pendingEdits > 0 ||
+          picker !== null ||
+          conflict !== null
+        )
+          return;
+        if (JSON.stringify(nextResources) !== JSON.stringify(resources))
+          resources = nextResources;
+        return;
+      }
+      const [v, nextResources] = await Promise.all([
+        api.view(d.markdown, d.metadata),
+        api.resources(skill),
+      ]);
+      if (disposed || request !== loadRequest) return;
+      if (
+        background &&
+        (dirty ||
+          busy ||
+          pendingEdits > 0 ||
+          picker !== null ||
+          conflict !== null)
+      )
+        return;
       document = d;
       markdown = d.markdown;
       metadata = d.metadata;
       info = v;
       descriptionSections = v.description_sections;
-      resources = await api.resources(skill);
+      resources = nextResources;
       selected = { from: v.frontmatter.to, to: v.frontmatter.to };
+      conflict = null;
     } catch (e) {
-      onerror(e);
+      if (!disposed && request === loadRequest) onerror(e);
     }
   }
   let editQueue = Promise.resolve();
@@ -323,7 +412,81 @@
   export async function discard() {
     await editQueue;
     picker = null;
+    conflict = null;
     await load();
+  }
+  export async function reviewConflict() {
+    if (!document || busy) return;
+    await editQueue;
+    busy = true;
+    try {
+      const latest = await api.readSkill(skill);
+      if (disposed || !document) return;
+      const markdownMerge = mergeThreeWay(
+        document.markdown,
+        latest.markdown,
+        markdown,
+      );
+      const metadataMerge: MergeResult =
+        metadata === latest.metadata || metadata === document.metadata
+          ? { ok: true, text: latest.metadata }
+          : latest.metadata === document.metadata
+            ? { ok: true, text: metadata }
+            : { ok: false };
+      conflict = { latest, markdownMerge, metadataMerge };
+    } finally {
+      busy = false;
+    }
+  }
+  async function combineConflict() {
+    if (
+      !conflict ||
+      busy ||
+      !conflict.markdownMerge.ok ||
+      !conflict.metadataMerge.ok
+    )
+      return;
+    const { latest, markdownMerge, metadataMerge } = conflict;
+    busy = true;
+    try {
+      const [nextInfo, nextResources] = await Promise.all([
+        api.view(markdownMerge.text, metadataMerge.text),
+        api.resources(skill),
+      ]);
+      if (disposed) return;
+      document = latest;
+      if (markdownMerge.text !== markdown) {
+        editor?.replace(markdownMerge.text);
+        markdown = markdownMerge.text;
+      }
+      metadata = metadataMerge.text;
+      info = nextInfo;
+      descriptionSections = nextInfo.description_sections;
+      resources = nextResources;
+      conflict = null;
+      onclearerror?.();
+    } catch (e) {
+      onerror(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function reloadFromConflict() {
+    if (busy) return;
+    busy = true;
+    try {
+      conflict = null;
+      await load();
+      onclearerror?.();
+    } finally {
+      busy = false;
+    }
+  }
+  function keepDraftFromConflict() {
+    if (!conflict) return;
+    document = conflict.latest;
+    conflict = null;
+    onclearerror?.();
   }
   function target(key: string): string[] {
     return (
@@ -861,3 +1024,23 @@
       >
     </footer></Dialog
   >{/if}
+{#if conflict}<SourceConflictDialog
+    files={[
+      {
+        label: "SKILL.md",
+        latest: conflict.latest.markdown,
+        draft: markdown,
+      },
+      {
+        label: "skill.toml",
+        latest: conflict.latest.metadata,
+        draft: metadata,
+      },
+    ]}
+    canCombine={conflict.markdownMerge.ok && conflict.metadataMerge.ok}
+    {busy}
+    oncombine={() => void combineConflict()}
+    onreload={() => void reloadFromConflict()}
+    onkeepdraft={keepDraftFromConflict}
+    onclose={() => (conflict = null)}
+  />{/if}

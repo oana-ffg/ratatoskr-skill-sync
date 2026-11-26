@@ -153,6 +153,9 @@ dialog {
   max-height: 86vh;
   overflow: auto;
 }
+dialog.wide {
+  width: min(920px, 92vw);
+}
 dialog::backdrop {
   background: #07100980;
   backdrop-filter: blur(4px);
@@ -170,6 +173,7 @@ dialog::backdrop {
 }
 .dialog-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 24px;
 }

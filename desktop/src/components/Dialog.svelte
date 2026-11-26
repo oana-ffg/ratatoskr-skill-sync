@@ -4,7 +4,15 @@
     title,
     children,
     onclose,
-  }: { title: string; children: Snippet; onclose: () => void } = $props();
+    wide = false,
+    showError = true,
+  }: {
+    title: string;
+    children: Snippet;
+    onclose: () => void;
+    wide?: boolean;
+    showError?: boolean;
+  } = $props();
   const errors = getContext<{ message: () => string } | undefined>(
     "ratatoskr-errors",
   );
@@ -17,6 +25,7 @@
 
 <dialog
   bind:this={element}
+  class:wide
   oncancel={(e) => {
     e.preventDefault();
     onclose();
@@ -30,7 +39,7 @@
     >
   </header>
   {@render children()}
-  {#if errors?.message()}<p role="alert" class="error-message">
+  {#if showError && errors?.message()}<p role="alert" class="error-message">
       {errors.message()}
     </p>{/if}
 </dialog>

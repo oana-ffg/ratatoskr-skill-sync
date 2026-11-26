@@ -7,6 +7,7 @@
     title,
     basename,
     errorText,
+    isSourceChangedError,
     relativeTime,
     reviewSummary,
     sourceEditNotice,
@@ -69,6 +70,14 @@
   let error = $state("");
   let sourceEdit = $state<SourceEditOutcome | null>(null);
   const saveNotice = $derived(sourceEdit ? sourceEditNotice(sourceEdit) : null);
+  const sourceConflict = $derived(
+    !!error &&
+      isSourceChangedError(error) &&
+      (!!skill ||
+        screen === "Global instructions" ||
+        screen === "Agents & machines" ||
+        screen === "Settings"),
+  );
   setContext("ratatoskr-errors", { message: () => error });
   let pending = $state<(() => void) | null>(null);
   let closeAfterDiscard = $state(false);
@@ -131,6 +140,7 @@
   let windowVisible = $state(false);
   let refreshing: Promise<void> | undefined;
   let revision = 0;
+  let editorSync = $state(0);
   let disposed = false;
   const protectedState = () => dirty || unsaved || busy || !!pending;
   function update(w: Snapshot | null, asOf = Date.now()) {
@@ -141,6 +151,7 @@
     refreshError = "";
     deferred = false;
     now = Date.now();
+    editorSync++;
   }
   function refresh(): Promise<void> {
     if (protectedState()) {
@@ -193,6 +204,7 @@
     });
   }
   async function discard() {
+    busy = true;
     try {
       if (skill) await editor?.discard();
       else if (screen === "Global instructions") await instructions?.discard();
@@ -200,6 +212,23 @@
       else if (screen === "Settings") await settings?.discard();
       else epoch++;
       dirty = false;
+      error = "";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function reviewSourceConflict() {
+    if (!unsaved) {
+      await discard();
+      return;
+    }
+    try {
+      if (skill) await editor?.reviewConflict();
+      else if (screen === "Global instructions")
+        await instructions?.reviewConflict();
+      else await discard();
     } catch (e) {
       fail(e);
     }
@@ -254,8 +283,10 @@
         // reviewed Apply cover staleness, and a failed refresh retries on the next focus.
         const recent =
           snapshotAt !== null && Date.now() - snapshotAt < FOCUS_REFRESH_MS;
-        if (ready && !(reason === "focus" && recent && !refreshError))
-          void refresh();
+        if (ready) {
+          if (!(reason === "focus" && recent && !refreshError)) void refresh();
+          else if (!protectedState()) editorSync++;
+        }
       },
       (e) => fail(`Automatic workspace refresh: ${errorText(e)}`),
       { onVisibility: (visible) => (windowVisible = visible) },
@@ -478,9 +509,20 @@
           <strong>Something needs attention</strong>
           <p>{error}</p>
         </div>
-        <button aria-label="Dismiss error" onclick={() => (error = "")}
-          >×</button
-        >
+        <div class="global-error-actions">
+          {#if sourceConflict}<button
+              disabled={busy}
+              onclick={reviewSourceConflict}
+              >{!unsaved
+                ? "Reload latest"
+                : skill || screen === "Global instructions"
+                  ? "Review changes…"
+                  : "Discard & reload"}</button
+            >{/if}
+          <button aria-label="Dismiss error" onclick={() => (error = "")}
+            >×</button
+          >
+        </div>
       </div>{/if}
     <main class="main-content" aria-busy={!ready || busy} inert={busy}>
       {#key epoch}
@@ -490,6 +532,7 @@
             bind:this={settings}
             onunsaved={(value) => (unsaved = value)}
             {workspace}
+            syncToken={editorSync}
             onupdate={update}
             onerror={fail}
             ondirty={(v) => (dirty = v)}
@@ -543,8 +586,10 @@
                   bind:this={editor}
                   {skill}
                   {workspace}
+                  syncToken={editorSync}
                   onupdate={update}
                   onerror={fail}
+                  onclearerror={() => (error = "")}
                   ondirty={(v) => (dirty = v)}
                   onrenamed={(s) => (skill = s)}
                   onarchived={(w) => {
@@ -569,8 +614,10 @@
               bind:this={instructions}
               onunsaved={(value) => (unsaved = value)}
               {workspace}
+              syncToken={editorSync}
               onupdate={update}
               onerror={fail}
+              onclearerror={() => (error = "")}
               ondirty={(v) => (dirty = v)}
             />{:catch e}<p role="alert" class="error-message">
               Global instructions failed to load: {errorText(e)}
@@ -592,6 +639,7 @@
             bind:this={agents}
             onunsaved={(value) => (unsaved = value)}
             {workspace}
+            syncToken={editorSync}
             onupdate={update}
             onerror={fail}
             ondirty={(v) => (dirty = v)}

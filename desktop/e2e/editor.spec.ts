@@ -139,6 +139,44 @@ test("a real source conflict refuses overwrite and keeps the user's draft", asyn
   expect(backend.document.markdown).not.toContain("My editor draft.");
 });
 
+test("a skill source conflict can review and combine disjoint edits into the draft", async ({
+  page,
+}) => {
+  const backend = editorFixture();
+  await installFixture(page, backend.invoke);
+  await openEditor(page);
+  const editor = page.getByRole("textbox", { name: "Skill Markdown editor" });
+
+  await append(page, "\nMy skill draft addition.\n");
+  // Update an earlier line on disk while our draft appends at the bottom.
+  backend.writeExternal({
+    markdown: backend.document.markdown.replace(
+      "# Meeting recordings",
+      "# Meeting recordings (updated)",
+    ),
+  });
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Source changed; reload before saving");
+  await alert.getByRole("button", { name: "Review changes…" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Source changed on disk" });
+  await expect(dialog).toContainText("# Meeting recordings (updated)");
+  await expect(dialog).toContainText("My skill draft addition.");
+  await dialog.getByRole("button", { name: "Combine into draft" }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(editor).toContainText("# Meeting recordings (updated)");
+  await expect(editor).toContainText("My skill draft addition.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(
+    0,
+  );
+  expect(backend.document.markdown).toContain("# Meeting recordings (updated)");
+  expect(backend.document.markdown).toContain("My skill draft addition.");
+});
+
 test("excluded targets never claim that the skill will be installed", async ({
   page,
 }) => {

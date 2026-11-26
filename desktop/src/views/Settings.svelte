@@ -1,6 +1,6 @@
 <script lang="ts">
   import BackgroundSync from "../components/BackgroundSync.svelte";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import {
     api,
     type Snapshot,
@@ -9,12 +9,14 @@
   } from "../api";
   let {
     workspace,
+    syncToken = 0,
     onupdate,
     onerror,
     ondirty,
     onunsaved,
   }: {
     workspace: Snapshot | null;
+    syncToken?: number;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
@@ -49,6 +51,9 @@
     authenticated = false;
   }
   let command = $state<string[]>([]);
+  let disposed = false;
+  let loadRequest = 0;
+  let lastSync: number | null = null;
   const serialized = $derived(
     JSON.stringify({
       settings,
@@ -66,21 +71,58 @@
   $effect(() => ondirty(dirty || busy));
   onMount(() => {
     void load();
+    return () => {
+      disposed = true;
+    };
   });
-  async function load() {
+  $effect(() => {
+    const token = syncToken;
+    if (lastSync === null) {
+      lastSync = token;
+      return;
+    }
+    if (token === lastSync) return;
+    lastSync = token;
+    if (!untrack(() => workspace) || untrack(() => dirty || busy)) return;
+    untrack(() => void load(true));
+  });
+  async function load(background = false) {
+    const request = ++loadRequest;
     try {
-      runtimeOS = await api.command<string>("runtime_platform");
-      updates = await api.command<Snapshot["updates"]>("read_update_settings");
-      if (!workspace) return;
+      const nextOS = await api.command<string>("runtime_platform");
+      const nextUpdates = await api.command<Snapshot["updates"]>(
+        "read_update_settings",
+      );
+      if (disposed || request !== loadRequest) return;
+      if (!workspace) {
+        if (!background) {
+          runtimeOS = nextOS;
+          updates = nextUpdates;
+        }
+        return;
+      }
       const [candidate, enabled, profile] = await Promise.all([
         api.command<{ settings: LocalSettings; hash: string }>(
           "read_local_settings",
         ),
-        runtimeOS === "macos"
+        nextOS === "macos"
           ? Promise.resolve(false)
           : api.command<boolean>("login_enabled"),
         api.source(`machines/${workspace.plan.machine}.toml`),
       ]);
+      if (disposed || request !== loadRequest) return;
+      if (background && (dirty || busy)) return;
+      if (
+        background &&
+        settings &&
+        candidate.hash === configHash &&
+        enabled === savedLogin &&
+        nextOS === runtimeOS &&
+        JSON.stringify(nextUpdates) === JSON.stringify(updates)
+      )
+        return;
+      runtimeOS = nextOS;
+      updates = nextUpdates;
       settings = candidate.settings;
       configHash = candidate.hash;
       login = enabled;
@@ -116,7 +158,7 @@
         command,
       });
     } catch (e) {
-      onerror(e);
+      if (!disposed && request === loadRequest) onerror(e);
     }
   }
   export async function discard() {

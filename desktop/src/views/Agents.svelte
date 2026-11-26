@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import {
     api,
     agentName,
@@ -16,12 +16,14 @@
   import Dialog from "../components/Dialog.svelte";
   let {
     workspace,
+    syncToken = 0,
     onupdate,
     onerror,
     ondirty,
     onunsaved,
   }: {
     workspace: Snapshot;
+    syncToken?: number;
     onupdate: (w: Snapshot) => void;
     onerror: (e: unknown) => void;
     ondirty: (v: boolean) => void;
@@ -42,14 +44,36 @@
   let newMachine = $state("");
   let busy = $state(false);
   let valueNames = $state<Record<string, string>>({});
+  let disposed = false;
+  let loadRequest = 0;
+  let lastSync: number | null = null;
   const serialized = $derived(JSON.stringify([agents, profiles]));
   const dirty = $derived(!!originals && serialized !== originals);
   $effect(() => onunsaved?.(dirty));
   $effect(() => ondirty(dirty || adding !== null || busy));
   onMount(() => {
     void load();
+    return () => {
+      disposed = true;
+    };
   });
-  async function load() {
+  $effect(() => {
+    const token = syncToken;
+    if (lastSync === null) {
+      lastSync = token;
+      return;
+    }
+    if (token === lastSync) return;
+    lastSync = token;
+    if (
+      !untrack(() => originals) ||
+      untrack(() => dirty || busy || adding !== null)
+    )
+      return;
+    untrack(() => void load(true));
+  });
+  async function load(background = false) {
+    const request = ++loadRequest;
     try {
       const a = await api.source("harnesses.toml");
       const p = await Promise.all(
@@ -57,11 +81,15 @@
           .filter((f) => f.startsWith("machines/"))
           .map(api.source),
       );
+      if (disposed || request !== loadRequest) return;
+      if (background && (dirty || busy || adding !== null)) return;
+      const nextOriginals = JSON.stringify([a, p]);
+      if (background && nextOriginals === originals) return;
       agents = a;
       profiles = p;
-      originals = JSON.stringify([a, p]);
+      originals = nextOriginals;
     } catch (e) {
-      onerror(e);
+      if (!disposed && request === loadRequest) onerror(e);
     }
   }
   export async function discard() {

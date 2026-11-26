@@ -94,3 +94,99 @@ test("Ctrl/Cmd+F searches the instructions from anywhere on the screen", async (
   await page.keyboard.press("Escape");
   await expect(field).toHaveCount(0);
 });
+
+test("clean instructions auto-reload on focus and non-overlapping save conflicts combine cleanly", async ({
+  page,
+}) => {
+  const backend = instructionsFixture();
+  await installFixture(page, (cmd, args) => backend.invoke(cmd, args));
+  await openInstructions(page);
+  const editor = page.getByRole("textbox", {
+    name: "Global instructions editor",
+  });
+
+  // External change while clean is picked up automatically when the window refocuses.
+  backend.writeExternal(`${backend.document.text}Synced background line.\n`);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(editor).toContainText("Synced background line.");
+
+  // Now edit locally while another commit modifies an earlier line on disk.
+  await append(page, "My new subagent guidance.\n");
+  backend.writeExternal(
+    backend.document.text.replace(
+      "Synced background line.",
+      "Synced background line (updated remotely).",
+    ),
+  );
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Source changed; reload before saving");
+  await expect(editor).toContainText("My new subagent guidance.");
+
+  // Review changes opens the side-by-side diff and offers a clean 3-way combine.
+  await alert.getByRole("button", { name: "Review changes…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Source changed on disk" });
+  await expect(dialog).toContainText(
+    "Synced background line (updated remotely).",
+  );
+  await expect(dialog).toContainText("My new subagent guidance.");
+  await dialog.getByRole("button", { name: "Combine into draft" }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(editor).toContainText(
+    "Synced background line (updated remotely).",
+  );
+  await expect(editor).toContainText("My new subagent guidance.");
+  await expect(
+    page.getByText("Unsaved changes", { exact: true }),
+  ).toBeVisible();
+
+  // Saving the reviewed combined draft now succeeds against the latest hash.
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(
+    0,
+  );
+  expect(backend.document.text).toContain(
+    "Synced background line (updated remotely).",
+  );
+  expect(backend.document.text).toContain("My new subagent guidance.");
+});
+
+test("overlapping instructions conflicts explain the overlap and let the user reload or keep draft", async ({
+  page,
+}) => {
+  const backend = instructionsFixture();
+  await installFixture(page, (cmd, args) => backend.invoke(cmd, args));
+  await openInstructions(page);
+  const editor = page.getByRole("textbox", {
+    name: "Global instructions editor",
+  });
+
+  // Both sides append different text at the exact same spot.
+  await append(page, "Local conflicting bullet.\n");
+  backend.writeExternal(`${backend.document.text}Remote conflicting bullet.\n`);
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Source changed; reload before saving");
+  await alert.getByRole("button", { name: "Review changes…" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Source changed on disk" });
+  await expect(dialog).toContainText("modified the same section");
+  await expect(
+    dialog.getByRole("button", { name: "Combine into draft" }),
+  ).toHaveCount(0);
+  await dialog
+    .getByRole("button", { name: "Reload latest (discard draft)" })
+    .click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(editor).toContainText("Remote conflicting bullet.");
+  await expect(editor).not.toContainText("Local conflicting bullet.");
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(
+    0,
+  );
+});
