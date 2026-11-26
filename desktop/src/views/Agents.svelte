@@ -72,7 +72,7 @@
       return;
     untrack(() => void load(true));
   });
-  async function load(background = false) {
+  async function load(background = false): Promise<boolean> {
     const request = ++loadRequest;
     try {
       const a = await api.source("harnesses.toml");
@@ -81,20 +81,22 @@
           .filter((f) => f.startsWith("machines/"))
           .map(api.source),
       );
-      if (disposed || request !== loadRequest) return;
-      if (background && (dirty || busy || adding !== null)) return;
+      if (disposed || request !== loadRequest) return false;
+      if (background && (dirty || busy || adding !== null)) return false;
       const nextOriginals = JSON.stringify([a, p]);
-      if (background && nextOriginals === originals) return;
+      if (background && nextOriginals === originals) return true;
       agents = a;
       profiles = p;
       originals = nextOriginals;
+      return true;
     } catch (e) {
       if (!disposed && request === loadRequest) onerror(e);
+      return false;
     }
   }
-  export async function discard() {
+  export async function discard(): Promise<boolean> {
     adding = null;
-    await load();
+    return load();
   }
   export async function save() {
     busy = true;

@@ -179,11 +179,11 @@
       return;
     untrack(() => void load(true));
   });
-  async function load(background = false) {
+  async function load(background = false): Promise<boolean> {
     const request = ++loadRequest;
     try {
       const d = await api.readInstructions();
-      if (disposed || request !== loadRequest) return;
+      if (disposed || request !== loadRequest) return false;
       if (
         background &&
         (dirty ||
@@ -192,19 +192,21 @@
           picker !== null ||
           conflict !== null)
       )
-        return;
+        return false;
       if (
         background &&
         document &&
         d.hash === document.hash &&
         d.text === document.text
       )
-        return;
+        return true;
       document = d;
       markdown = d.text;
       conflict = null;
+      return true;
     } catch (e) {
       if (!disposed && request === loadRequest) onerror(e);
+      return false;
     }
   }
   function edit(operation: Record<string, unknown>): Promise<void> {
@@ -238,11 +240,12 @@
       busy = false;
     }
   }
-  export async function discard() {
+  export async function discard(): Promise<boolean> {
     await editQueue;
     picker = null;
-    conflict = null;
-    await load();
+    const ok = await load();
+    if (ok) conflict = null;
+    return ok;
   }
   export async function reviewConflict() {
     if (!document || busy) return;

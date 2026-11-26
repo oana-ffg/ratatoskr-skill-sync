@@ -1,16 +1,16 @@
 <script lang="ts">
+  import { isSourceChangedError } from "../api";
   import Dialog from "./Dialog.svelte";
   import Diff from "./Diff.svelte";
   import { unifiedDiff } from "../editor/merge";
 
-  export interface ConflictFile {
+  interface ConflictFile {
     label: string;
     latest: string;
     draft: string;
   }
 
   let {
-    title = "Source changed on disk",
     files,
     canCombine,
     busy = false,
@@ -19,11 +19,10 @@
     onkeepdraft,
     onclose,
   }: {
-    title?: string;
     files: ConflictFile[];
     canCombine: boolean;
     busy?: boolean;
-    oncombine?: () => void;
+    oncombine: () => void;
     onreload: () => void;
     onkeepdraft: () => void;
     onclose: () => void;
@@ -33,7 +32,12 @@
   const identical = $derived(changed.length === 0);
 </script>
 
-<Dialog {title} {onclose} wide showError={false}>
+<Dialog
+  title="Source changed on disk"
+  {onclose}
+  wide
+  showError={(message) => !isSourceChangedError(message)}
+>
   {#if identical}
     <p class="muted">
       Your draft already matches the latest version on disk. Reload to update
@@ -54,7 +58,7 @@
   {/if}
 
   {#each changed as file}
-    {#if changed.length > 1}
+    {#if files.length > 1}
       <p class="eyebrow">{file.label}</p>
     {/if}
     <Diff
@@ -71,7 +75,7 @@
         >Reload latest</button
       >
     {:else}
-      {#if canCombine && oncombine}
+      {#if canCombine}
         <button class="primary" disabled={busy} onclick={oncombine}
           >Combine into draft</button
         >

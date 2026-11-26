@@ -51,6 +51,7 @@
     authenticated = false;
   }
   let command = $state<string[]>([]);
+  let profileHash = "";
   let disposed = false;
   let loadRequest = 0;
   let lastSync: number | null = null;
@@ -86,20 +87,20 @@
     if (!untrack(() => workspace) || untrack(() => dirty || busy)) return;
     untrack(() => void load(true));
   });
-  async function load(background = false) {
+  async function load(background = false): Promise<boolean> {
     const request = ++loadRequest;
     try {
       const nextOS = await api.command<string>("runtime_platform");
       const nextUpdates = await api.command<Snapshot["updates"]>(
         "read_update_settings",
       );
-      if (disposed || request !== loadRequest) return;
+      if (disposed || request !== loadRequest) return false;
       if (!workspace) {
         if (!background) {
           runtimeOS = nextOS;
           updates = nextUpdates;
         }
-        return;
+        return true;
       }
       const [candidate, enabled, profile] = await Promise.all([
         api.command<{ settings: LocalSettings; hash: string }>(
@@ -110,21 +111,23 @@
           : api.command<boolean>("login_enabled"),
         api.source(`machines/${workspace.plan.machine}.toml`),
       ]);
-      if (disposed || request !== loadRequest) return;
-      if (background && (dirty || busy)) return;
+      if (disposed || request !== loadRequest) return false;
+      if (background && (dirty || busy)) return false;
       if (
         background &&
         settings &&
         candidate.hash === configHash &&
+        profile.hash === profileHash &&
         enabled === savedLogin &&
         nextOS === runtimeOS &&
         JSON.stringify(nextUpdates) === JSON.stringify(updates)
       )
-        return;
+        return true;
       runtimeOS = nextOS;
       updates = nextUpdates;
       settings = candidate.settings;
       configHash = candidate.hash;
+      profileHash = profile.hash;
       login = enabled;
       savedLogin = login;
       defaultSecret = (
@@ -157,12 +160,14 @@
         authenticated,
         command,
       });
+      return true;
     } catch (e) {
       if (!disposed && request === loadRequest) onerror(e);
+      return false;
     }
   }
-  export async function discard() {
-    await load();
+  export async function discard(): Promise<boolean> {
+    return load();
   }
   export async function save() {
     if (!settings) return;

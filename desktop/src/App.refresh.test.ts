@@ -468,8 +468,87 @@ test("clean Settings auto-reloads on workspace refresh and exposes Discard & rel
   await fireEvent.click(
     screen.getByRole("button", { name: "Discard & reload" }),
   );
-  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-  expect(autoCheck).not.toBeChecked();
+  await waitFor(() => expect(autoCheck).not.toBeChecked());
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("failed reload during Discard & reload keeps the error visible and preserves the draft", async () => {
+  let local = {
+    settings: structuredClone(fixture.local_settings),
+    hash: "config-v1",
+  };
+  let failReads = false;
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (cmd === "read_local_settings") {
+        if (failReads) throw new Error("Disk read failed during reload");
+        return structuredClone(local);
+      }
+      if (cmd === "save_local_settings") {
+        throw new Error("Local configuration changed; reload before saving");
+      }
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+  const login = await screen.findByLabelText("Open Ratatoskr at login");
+  await fireEvent.click(login);
+  expect(login).toBeChecked();
+  await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Local configuration changed; reload before saving",
+  );
+  failReads = true;
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Discard & reload" }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Disk read failed during reload",
+  );
+  expect(login).toBeChecked();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(),
+  );
+});
+
+test("clean Agents & machines auto-reloads on workspace refresh", async () => {
+  let home = "/fixture-home";
+  let hash = "profile-v1";
+  mockIPC(
+    (cmd, args) => {
+      if (cmd === "read_workspace") return reads();
+      if (
+        cmd === "read_structured_source" &&
+        (args as { file: string }).file === "machines/brunnr.toml"
+      ) {
+        const result = structuredClone(
+          fixtureIPC(cmd, args as Record<string, unknown>),
+        ) as { hash: string; values: Record<string, unknown> };
+        result.hash = hash;
+        result.values.home = home;
+        return result;
+      }
+      if (cmd === "startup_update" || cmd === "set_desktop_busy") return false;
+      return fixtureIPC(cmd, args as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
+  await start();
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Agents & machines/ }),
+  );
+  const homeField = (
+    await screen.findAllByRole("textbox", { name: "Home" })
+  )[0];
+  expect(homeField).toHaveValue("/fixture-home");
+  home = "/synced-home";
+  hash = "profile-v2";
+  await vi.advanceTimersByTimeAsync(60_000);
+  await waitFor(() => expect(homeField).toHaveValue("/synced-home"));
 });
 
 test("in-flight clean reload never overwrites an edit started before IPC returns", async () => {

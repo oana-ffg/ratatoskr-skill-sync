@@ -11,11 +11,22 @@
     children: Snippet;
     onclose: () => void;
     wide?: boolean;
-    showError?: boolean;
+    showError?: boolean | ((message: string) => boolean);
   } = $props();
   const errors = getContext<{ message: () => string } | undefined>(
     "ratatoskr-errors",
   );
+  const visibleError = $derived.by(() => {
+    const message = errors?.message() ?? "";
+    if (!message) return "";
+    return typeof showError === "function"
+      ? showError(message)
+        ? message
+        : ""
+      : showError
+        ? message
+        : "";
+  });
   let element: HTMLDialogElement;
   onMount(() => {
     element.showModal();
@@ -39,7 +50,7 @@
     >
   </header>
   {@render children()}
-  {#if showError && errors?.message()}<p role="alert" class="error-message">
-      {errors.message()}
+  {#if visibleError}<p role="alert" class="error-message">
+      {visibleError}
     </p>{/if}
 </dialog>

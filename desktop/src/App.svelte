@@ -205,14 +205,17 @@
   }
   async function discard() {
     busy = true;
+    error = "";
     try {
-      if (skill) await editor?.discard();
-      else if (screen === "Global instructions") await instructions?.discard();
-      else if (screen === "Agents & machines") await agents?.discard();
-      else if (screen === "Settings") await settings?.discard();
+      let ok = true;
+      if (skill) ok = (await editor?.discard()) ?? true;
+      else if (screen === "Global instructions")
+        ok = (await instructions?.discard()) ?? true;
+      else if (screen === "Agents & machines")
+        ok = (await agents?.discard()) ?? true;
+      else if (screen === "Settings") ok = (await settings?.discard()) ?? true;
       else epoch++;
-      dirty = false;
-      error = "";
+      if (ok) dirty = false;
     } catch (e) {
       fail(e);
     } finally {
@@ -445,7 +448,7 @@
             <span class="unsaved-indicator">Unsaved changes</span>
             <button disabled={busy} onclick={discard}>Discard</button>
             <button class="primary" disabled={busy} onclick={save}
-              >{busy ? "Saving…" : "Save"}</button
+              >{saving ? "Saving…" : "Save"}</button
             >
           {/if}
         </div>

@@ -280,11 +280,11 @@
       return;
     untrack(() => void load(true));
   });
-  async function load(background = false) {
+  async function load(background = false): Promise<boolean> {
     const request = ++loadRequest;
     try {
       const d = await api.readSkill(skill);
-      if (disposed || request !== loadRequest) return;
+      if (disposed || request !== loadRequest) return false;
       if (
         background &&
         (dirty ||
@@ -293,7 +293,7 @@
           picker !== null ||
           conflict !== null)
       )
-        return;
+        return false;
       if (
         background &&
         document &&
@@ -310,16 +310,16 @@
           picker !== null ||
           conflict !== null
         )
-          return;
+          return false;
         if (JSON.stringify(nextResources) !== JSON.stringify(resources))
           resources = nextResources;
-        return;
+        return true;
       }
       const [v, nextResources] = await Promise.all([
         api.view(d.markdown, d.metadata),
         api.resources(skill),
       ]);
-      if (disposed || request !== loadRequest) return;
+      if (disposed || request !== loadRequest) return false;
       if (
         background &&
         (dirty ||
@@ -328,7 +328,7 @@
           picker !== null ||
           conflict !== null)
       )
-        return;
+        return false;
       document = d;
       markdown = d.markdown;
       metadata = d.metadata;
@@ -337,8 +337,10 @@
       resources = nextResources;
       selected = { from: v.frontmatter.to, to: v.frontmatter.to };
       conflict = null;
+      return true;
     } catch (e) {
       if (!disposed && request === loadRequest) onerror(e);
+      return false;
     }
   }
   let editQueue = Promise.resolve();
@@ -409,11 +411,12 @@
       busy = false;
     }
   }
-  export async function discard() {
+  export async function discard(): Promise<boolean> {
     await editQueue;
     picker = null;
-    conflict = null;
-    await load();
+    const ok = await load();
+    if (ok) conflict = null;
+    return ok;
   }
   export async function reviewConflict() {
     if (!document || busy) return;
@@ -427,6 +430,8 @@
         latest.markdown,
         markdown,
       );
+      // Merge skill.toml only when at most one side changed it, avoiding
+      // line-merged TOML that could break table structure or key uniqueness.
       const metadataMerge: MergeResult =
         metadata === latest.metadata || metadata === document.metadata
           ? { ok: true, text: latest.metadata }
@@ -474,10 +479,10 @@
   async function reloadFromConflict() {
     if (busy) return;
     busy = true;
+    onclearerror?.();
     try {
-      conflict = null;
-      await load();
-      onclearerror?.();
+      const ok = await load();
+      if (ok) conflict = null;
     } finally {
       busy = false;
     }

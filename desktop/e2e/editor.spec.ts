@@ -177,6 +177,46 @@ test("a skill source conflict can review and combine disjoint edits into the dra
   expect(backend.document.markdown).toContain("My skill draft addition.");
 });
 
+test("a skill metadata conflict labels skill.toml, hides Combine, and lets the user keep their draft", async ({
+  page,
+}) => {
+  const backend = editorFixture();
+  await installFixture(page, backend.invoke);
+  await openEditor(page);
+
+  // Edit targeting in the UI while another writer also edits skill.toml on disk.
+  await page
+    .getByRole("group", { name: "Agents", exact: true })
+    .getByRole("button", { name: "Claude Code", exact: true })
+    .click();
+  backend.writeExternal({
+    metadata: `${backend.document.metadata}# Remote comment\n`,
+  });
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Source changed; reload before saving");
+  await alert.getByRole("button", { name: "Review changes…" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Source changed on disk" });
+  await expect(dialog).toContainText("skill.toml");
+  await expect(dialog).toContainText("# Remote comment");
+  await expect(
+    dialog.getByRole("button", { name: "Combine into draft" }),
+  ).toHaveCount(0);
+  await dialog
+    .getByRole("button", { name: "Keep my draft to overwrite" })
+    .click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(
+    0,
+  );
+  expect(backend.document.metadata).not.toContain("claude");
+});
+
 test("excluded targets never claim that the skill will be installed", async ({
   page,
 }) => {
